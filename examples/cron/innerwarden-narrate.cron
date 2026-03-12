@@ -1,5 +1,6 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Generate a rolling summary every 30 minutes
-*/30 * * * * ubuntu bash -lc 'cd /home/ubuntu/innerwarden-project && python3 tools/narrator/narrate.py --window-min 30' >> /var/log/innerwarden-narrate.log 2>&1
+# Generate rolling summary every 30 minutes
+# Keep 7 days of history, always keep latest.md
+*/30 * * * * ubuntu bash -lc 'cd /home/ubuntu/innerwarden-project && INNERWARDEN_KEEP_HISTORY=1 python3 tools/narrator/narrate.py --window-min 30 && find /home/ubuntu/.local/share/innerwarden/summary -type f -name "summary-*.md" -mtime +7 -delete' >> /var/log/innerwarden-narrate.log 2>&1
