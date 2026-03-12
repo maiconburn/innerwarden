@@ -1,12 +1,33 @@
 [Unit]
 Description=Inner Warden - Host Observability Agent
-After=network.target
+After=network.target syslog.target
+Documentation=https://github.com/maiconesteves/innerwarden
 
 [Service]
 Type=simple
+User=innerwarden
+Group=innerwarden
 ExecStart=/usr/local/bin/innerwarden --config /etc/innerwarden/config.toml
 Restart=on-failure
-RestartSec=2
+RestartSec=5
+
+# Give it time to flush state on shutdown
+TimeoutStopSec=10
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+# Logging — journald captures stdout/stderr automatically
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=innerwarden
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/innerwarden /var/log/innerwarden
+ReadOnlyPaths=/var/log /etc/innerwarden
+ProtectHome=yes
 
 [Install]
 WantedBy=multi-user.target
