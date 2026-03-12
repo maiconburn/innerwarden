@@ -17,6 +17,16 @@ Non-goals (v0.1)
 - No service restarts (unless explicitly requested)
 - No heavy SIEM stack (ELK/Prometheus required)
 
+## Performance Goals (v0.1)
+Inner Warden must remain extremely lightweight.
+
+Target constraints:
+- Memory usage: < 20 MB typical
+- CPU usage: < 1% on idle systems
+- No collector should block the main loop
+- Disk writes must be append-only and buffered
+- Event ingestion must tolerate bursty log input
+
 ## Context (this server)
 - Ubuntu 22.04 LTS, arm64
 - Docker-heavy: reverse proxy + web apps + databases
@@ -67,17 +77,32 @@ Examples:
 - `integrity.changed(path=..., old_hash=..., new_hash=...)`
 - `docker.container_started(name=..., image=...)`
 
-### Policy (central brain)
-Policy consumes signals and decides to:
-- ignore
-- elevate severity
-- group/aggregate
-- emit incident
+#### Normalized Signal
+Signals represent pattern matches or anomaly indicators derived from events.
 
-Policy should support:
-- allowlists (e.g. known admin IPs)
-- dedupe windows
-- per-entity rate limits
+Signals are NOT incidents; they are intermediate observations that may later be aggregated by policy.
+
+Signals must include:
+- `ts` (RFC3339 UTC)
+- `signal_type`
+- `source_event_ids` (array of event references)
+- `entities`
+- `score` (numeric confidence or weight)
+- `details` (json object)
+
+Signals are not persisted long-term in v0.1 unless needed for incident evidence.
+
+### Policy (central brain)
+Policy is the correlation layer that converts signals into actionable incidents.
+
+Responsibilities include:
+- signal aggregation
+- deduplication windows
+- severity escalation
+- allowlist evaluation
+- entity rate tracking
+
+Policy should remain deterministic in v0.1 (rule-based).
 
 ### Incidents
 Incidents are append-only JSONL in `incidents-YYYY-MM-DD.jsonl`.
@@ -91,6 +116,37 @@ Required fields:
 - `recommended_checks` (string[])
 - `tags`
 - `entities`
+
+## Configuration
+Inner Warden should load configuration from `config.toml`.
+
+Example:
+
+```toml
+[authlog]
+path = "/var/log/auth.log"
+
+[journald]
+enabled = true
+units = ["ssh", "docker", "containerd"]
+
+[docker]
+enabled = true
+socket = "/var/run/docker.sock"
+
+[integrity]
+paths = [
+  "/etc/ssh/sshd_config",
+  "/etc/sudoers",
+  "/etc/cron.d"
+]
+
+[retention]
+days = 7
+compress_after_days = 3
+```
+
+Configuration should also allow environment variable overrides.
 
 ## Entity Tracking
 Entity tracking is mandatory.
@@ -121,8 +177,11 @@ State must include:
 - per-entity counters for current windows
 
 Retention (v0.1):
-- keep N days (config)
-- compress older files optional
+- event files rotate daily
+- incident files rotate daily
+- optional gzip compression after N days
+- deletion after configured retention period
+- rotation must never block event ingestion
 
 ## MVP detections (v0.1)
 1) SSH brute force / credential stuffing indicators
