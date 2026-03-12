@@ -10,3 +10,11 @@ Mar 12 06:00:09 instance-maiconburn sshd[1008]: Failed password for root from 20
 Mar 12 06:00:10 instance-maiconburn sshd[1009]: Failed password for invalid user test from 203.0.113.10 port 41241 ssh2
 Mar 12 06:00:11 instance-maiconburn sshd[1010]: Accepted password for deploy from 10.0.0.2 port 22 ssh2
 Mar 12 06:00:12 instance-maiconburn sshd[1011]: Failed password for root from 203.0.113.10 port 41242 ssh2
+Mar 12 06:00:13 instance-maiconburn sshd[1012]: Failed password for invalid user ubuntu from 203.0.113.10 port 41243 ssh2
+Mar 12 06:00:14 instance-maiconburn sshd[1013]: Failed password for root from 203.0.113.10 port 41244 ssh2
+Mar 12 06:00:15 instance-maiconburn sshd[1014]: Failed password for invalid user pi from 203.0.113.10 port 41245 ssh2
+Mar 12 06:00:16 instance-maiconburn sshd[1015]: Failed password for root from 198.51.100.5 port 9925 ssh2
+Mar 12 06:00:17 instance-maiconburn sshd[1016]: Failed password for invalid user admin from 198.51.100.5 port 9926 ssh2
+Mar 12 06:00:18 instance-maiconburn sshd[1017]: Failed password for invalid user user from 198.51.100.5 port 9927 ssh2
+Mar 12 06:00:19 instance-maiconburn sshd[1018]: Failed password for root from 198.51.100.5 port 9928 ssh2
+Mar 12 06:00:20 instance-maiconburn sshd[1019]: Failed password for invalid user ftpuser from 198.51.100.5 port 9929 ssh2

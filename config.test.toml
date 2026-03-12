@@ -8,3 +8,8 @@ write_events = true
 [collectors.auth_log]
 enabled = true
 path = "./testdata/sample-auth.log"
+
+[detectors.ssh_bruteforce]
+enabled = true
+threshold = 5
+window_seconds = 300

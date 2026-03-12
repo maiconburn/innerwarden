@@ -8,6 +8,8 @@ pub struct Config {
     pub output: OutputConfig,
     #[serde(default)]
     pub collectors: CollectorsConfig,
+    #[serde(default)]
+    pub detectors: DetectorsConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,8 +44,38 @@ impl Default for AuthLogConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct DetectorsConfig {
+    #[serde(default)]
+    pub ssh_bruteforce: SshBruteforceConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SshBruteforceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for SshBruteforceConfig {
+    fn default() -> Self {
+        Self { enabled: true, threshold: default_threshold(), window_seconds: default_window_seconds() }
+    }
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn default_threshold() -> usize {
+    8
+}
+
+fn default_window_seconds() -> u64 {
+    300
 }
 
 fn default_auth_log_path() -> String {
