@@ -1,5 +1,5 @@
 [Unit]
-Description=Inner Warden - Host Observability Agent
+Description=Inner Warden - Sensor (host observability)
 After=network.target syslog.target
 Documentation=https://github.com/maiconesteves/innerwarden
 
@@ -7,7 +7,8 @@ Documentation=https://github.com/maiconesteves/innerwarden
 Type=simple
 User=innerwarden
 Group=innerwarden
-ExecStart=/usr/local/bin/innerwarden --config /etc/innerwarden/config.toml
+SupplementaryGroups=systemd-journal docker
+ExecStart=/usr/local/bin/innerwarden-sensor --config /etc/innerwarden/config.toml
 Restart=on-failure
 RestartSec=5
 
@@ -19,13 +20,13 @@ SendSIGKILL=yes
 # Logging — journald captures stdout/stderr automatically
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=innerwarden
+SyslogIdentifier=innerwarden-sensor
 
 # Hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/innerwarden /var/log/innerwarden
+ReadWritePaths=/var/lib/innerwarden
 ReadOnlyPaths=/var/log /etc/innerwarden
 ProtectHome=yes
 

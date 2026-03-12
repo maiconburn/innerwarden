@@ -1,5 +1,5 @@
 TARGET_LINUX := aarch64-unknown-linux-gnu
-BINARY       := innerwarden
+SENSOR_DIR   := crates/sensor
 AGENT_DIR    := crates/agent
 RELEASE_DIR  := target/$(TARGET_LINUX)/release
 CARGO        := $(HOME)/.cargo/bin/cargo
@@ -8,15 +8,27 @@ CARGO        := $(HOME)/.cargo/bin/cargo
 
 .PHONY: build
 build:
-	$(CARGO) build --manifest-path $(AGENT_DIR)/Cargo.toml
+	$(CARGO) build -p innerwarden-sensor -p innerwarden-agent
+
+.PHONY: build-sensor
+build-sensor:
+	$(CARGO) build -p innerwarden-sensor
+
+.PHONY: build-agent
+build-agent:
+	$(CARGO) build -p innerwarden-agent
 
 .PHONY: test
 test:
-	$(CARGO) test --manifest-path $(AGENT_DIR)/Cargo.toml
+	$(CARGO) test --workspace
 
-.PHONY: run
-run:
-	$(CARGO) run --manifest-path $(AGENT_DIR)/Cargo.toml -- --config config.test.toml
+.PHONY: run-sensor
+run-sensor:
+	$(CARGO) run -p innerwarden-sensor -- --config config.test.toml
+
+.PHONY: run-agent
+run-agent:
+	$(CARGO) run -p innerwarden-agent -- --data-dir ./data
 
 # ─── Cross-compile for Linux arm64 ───────────────────────────────────────────
 
@@ -25,9 +37,10 @@ build-linux:
 	@$(dir $(CARGO))cargo-zigbuild --version >/dev/null 2>&1 || \
 		{ echo "cargo-zigbuild not found — install with: cargo install cargo-zigbuild"; exit 1; }
 	@rustup target add $(TARGET_LINUX) 2>/dev/null || true
-	$(CARGO) zigbuild --manifest-path $(AGENT_DIR)/Cargo.toml \
+	$(CARGO) zigbuild -p innerwarden-sensor -p innerwarden-agent \
 		--target $(TARGET_LINUX) --release
-	@echo "Binary: $(RELEASE_DIR)/$(BINARY)"
+	@echo "Sensor: $(RELEASE_DIR)/innerwarden-sensor"
+	@echo "Agent:  $(RELEASE_DIR)/innerwarden-agent"
 
 # ─── Deploy ──────────────────────────────────────────────────────────────────
 
@@ -37,12 +50,14 @@ HOST ?= user@your-server
 .PHONY: deploy
 deploy: build-linux
 	@echo "Deploying to $(HOST) ..."
-	ssh $(HOST) "sudo systemctl stop $(BINARY) 2>/dev/null || true"
-	scp $(RELEASE_DIR)/$(BINARY) $(HOST):/tmp/$(BINARY)
-	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/$(BINARY) /usr/local/bin/$(BINARY)"
-	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start $(BINARY)"
+	ssh $(HOST) "sudo systemctl stop innerwarden-sensor 2>/dev/null || true"
+	scp $(RELEASE_DIR)/innerwarden-sensor $(HOST):/tmp/innerwarden-sensor
+	scp $(RELEASE_DIR)/innerwarden-agent  $(HOST):/tmp/innerwarden-agent
+	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-sensor /usr/local/bin/innerwarden-sensor"
+	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-agent  /usr/local/bin/innerwarden-agent"
+	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start innerwarden-sensor"
 	@echo "Deploy complete — checking status:"
-	ssh $(HOST) "sudo systemctl status $(BINARY) --no-pager"
+	ssh $(HOST) "sudo systemctl status innerwarden-sensor --no-pager"
 
 .PHONY: deploy-config
 deploy-config:
@@ -53,19 +68,19 @@ deploy-config:
 
 .PHONY: deploy-service
 deploy-service:
-	scp examples/systemd/innerwarden.service $(HOST):/tmp/innerwarden.service
-	ssh $(HOST) "sudo install -o root -g root -m 644 /tmp/innerwarden.service /etc/systemd/system/innerwarden.service"
-	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl enable innerwarden"
+	scp examples/systemd/innerwarden-sensor.service $(HOST):/tmp/innerwarden-sensor.service
+	ssh $(HOST) "sudo install -o root -g root -m 644 /tmp/innerwarden-sensor.service /etc/systemd/system/innerwarden-sensor.service"
+	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl enable innerwarden-sensor"
 
 # ─── Remote ops ──────────────────────────────────────────────────────────────
 
 .PHONY: logs
 logs:
-	ssh $(HOST) "sudo journalctl -u $(BINARY) -f --no-pager"
+	ssh $(HOST) "sudo journalctl -u innerwarden-sensor -f --no-pager"
 
 .PHONY: status
 status:
-	ssh $(HOST) "sudo systemctl status $(BINARY) --no-pager"
+	ssh $(HOST) "sudo systemctl status innerwarden-sensor --no-pager"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -75,5 +90,5 @@ clean:
 
 .PHONY: check
 check:
-	$(CARGO) clippy --manifest-path $(AGENT_DIR)/Cargo.toml -- -D warnings
-	$(CARGO) fmt --manifest-path $(AGENT_DIR)/Cargo.toml --check
+	$(CARGO) clippy --workspace -- -D warnings
+	$(CARGO) fmt --all --check

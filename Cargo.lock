@@ -341,7 +341,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "innerwarden"
+name = "innerwarden-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "innerwarden_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "innerwarden-sensor"
 version = "0.1.0"
 dependencies = [
  "anyhow",

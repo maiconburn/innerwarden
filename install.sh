@@ -3,13 +3,12 @@ set -euo pipefail
 
 # Inner Warden installer (source build)
 # - Installs rustup if cargo is missing
-# - Builds release binary
+# - Builds release binaries (sensor + agent)
 # - Installs to ~/.local/bin
 # - Creates default config and data dirs
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BIN_NAME="innerwarden"
 INSTALL_BIN_DIR="${HOME}/.local/bin"
 INSTALL_CONFIG_DIR="${HOME}/.config/innerwarden"
 INSTALL_DATA_DIR="${HOME}/.local/share/innerwarden"
@@ -29,22 +28,19 @@ rustup default stable >/dev/null
 
 cd "$ROOT_DIR"
 
-echo "Building ${BIN_NAME} (release)..."
-cargo build --release -p innerwarden
+echo "Building innerwarden-sensor + innerwarden-agent (release)..."
+cargo build --release -p innerwarden-sensor -p innerwarden-agent
 
-SRC_BIN="$ROOT_DIR/target/release/${BIN_NAME}"
-DST_BIN="$INSTALL_BIN_DIR/${BIN_NAME}"
+install -m 0755 "$ROOT_DIR/target/release/innerwarden-sensor" "$INSTALL_BIN_DIR/innerwarden-sensor"
+install -m 0755 "$ROOT_DIR/target/release/innerwarden-agent"  "$INSTALL_BIN_DIR/innerwarden-agent"
 
-install -m 0755 "$SRC_BIN" "$DST_BIN"
+echo "Installed:"
+echo "  $INSTALL_BIN_DIR/innerwarden-sensor"
+echo "  $INSTALL_BIN_DIR/innerwarden-agent"
 
-echo "Installed binary: $DST_BIN"
-
-# Default config
+# Default config (sensor)
 if [ ! -f "$INSTALL_CONFIG_DIR/config.toml" ]; then
-  if [ -f "$ROOT_DIR/config.example.toml" ]; then
-    cp "$ROOT_DIR/config.example.toml" "$INSTALL_CONFIG_DIR/config.toml"
-  else
-    cat > "$INSTALL_CONFIG_DIR/config.toml" <<EOF
+  cat > "$INSTALL_CONFIG_DIR/config.toml" <<EOF
 [agent]
 host_id = "$(hostname)"
 
@@ -58,28 +54,31 @@ path = "/var/log/auth.log"
 
 [collectors.journald]
 enabled = false
-units = ["ssh", "docker", "containerd"]
+units = ["sshd", "sudo"]
 
 [collectors.docker]
 enabled = false
-socket = "/var/run/docker.sock"
 
 [collectors.integrity]
 enabled = true
-paths = ["/etc/ssh/sshd_config","/etc/sudoers","/etc/cron.d"]
+poll_seconds = 60
+paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
 
 [detectors.ssh_bruteforce]
 enabled = true
 threshold = 8
 window_seconds = 300
 EOF
-  fi
   echo "Created default config: $INSTALL_CONFIG_DIR/config.toml"
 else
   echo "Config exists: $INSTALL_CONFIG_DIR/config.toml (kept)"
 fi
 
 echo
-echo "Next: run a quick test (may need sudo to read auth.log):"
-echo "  $DST_BIN --config $INSTALL_CONFIG_DIR/config.toml"
+echo "Next steps:"
+echo "  # Run sensor (may need sudo for auth.log):"
+echo "  innerwarden-sensor --config $INSTALL_CONFIG_DIR/config.toml"
+echo
+echo "  # Run agent (reads sensor JSONL output):"
+echo "  innerwarden-agent --data-dir $INSTALL_DATA_DIR --once"
 echo

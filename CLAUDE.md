@@ -1,14 +1,21 @@
 # Inner Warden — CLAUDE.md
 
-Agente leve de observabilidade de host. Coleta eventos de segurança (SSH, integridade de arquivos, journald, Docker), detecta incidentes e grava saída em JSONL.
+Observabilidade de host com dois componentes Rust: **sensor** (coleta determinística) e **agent** (camada interpretativa).
 
 ---
 
 ## Arquitetura
 
 ```
+host activity → innerwarden-sensor → JSONL outputs → innerwarden-agent → narrative / alerts
+```
+
+### Sensor (innerwarden-sensor)
+
+```
 collectors → mpsc::channel(1024) → main loop → detectors → sinks
-                                                           ↘ JSONL (events / incidents)
+                                                           ↘ events-YYYY-MM-DD.jsonl
+                                                           ↘ incidents-YYYY-MM-DD.jsonl
                                                            ↘ state.json (cursors)
 ```
 
@@ -17,10 +24,18 @@ collectors → mpsc::channel(1024) → main loop → detectors → sinks
 - **Detectors** são síncronos, stateful, vivem no main loop.
 - **Sinks** gravam JSONL append-only com rotação diária.
 - **State** persiste cursors (offset auth_log, hashes de integridade, cursor journald, since docker) em `state.json` via escrita atômica (`.tmp` → rename).
+- **Shutdown**: `SIGINT`/`SIGTERM` via `tokio::select!` → flush JSONL → ler Arcs → salvar state.json.
 
-### Shutdown
+### Agent (innerwarden-agent)
 
-`SIGINT` e `SIGTERM` são capturados via `tokio::select!`. Ao sair: flush JSONL → ler Arcs compartilhados → salvar state.json.
+```
+events/incidents JSONL → reader (byte-offset cursor) → correlation → narrative / model API
+```
+
+- Lê JSONL incrementalmente via byte offsets (cursor próprio em `agent-state.json`).
+- Modos: `--once` (processa e sai) ou contínuo (poll a cada N segundos).
+- Sem dependência de LLM/HTTP no sensor — toda inteligência interpretativa fica no agent.
+- Preparado para futura integração com model APIs.
 
 ---
 
@@ -28,8 +43,8 @@ collectors → mpsc::channel(1024) → main loop → detectors → sinks
 
 ```
 crates/
-  core/   — tipos compartilhados: Event, Incident, EntityRef, Severity
-  agent/  — binário principal (innerwarden)
+  core/     — tipos compartilhados: Event, Incident, EntityRef, Severity
+  sensor/   — binário innerwarden-sensor
     src/
       main.rs
       config.rs
@@ -43,11 +58,12 @@ crates/
       sinks/
         jsonl.rs       — DatedWriter com rotação diária
         state.rs       — load/save atômico de cursors
-tools/
-  narrator/narrate.py  — resumo Markdown dos JSONLs (Python 3.10+)
+  agent/    — binário innerwarden-agent
+    src/
+      main.rs          — CLI + continuous/once mode + SIGTERM
+      reader.rs        — JSONL incremental reader + AgentCursor persistence
 examples/
-  systemd/innerwarden.service
-  cron/innerwarden-narrate.cron
+  systemd/innerwarden-sensor.service
 ```
 
 ---
@@ -55,31 +71,36 @@ examples/
 ## Comandos essenciais
 
 ```bash
-# Build e teste local (cargo não está no PATH padrão)
-make test           # 26 testes unitários
-make build          # debug build
-make run            # roda com config.test.toml
+# Build e teste (cargo não está no PATH padrão)
+make test             # 32 testes (26 sensor + 6 agent)
+make build            # debug build de ambos
+make build-sensor     # só o sensor
+make build-agent      # só o agent
+
+# Rodar localmente
+make run-sensor       # sensor com config.test.toml
+make run-agent        # agent lendo ./data/
 
 # Cross-compile para Linux arm64 (requer cargo-zigbuild + zig)
-make build-linux    # → target/aarch64-unknown-linux-gnu/release/innerwarden
+make build-linux      # → target/aarch64-unknown-linux-gnu/release/innerwarden-{sensor,agent}
 
 # Deploy (ajustar HOST=user@servidor)
 make deploy HOST=ubuntu@1.2.3.4
-make deploy-config HOST=ubuntu@1.2.3.4   # copia config.prod.toml
-make deploy-service HOST=ubuntu@1.2.3.4  # instala e habilita systemd unit
+make deploy-config HOST=ubuntu@1.2.3.4
+make deploy-service HOST=ubuntu@1.2.3.4
 
 # Logs remotos
 make logs HOST=ubuntu@1.2.3.4
 make status HOST=ubuntu@1.2.3.4
 ```
 
-`cargo` fica em `~/.cargo/bin/cargo` — o Makefile já resolve isso via `CARGO` variable.
+`cargo` fica em `~/.cargo/bin/cargo` — o Makefile resolve via `CARGO` variable.
 
 ---
 
 ## Configuração
 
-Arquivo TOML. Exemplo mínimo para produção (Ubuntu arm64):
+Arquivo TOML (usado pelo sensor). Exemplo mínimo para produção:
 
 ```toml
 [agent]
@@ -113,6 +134,8 @@ window_seconds = 300
 
 Config de teste local: `config.test.toml` (aponta para `./testdata/`).
 
+O agent usa `--data-dir` para apontar ao mesmo diretório de saída do sensor.
+
 ---
 
 ## Permissões em produção (Ubuntu 22.04)
@@ -138,20 +161,21 @@ O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
 
 ## Formato de saída (JSONL)
 
-Dois arquivos por dia em `data_dir/`:
+Dois arquivos por dia em `data_dir/` (contrato entre sensor e agent):
 - `events-YYYY-MM-DD.jsonl` — um JSON por linha
 - `incidents-YYYY-MM-DD.jsonl` — um JSON por linha
 
 Ver `docs/format.md` para schema completo.
 
-State de cursors: `data_dir/state.json`.
+State do sensor: `data_dir/state.json`.
+State do agent: `data_dir/agent-state.json` (byte offsets por data).
 
 ---
 
 ## Testes
 
 ```bash
-make test   # roda todos os 26 testes unitários
+make test   # roda todos os 32 testes (sensor + agent)
 ```
 
 Fixtures em `testdata/`:
@@ -160,9 +184,9 @@ Fixtures em `testdata/`:
 
 Testes de integração local:
 ```bash
-make run        # roda até Ctrl+C, grava em ./data/
-cat data/state.json          # verificar cursors persistidos
-wc -l data/events-*.jsonl    # contar eventos
+make run-sensor                       # grava em ./data/
+make run-agent                        # lê de ./data/
+innerwarden-agent --data-dir ./data --once   # roda uma vez e sai
 ```
 
 ---
@@ -170,9 +194,11 @@ wc -l data/events-*.jsonl    # contar eventos
 ## Convenções
 
 - **Commits em inglês** — sem mensagens em português.
-- Cada collector: `run(tx, shared_state)` — async, falha com `Ok(())` (fail-open), nunca derruba o agente.
+- **Sensor**: determinístico, sem HTTP/LLM/AI. Collectors são fail-open (`Ok(())`).
+- **Agent**: camada interpretativa. Pode chamar APIs externas quando necessário.
+- Cada collector: `run(tx, shared_state)` — async, nunca derruba o agente.
 - Erros de I/O nos sinks: logar com `warn!`, não propagar com `?`.
-- Novos tipos de evento: `source` descreve a origem (`"auth.log"`, `"journald"`, `"docker"`, `"integrity"`), `kind` descreve o evento (`"ssh.login_failed"`, `"container.oom"`, etc.).
+- Novos tipos de evento: `source` descreve a origem, `kind` descreve o evento.
 - `Event.details`: manter pequeno (< 16KB). Não incluir payloads arbitrários.
 - `spawn_blocking` para qualquer I/O de arquivo síncrono dentro de tasks Tokio.
 
@@ -180,8 +206,8 @@ wc -l data/events-*.jsonl    # contar eventos
 
 ## Known issues / próximos passos
 
-- `process_event()` propaga erros de write com `?` — muda para `warn!` + continua (ver análise de eficiência).
-- Flush do JSONL é por contagem (a cada 50 eventos) — adicionar flush por tempo (5s interval).
-- journald: double parse JSON por linha não-interessante — refatorar para parse único.
-- `install.sh`: config template tem campo `socket` em `[collectors.docker]` (ignorado pelo serde, mas confuso).
-- `narrate.py`: linha 99 usa f-string com aspas aninhadas (Python 3.12+) — incompatível com Ubuntu 22.04 (Python 3.10).
+- Sensor: `process_event()` propaga erros de write com `?` — trocar para `warn!` + continua.
+- Sensor: flush do JSONL é por contagem (a cada 50 eventos) — adicionar flush por tempo (5s interval).
+- Sensor: journald faz double parse JSON por linha não-interessante — refatorar para parse único.
+- Agent: implementar correlação de eventos e agrupamento temporal.
+- Agent: adicionar geração de narrativa e integração com model APIs.
