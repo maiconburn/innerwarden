@@ -32,10 +32,19 @@ impl JournaldCollector {
         tx: mpsc::Sender<Event>,
         shared_cursor: Arc<Mutex<Option<String>>>,
     ) -> Result<()> {
-        // Verify journalctl is available
-        if Command::new("journalctl").arg("--version").output().await.is_err() {
-            warn!("journalctl not found — journald collector disabled");
-            return Ok(());
+        // Verify journalctl is available AND the current user can read the journal.
+        // Using `-n 0` actually queries the journal (unlike --version which is always ok).
+        let check = Command::new("journalctl").args(["-n", "0", "--output=json"]).output().await;
+        match check {
+            Err(_) => {
+                warn!("journalctl not found — journald collector disabled");
+                return Ok(());
+            }
+            Ok(out) if !out.status.success() => {
+                warn!("journalctl returned non-zero (permission denied?) — journald collector disabled");
+                return Ok(());
+            }
+            _ => {}
         }
 
         info!(
@@ -73,17 +82,23 @@ impl JournaldCollector {
                     result = lines.next_line() => {
                         match result {
                             Ok(Some(line)) => {
-                                if let Some((cursor, event)) = parse_journal_line(&line, &self.host) {
-                                    current_cursor = Some(cursor.clone());
-                                    *shared_cursor.lock().unwrap() = Some(cursor);
-                                    if tx.send(event).await.is_err() {
-                                        let _ = child.kill().await;
-                                        return Ok(());
+                                // parse_journal_line now always returns the cursor when JSON is
+                                // valid, so we never need to re-parse just to advance the cursor.
+                                match parse_journal_line(&line, &self.host) {
+                                    Some((cursor, Some(event))) => {
+                                        current_cursor = Some(cursor.clone());
+                                        *shared_cursor.lock().unwrap() = Some(cursor);
+                                        if tx.send(event).await.is_err() {
+                                            let _ = child.kill().await;
+                                            return Ok(());
+                                        }
                                     }
-                                } else if let Some(cursor) = extract_cursor(&line) {
-                                    // Entry parsed but not interesting — still advance cursor
-                                    current_cursor = Some(cursor.clone());
-                                    *shared_cursor.lock().unwrap() = Some(cursor);
+                                    Some((cursor, None)) => {
+                                        // Valid JSON but not an event we care about — still advance cursor
+                                        current_cursor = Some(cursor.clone());
+                                        *shared_cursor.lock().unwrap() = Some(cursor);
+                                    }
+                                    None => {} // Malformed JSON — skip
                                 }
                             }
                             Ok(None) => break, // journalctl exited
@@ -118,8 +133,15 @@ impl JournaldCollector {
 // ---------------------------------------------------------------------------
 
 /// Parse one JSON line from `journalctl --output=json`.
-/// Returns `(cursor, Event)` if the entry is one we care about.
-fn parse_journal_line(line: &str, host: &str) -> Option<(String, Event)> {
+///
+/// Returns:
+/// - `None` — malformed JSON (cursor unknown, skip)
+/// - `Some((cursor, None))` — valid entry but not interesting (advance cursor only)
+/// - `Some((cursor, Some(event)))` — valid entry that should be emitted
+///
+/// The cursor is always extracted in a single parse pass, eliminating the
+/// previous pattern of calling a separate `extract_cursor()` for non-matching lines.
+fn parse_journal_line(line: &str, host: &str) -> Option<(String, Option<Event>)> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
 
     let cursor = v["__CURSOR"].as_str()?.to_string();
@@ -127,17 +149,12 @@ fn parse_journal_line(line: &str, host: &str) -> Option<(String, Event)> {
     let message = v["MESSAGE"].as_str().unwrap_or("").trim();
 
     let event = match identifier {
-        "sshd" => parse_sshd_message(message, host, "journald")?,
-        "sudo" => parse_sudo_message(message, host)?,
-        _ => return None,
+        "sshd" => parse_sshd_message(message, host, "journald"),
+        "sudo" => parse_sudo_message(message, host),
+        _ => None,
     };
 
     Some((cursor, event))
-}
-
-fn extract_cursor(line: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    Some(v["__CURSOR"].as_str()?.to_string())
 }
 
 /// Parse a sudo log message like:
@@ -199,6 +216,7 @@ mod tests {
         let line = journal_line("sshd", "Failed password for invalid user oracle from 1.2.3.4 port 22 ssh2");
         let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
         assert_eq!(cursor, "test-cursor-abc");
+        let ev = ev.expect("should have event");
         assert_eq!(ev.kind, "ssh.login_failed");
         assert_eq!(ev.source, "journald");
         assert_eq!(ev.details["user"], "oracle");
@@ -209,6 +227,7 @@ mod tests {
     fn parses_sshd_accepted_from_journald() {
         let line = journal_line("sshd", "Accepted publickey for ubuntu from 10.0.0.1 port 54321 ssh2: RSA SHA256:abc");
         let (_, ev) = parse_journal_line(&line, "host").unwrap();
+        let ev = ev.expect("should have event");
         assert_eq!(ev.kind, "ssh.login_success");
         assert_eq!(ev.details["method"], "publickey");
     }
@@ -220,6 +239,7 @@ mod tests {
             "deploy : TTY=pts/0 ; PWD=/home/deploy ; USER=root ; COMMAND=/usr/bin/systemctl restart nginx",
         );
         let (_, ev) = parse_journal_line(&line, "host").unwrap();
+        let ev = ev.expect("should have event");
         assert_eq!(ev.kind, "sudo.command");
         assert_eq!(ev.details["user"], "deploy");
         assert_eq!(ev.details["run_as"], "root");
@@ -228,13 +248,24 @@ mod tests {
 
     #[test]
     fn skips_unknown_identifier() {
+        // Returns Some((cursor, None)) — cursor is advanced but no event is emitted
         let line = journal_line("nginx", "GET /health 200");
-        assert!(parse_journal_line(&line, "host").is_none());
+        let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
+        assert_eq!(cursor, "test-cursor-abc");
+        assert!(ev.is_none(), "unknown identifier should not produce an event");
     }
 
     #[test]
     fn skips_sudo_non_command_line() {
+        // Session lines don't have USER= and COMMAND=, so no event is emitted
         let line = journal_line("sudo", "session opened for user root by deploy(uid=1000)");
-        assert!(parse_journal_line(&line, "host").is_none());
+        let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
+        assert_eq!(cursor, "test-cursor-abc");
+        assert!(ev.is_none(), "non-command sudo line should not produce an event");
+    }
+
+    #[test]
+    fn returns_none_for_invalid_json() {
+        assert!(parse_journal_line("not-json-at-all", "host").is_none());
     }
 }

@@ -26,15 +26,17 @@ impl DockerCollector {
         tx: mpsc::Sender<Event>,
         shared_since: Arc<Mutex<Option<String>>>,
     ) -> Result<()> {
-        // Verify docker is available and daemon is reachable
-        let check = Command::new("docker").arg("info").output().await;
+        // Verify docker binary is available. `docker version` is lightweight
+        // (doesn't require daemon contact for the client section) and is much
+        // faster than `docker info` which queries the daemon's full status.
+        let check = Command::new("docker").arg("version").output().await;
         match check {
             Err(_) => {
                 warn!("docker binary not found — docker collector disabled");
                 return Ok(());
             }
             Ok(out) if !out.status.success() => {
-                warn!("docker daemon not reachable — docker collector disabled");
+                warn!("docker version check failed — docker collector disabled");
                 return Ok(());
             }
             _ => {}

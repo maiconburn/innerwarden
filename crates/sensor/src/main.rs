@@ -19,7 +19,8 @@ use collectors::{
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
-use tracing::info;
+use tokio::time;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(name = "innerwarden-sensor", version, about = "Lightweight host observability sensor")]
@@ -167,13 +168,17 @@ async fn main() -> Result<()> {
     let mut events_written = 0u64;
     let mut incidents_written = 0u64;
 
+    // Flush every 5 seconds regardless of event count
+    let mut flush_ticker = time::interval(time::Duration::from_secs(5));
+    flush_ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
     'main: loop {
         #[cfg(unix)]
         let shutdown = tokio::select! {
             event = rx.recv() => {
                 match event {
                     Some(ev) => {
-                        process_event(ev, &mut writer, &mut ssh_detector, &mut events_written, &mut incidents_written)?;
+                        process_event(ev, &mut writer, &mut ssh_detector, &mut events_written, &mut incidents_written);
                         false
                     }
                     None => {
@@ -190,6 +195,12 @@ async fn main() -> Result<()> {
                 info!("SIGTERM received — shutting down");
                 true
             }
+            _ = flush_ticker.tick() => {
+                if let Err(e) = writer.flush() {
+                    warn!("periodic flush failed: {e:#}");
+                }
+                false
+            }
         };
 
         #[cfg(not(unix))]
@@ -197,7 +208,7 @@ async fn main() -> Result<()> {
             event = rx.recv() => {
                 match event {
                     Some(ev) => {
-                        process_event(ev, &mut writer, &mut ssh_detector, &mut events_written, &mut incidents_written)?;
+                        process_event(ev, &mut writer, &mut ssh_detector, &mut events_written, &mut incidents_written);
                         false
                     }
                     None => {
@@ -210,15 +221,23 @@ async fn main() -> Result<()> {
                 info!("SIGINT received — shutting down");
                 true
             }
+            _ = flush_ticker.tick() => {
+                if let Err(e) = writer.flush() {
+                    warn!("periodic flush failed: {e:#}");
+                }
+                false
+            }
         };
 
         if shutdown {
             break 'main;
         }
 
-        // Periodic flush every 50 events
+        // Also flush every 50 events as a safety net
         if events_written % 50 == 0 && events_written > 0 {
-            writer.flush()?;
+            if let Err(e) = writer.flush() {
+                warn!("count-based flush failed: {e:#}");
+            }
         }
     }
 
@@ -254,10 +273,13 @@ fn process_event(
     ssh_detector: &mut Option<SshBruteforceDetector>,
     events_written: &mut u64,
     incidents_written: &mut u64,
-) -> Result<()> {
+) {
     info!(kind = %ev.kind, summary = %ev.summary, "event");
-    writer.write_event(&ev)?;
-    *events_written += 1;
+    if let Err(e) = writer.write_event(&ev) {
+        warn!(kind = %ev.kind, "failed to write event: {e:#}");
+    } else {
+        *events_written += 1;
+    }
 
     if let Some(ref mut det) = ssh_detector {
         if let Some(incident) = det.process(&ev) {
@@ -267,10 +289,11 @@ fn process_event(
                 title = %incident.title,
                 "INCIDENT"
             );
-            writer.write_incident(&incident)?;
-            *incidents_written += 1;
+            if let Err(e) = writer.write_incident(&incident) {
+                warn!(incident_id = %incident.incident_id, "failed to write incident: {e:#}");
+            } else {
+                *incidents_written += 1;
+            }
         }
     }
-
-    Ok(())
 }
