@@ -30,6 +30,37 @@ pub struct CollectorsConfig {
     pub auth_log: AuthLogConfig,
     #[serde(default)]
     pub integrity: IntegrityConfig,
+    #[serde(default)]
+    pub journald: JournaldConfig,
+    #[serde(default)]
+    pub docker: DockerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JournaldConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// systemd unit names to filter on (e.g. "sshd", "sudo"). Empty = all units.
+    #[serde(default = "default_journald_units")]
+    pub units: Vec<String>,
+}
+
+impl Default for JournaldConfig {
+    fn default() -> Self {
+        Self { enabled: false, units: default_journald_units() }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +133,10 @@ fn default_poll_seconds() -> u64 {
 
 fn default_auth_log_path() -> String {
     "/var/log/auth.log".to_string()
+}
+
+fn default_journald_units() -> Vec<String> {
+    vec!["sshd".to_string(), "sudo".to_string()]
 }
 
 pub fn load(path: &str) -> Result<Config> {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -36,12 +37,13 @@ impl IntegrityCollector {
         }
     }
 
-    /// Returns the current hash map (used to persist to state after run).
-    pub fn known_hashes(&self) -> &HashMap<String, String> {
-        &self.known_hashes
-    }
-
-    pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
+    /// `shared_hashes` is updated after every poll so callers can read
+    /// the latest hashes at any time (e.g. on shutdown for persistence).
+    pub async fn run(
+        mut self,
+        tx: mpsc::Sender<Event>,
+        shared_hashes: Arc<Mutex<HashMap<String, String>>>,
+    ) -> Result<()> {
         info!(
             paths = self.paths.len(),
             poll_secs = self.poll_interval.as_secs(),
@@ -59,7 +61,8 @@ impl IntegrityCollector {
 
             match result {
                 Ok((events, new_hashes)) => {
-                    self.known_hashes = new_hashes;
+                    self.known_hashes = new_hashes.clone();
+                    *shared_hashes.lock().unwrap() = new_hashes;
                     for event in events {
                         if tx.send(event).await.is_err() {
                             return Ok(());

@@ -10,7 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use clap::Parser;
-use collectors::{auth_log::AuthLogCollector, integrity::IntegrityCollector};
+use collectors::{
+    auth_log::AuthLogCollector,
+    docker::DockerCollector,
+    integrity::IntegrityCollector,
+    journald::JournaldCollector,
+};
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
@@ -55,6 +60,8 @@ async fn main() -> Result<()> {
     let shared_auth_offset = Arc::new(AtomicU64::new(0));
     let shared_integrity_hashes: Arc<Mutex<HashMap<String, String>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let shared_journald_cursor: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let shared_docker_since: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // SSH brute force detector (stateful, lives in main loop)
     let mut ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -106,6 +113,41 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = collector.run(tx3, shared).await {
                 tracing::error!("integrity collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn journald collector
+    if cfg.collectors.journald.enabled {
+        let jc = &cfg.collectors.journald;
+        let cursor: Option<String> = state
+            .get_cursor("journald")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        *shared_journald_cursor.lock().unwrap() = cursor.clone();
+        let collector = JournaldCollector::new(&cfg.agent.host_id, jc.units.clone(), cursor);
+        info!(units = ?jc.units, "starting journald collector");
+        let tx4 = tx.clone();
+        let shared = Arc::clone(&shared_journald_cursor);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx4, shared).await {
+                tracing::error!("journald collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn docker collector
+    if cfg.collectors.docker.enabled {
+        let since: Option<String> = state
+            .get_cursor("docker")
+            .and_then(|v| v.as_str().map(str::to_string));
+        *shared_docker_since.lock().unwrap() = since.clone();
+        let collector = DockerCollector::new(&cfg.agent.host_id, since);
+        info!("starting docker collector");
+        let tx5 = tx.clone();
+        let shared = Arc::clone(&shared_docker_since);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx5, shared).await {
+                tracing::error!("docker collector error: {e:#}");
             }
         });
     }
@@ -190,6 +232,14 @@ async fn main() -> Result<()> {
     let integrity_hashes = shared_integrity_hashes.lock().unwrap().clone();
     if !integrity_hashes.is_empty() {
         state.set_cursor("integrity", serde_json::to_value(&integrity_hashes)?);
+    }
+
+    if let Some(cursor) = shared_journald_cursor.lock().unwrap().clone() {
+        state.set_cursor("journald", serde_json::json!(cursor));
+    }
+
+    if let Some(since) = shared_docker_since.lock().unwrap().clone() {
+        state.set_cursor("docker", serde_json::json!(since));
     }
 
     state.save(&state_path)?;

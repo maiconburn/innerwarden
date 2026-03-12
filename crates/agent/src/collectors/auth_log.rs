@@ -1,5 +1,7 @@
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -24,7 +26,9 @@ impl AuthLogCollector {
 
     /// Tail the log file, polling every second.
     /// Uses spawn_blocking for file I/O so the tokio executor stays free.
-    pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
+    /// `shared_offset` is updated after every successful poll so callers
+    /// can read the latest position at any time (e.g. on shutdown).
+    pub async fn run(mut self, tx: mpsc::Sender<Event>, shared_offset: Arc<AtomicU64>) -> Result<()> {
         info!(path = %self.path.display(), offset = self.offset, "auth_log collector starting");
 
         loop {
@@ -36,6 +40,7 @@ impl AuthLogCollector {
             match result {
                 Ok((events, new_offset)) => {
                     self.offset = new_offset;
+                    shared_offset.store(new_offset, Ordering::Relaxed);
                     for event in events {
                         debug!(kind = %event.kind, "parsed event");
                         if tx.send(event).await.is_err() {
@@ -54,10 +59,6 @@ impl AuthLogCollector {
         }
 
         Ok(())
-    }
-
-    pub fn offset(&self) -> u64 {
-        self.offset
     }
 }
 
@@ -109,16 +110,20 @@ pub fn parse_sshd_line(line: &str, host: &str) -> Option<Event> {
     if !line.contains("sshd[") {
         return None;
     }
-
     // Extract the message part after "sshd[pid]: "
     let msg = line.splitn(2, "]: ").nth(1)?.trim();
+    parse_sshd_message(msg, host, "auth.log")
+}
 
+/// Parse the raw sshd message string (without syslog prefix) into an Event.
+/// `source` is the event source label (e.g. "auth.log" or "journald").
+pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> {
     if msg.starts_with("Failed password for invalid user") {
         // Failed password for invalid user <user> from <ip> port <port> ssh2
         let user = word_after(msg, "for invalid user")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
+            host, source,
             "ssh.login_failed",
             Severity::Info,
             format!("Failed login — invalid user {user} from {ip}"),
@@ -127,11 +132,10 @@ pub fn parse_sshd_line(line: &str, host: &str) -> Option<Event> {
             vec![EntityRef::ip(ip), EntityRef::user(user)],
         ))
     } else if msg.starts_with("Failed password for") {
-        // Failed password for <user> from <ip> port <port> ssh2
         let user = word_after(msg, "for")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
+            host, source,
             "ssh.login_failed",
             Severity::Info,
             format!("Failed login for {user} from {ip}"),
@@ -140,11 +144,10 @@ pub fn parse_sshd_line(line: &str, host: &str) -> Option<Event> {
             vec![EntityRef::ip(ip), EntityRef::user(user)],
         ))
     } else if msg.starts_with("Invalid user") {
-        // Invalid user <user> from <ip> port <port>
         let user = word_after(msg, "Invalid user")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
+            host, source,
             "ssh.login_failed",
             Severity::Info,
             format!("Invalid user {user} from {ip}"),
@@ -153,12 +156,11 @@ pub fn parse_sshd_line(line: &str, host: &str) -> Option<Event> {
             vec![EntityRef::ip(ip), EntityRef::user(user)],
         ))
     } else if msg.starts_with("Accepted password for") || msg.starts_with("Accepted publickey for") {
-        // Accepted {password|publickey} for <user> from <ip> port <port>
         let method = if msg.starts_with("Accepted password") { "password" } else { "publickey" };
         let user = word_after(msg, "for")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host,
+            host, source,
             "ssh.login_success",
             Severity::Info,
             format!("Login accepted for {user} from {ip} via {method}"),
@@ -173,6 +175,7 @@ pub fn parse_sshd_line(line: &str, host: &str) -> Option<Event> {
 
 fn make_event(
     host: &str,
+    source: &str,
     kind: &str,
     severity: Severity,
     summary: String,
@@ -183,7 +186,7 @@ fn make_event(
     Event {
         ts: Utc::now(),
         host: host.to_string(),
-        source: "auth.log".to_string(),
+        source: source.to_string(),
         kind: kind.to_string(),
         severity,
         summary,
