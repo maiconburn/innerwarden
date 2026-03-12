@@ -37,12 +37,26 @@ Target constraints:
 
 collectors -> events -> detectors -> policy -> incidents
 
+### Architectural Separation
+Inner Warden should maintain a strict separation between:
+- Collectors (data ingestion)
+- Core Engine (detectors + policy)
+- Sinks (output destinations)
+
+The core engine must remain agnostic to:
+- event source (auth.log, journald, docker, etc.)
+- output destination (JSONL, webhook, external agents)
+
+The engine should operate purely on normalized Events and produce normalized Incidents.
+This allows Inner Warden to remain portable and easily integrable with other systems.
+
 ### Collectors
 Collectors acquire raw signals from the host and emit normalized **Events**.
 Collectors MUST:
 - be read-only
 - keep cursors/offsets in `state.json`
 - never block on slow downstream processing
+- fail open: if a collector fails or crashes, the agent must continue running and log the failure without stopping other collectors
 
 Initial collectors (v0.1):
 1) **auth.log** tailer
@@ -68,9 +82,16 @@ Required fields:
 - `tags` (string[])
 - `entities` (EntityRef[])
 
+Event details should remain compact.
+Recommended maximum size: 16KB.
+This prevents oversized log payloads and keeps event processing lightweight.
+
 ### Detectors
 Detectors consume events and emit **Signals**.
 Signals are weaker than incidents: they represent pattern matches, counts, or anomalies.
+
+Events may arrive slightly out of chronological order depending on the log source.
+Detectors should rely on event timestamps rather than ingestion order.
 
 Examples:
 - `ssh.failed_login_burst(ip=..., count=..., window=...)`
@@ -158,6 +179,12 @@ Entities:
 - `path`
 - `service`
 
+EntityRef schema:
+- `type` (ip | user | container | path | service)
+- `value` (string)
+
+Events, Signals and Incidents must reference entities using this structure.
+
 Implementation notes:
 - Event/Signal/Incident always carry relevant entities.
 - State keeps counters per entity for simple anomaly scoring.
@@ -169,6 +196,8 @@ Files:
 - `state.json`
 - `events-YYYY-MM-DD.jsonl`
 - `incidents-YYYY-MM-DD.jsonl`
+
+Buffered event writes should flush within 1–5 seconds to minimize data loss in case of crash.
 
 State must include:
 - auth.log: inode + byte offset + last_ts
@@ -209,15 +238,45 @@ However, it should be easy to integrate:
 - systemd service (recommended)
 - CLI "one-shot" mode for debugging
 
+## Design Principles
+Inner Warden follows these principles:
+- minimal dependencies
+- append-only data model
+- deterministic detections first
+- portability over ecosystem lock-in
+- clear separation between event ingestion and detection logic
+
 ## Implementation plan (next steps)
-1) Create real repo structure (outside brainstorm):
-   - `crates/innerwarden` (binary)
-   - `crates/core`
-   - `crates/collectors/*`
-   - `crates/detectors/*`
-2) Implement JSONL writer + state.json manager
+1) Create real repo structure (outside brainstorm)
+
+   Suggested repository structure:
+
+   ```
+   crates/
+     core/
+       event.rs
+       signal.rs
+       incident.rs
+       entity.rs
+       policy_engine.rs
+     collectors/
+       authlog.rs
+       journald.rs
+       docker.rs
+       integrity.rs
+     detectors/
+       ssh.rs
+       integrity.rs
+       docker.rs
+     sinks/
+       jsonl.rs
+     innerwarden/
+       main.rs
+   ```
+
+2) Implement JSONL sink + state.json manager
 3) Implement auth.log collector + basic ssh detectors
-4) Implement policy (dedupe + severity mapping)
+4) Implement policy engine (dedupe + severity mapping)
 5) Add docker events collector
 6) Add integrity watcher
 7) Add packaging:
