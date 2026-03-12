@@ -1,10 +1,11 @@
+mod narrative;
 mod reader;
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(name = "innerwarden-agent", version, about = "Interpretive layer — reads sensor JSONL and produces narratives")]
@@ -20,6 +21,10 @@ struct Cli {
     /// Poll interval in seconds for continuous mode
     #[arg(long, default_value = "30")]
     interval: u64,
+
+    /// How many days of daily summaries to keep (older files are removed)
+    #[arg(long, default_value = "7")]
+    keep_days: usize,
 }
 
 #[tokio::main]
@@ -39,6 +44,11 @@ async fn main() -> Result<()> {
         "innerwarden-agent v{} starting",
         env!("CARGO_PKG_VERSION")
     );
+
+    // Clean up old summaries on startup
+    if let Err(e) = narrative::cleanup_old(&cli.data_dir, cli.keep_days) {
+        warn!("failed to clean up old summaries: {e:#}");
+    }
 
     let state_path = cli.data_dir.join("agent-state.json");
     let mut cursor = reader::AgentCursor::load(&state_path)?;
@@ -115,6 +125,7 @@ struct TickStats {
 }
 
 /// Process new JSONL entries since the last cursor position.
+/// Regenerates the daily Markdown summary when new entries arrive.
 fn process_tick(data_dir: &Path, cursor: &mut reader::AgentCursor) -> Result<TickStats> {
     let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
 
@@ -138,14 +149,39 @@ fn process_tick(data_dir: &Path, cursor: &mut reader::AgentCursor) -> Result<Tic
     cursor.set_events_offset(&today, new_events.new_offset);
     cursor.set_incidents_offset(&today, new_incidents.new_offset);
 
-    // ── Future: correlation, narrative generation, model API calls ──
-    // For now, just log what we found.
+    // Log new incidents
     for incident in &new_incidents.entries {
         info!(
             severity = ?incident.severity,
             title = %incident.title,
             "new incident"
         );
+    }
+
+    // Regenerate daily Markdown summary when new entries arrived
+    if events_count > 0 || incidents_count > 0 {
+        // Read ALL events/incidents for the day (from offset 0) to build a complete summary
+        let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(
+            &events_path,
+            0,
+        )?;
+        let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
+            &incidents_path,
+            0,
+        )?;
+
+        // Determine host from events or incidents, fall back to "unknown"
+        let host = all_events.entries.first()
+            .map(|e| e.host.as_str())
+            .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
+            .unwrap_or("unknown");
+
+        let md = narrative::generate(&today, host, &all_events.entries, &all_incidents.entries);
+        if let Err(e) = narrative::write(data_dir, &today, &md) {
+            warn!("failed to write daily summary: {e:#}");
+        } else {
+            info!(date = today, "daily summary updated");
+        }
     }
 
     Ok(TickStats {
