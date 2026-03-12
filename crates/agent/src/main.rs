@@ -1,5 +1,7 @@
+mod config;
 mod narrative;
 mod reader;
+mod webhook;
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +16,10 @@ struct Cli {
     #[arg(long, default_value = "/var/lib/innerwarden")]
     data_dir: PathBuf,
 
+    /// Path to agent config TOML (narrative + webhook settings). Optional.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Run once (process new entries then exit) instead of continuous mode
     #[arg(long)]
     once: bool,
@@ -21,10 +27,6 @@ struct Cli {
     /// Poll interval in seconds for continuous mode
     #[arg(long, default_value = "30")]
     interval: u64,
-
-    /// How many days of daily summaries to keep (older files are removed)
-    #[arg(long, default_value = "7")]
-    keep_days: usize,
 }
 
 #[tokio::main]
@@ -38,23 +40,33 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Load config (optional — all fields have sensible defaults)
+    let cfg = match &cli.config {
+        Some(path) => config::load(path)?,
+        None => config::AgentConfig::default(),
+    };
+
     info!(
         data_dir = %cli.data_dir.display(),
         mode = if cli.once { "once" } else { "continuous" },
+        narrative = cfg.narrative.enabled,
+        webhook = cfg.webhook.enabled,
         "innerwarden-agent v{} starting",
         env!("CARGO_PKG_VERSION")
     );
 
     // Clean up old summaries on startup
-    if let Err(e) = narrative::cleanup_old(&cli.data_dir, cli.keep_days) {
-        warn!("failed to clean up old summaries: {e:#}");
+    if cfg.narrative.enabled {
+        if let Err(e) = narrative::cleanup_old(&cli.data_dir, cfg.narrative.keep_days) {
+            warn!("failed to clean up old summaries: {e:#}");
+        }
     }
 
     let state_path = cli.data_dir.join("agent-state.json");
     let mut cursor = reader::AgentCursor::load(&state_path)?;
 
     if cli.once {
-        let stats = process_tick(&cli.data_dir, &mut cursor)?;
+        let stats = process_tick(&cli.data_dir, &mut cursor, &cfg).await?;
         cursor.save(&state_path)?;
         info!(
             new_events = stats.new_events,
@@ -76,7 +88,7 @@ async fn main() -> Result<()> {
             #[cfg(unix)]
             let shutdown = tokio::select! {
                 _ = interval.tick() => {
-                    let stats = process_tick(&cli.data_dir, &mut cursor)?;
+                    let stats = process_tick(&cli.data_dir, &mut cursor, &cfg).await?;
                     cursor.save(&state_path)?;
                     if stats.new_events > 0 || stats.new_incidents > 0 {
                         info!(new_events = stats.new_events, new_incidents = stats.new_incidents, "tick");
@@ -96,7 +108,7 @@ async fn main() -> Result<()> {
             #[cfg(not(unix))]
             let shutdown = tokio::select! {
                 _ = interval.tick() => {
-                    let stats = process_tick(&cli.data_dir, &mut cursor)?;
+                    let stats = process_tick(&cli.data_dir, &mut cursor, &cfg).await?;
                     cursor.save(&state_path)?;
                     if stats.new_events > 0 || stats.new_incidents > 0 {
                         info!(new_events = stats.new_events, new_incidents = stats.new_incidents, "tick");
@@ -125,8 +137,13 @@ struct TickStats {
 }
 
 /// Process new JSONL entries since the last cursor position.
-/// Regenerates the daily Markdown summary when new entries arrive.
-fn process_tick(data_dir: &Path, cursor: &mut reader::AgentCursor) -> Result<TickStats> {
+/// Regenerates the daily Markdown summary and fires webhook notifications
+/// when new entries arrive.
+async fn process_tick(
+    data_dir: &Path,
+    cursor: &mut reader::AgentCursor,
+    cfg: &config::AgentConfig,
+) -> Result<TickStats> {
     let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
 
     let events_path = data_dir.join(format!("events-{today}.jsonl"));
@@ -158,25 +175,47 @@ fn process_tick(data_dir: &Path, cursor: &mut reader::AgentCursor) -> Result<Tic
         );
     }
 
-    // Regenerate daily Markdown summary when new entries arrived
-    if events_count > 0 || incidents_count > 0 {
+    // Webhook: notify for each new incident that meets the severity threshold
+    if cfg.webhook.enabled && !cfg.webhook.url.is_empty() {
+        let min_rank = webhook::severity_rank(&cfg.webhook.parsed_min_severity());
+        for incident in &new_incidents.entries {
+            if webhook::severity_rank(&incident.severity) >= min_rank {
+                if let Err(e) = webhook::send_incident(
+                    &cfg.webhook.url,
+                    cfg.webhook.timeout_secs,
+                    incident,
+                )
+                .await
+                {
+                    warn!(
+                        incident_id = %incident.incident_id,
+                        "webhook notification failed: {e:#}"
+                    );
+                } else {
+                    info!(incident_id = %incident.incident_id, "webhook notified");
+                }
+            }
+        }
+    }
+
+    // Narrative: regenerate daily Markdown summary when new entries arrived
+    if cfg.narrative.enabled && (events_count > 0 || incidents_count > 0) {
         // Read ALL events/incidents for the day (from offset 0) to build a complete summary
-        let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(
-            &events_path,
-            0,
-        )?;
-        let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
-            &incidents_path,
-            0,
-        )?;
+        let all_events =
+            reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)?;
+        let all_incidents =
+            reader::read_new_entries::<innerwarden_core::incident::Incident>(&incidents_path, 0)?;
 
         // Determine host from events or incidents, fall back to "unknown"
-        let host = all_events.entries.first()
+        let host = all_events
+            .entries
+            .first()
             .map(|e| e.host.as_str())
             .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
             .unwrap_or("unknown");
 
-        let md = narrative::generate(&today, host, &all_events.entries, &all_incidents.entries);
+        let md =
+            narrative::generate(&today, host, &all_events.entries, &all_incidents.entries);
         if let Err(e) = narrative::write(data_dir, &today, &md) {
             warn!("failed to write daily summary: {e:#}");
         } else {
