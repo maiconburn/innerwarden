@@ -32,9 +32,10 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
-- ✅ Webhook HTTP POST com filtragem por severidade mínima
+- ✅ Webhook HTTP POST com filtragem por severidade mínima (dispara no tick rápido — em tempo real)
 - ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md`
-- ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (AI, 2s) + lento (narrativa, 30s)
+- ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (incidentes + webhook + AI, 2s) + lento (narrativa, 30s)
+- ✅ Cursor persistido após cada tick de incidentes — crash nunca causa duplo-processamento
 - ✅ Modo `--once` para processamento batch
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 
@@ -88,6 +89,12 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║  ║         │ SIM                                                   ║   ║
 ║  ║         ▼                                                       ║   ║
 ║  ║  ┌─────────────────────────────────────────────────────────┐   ║   ║
+║  ║  │  Webhook (severity ≥ min_severity?) → HTTP POST         │   ║   ║
+║  ║  │  Dispara para TODOS os incidentes acima do threshold    │   ║   ║
+║  ║  └────────────────────────────┬────────────────────────────┘   ║   ║
+║  ║                               │ (sempre, independente do AI)   ║   ║
+║  ║                               ▼                                ║   ║
+║  ║  ┌─────────────────────────────────────────────────────────┐   ║   ║
 ║  ║  │  Algorithm Gate  (puro, sem I/O, sem custo de API)      │   ║   ║
 ║  ║  │                                                          │   ║   ║
 ║  ║  │  Severity < High?     ──→  ignore (ruído)               │   ║   ║
@@ -134,8 +141,8 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║  ╔══════════════════════════════════════════════════════════════════╗   ║
 ║  ║  LOOP LENTO — tick a cada 30s                                   ║   ║
 ║  ╠══════════════════════════════════════════════════════════════════╣   ║
-║  ║  Novos eventos?     → regenera summary-YYYY-MM-DD.md           ║   ║
-║  ║  Incidente ≥ min?   → webhook POST (notificação)               ║   ║
+║  ║  Novos eventos? → regenera summary-YYYY-MM-DD.md               ║   ║
+║  ║  (webhook e incidentes ficam no loop rápido)                    ║   ║
 ║  ╚══════════════════════════════════════════════════════════════════╝   ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
