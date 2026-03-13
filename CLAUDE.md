@@ -36,6 +36,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md`
 - ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (AI, 2s) + lento (narrativa, 30s)
 - ✅ Modo `--once` para processamento batch
+- ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 
 ---
 
@@ -263,6 +264,20 @@ threshold = 8
 window_seconds = 300
 ```
 
+### Variáveis de ambiente (`.env`)
+
+```bash
+# Copie o template e preencha sua chave:
+cp .env.example .env
+
+# .env (nunca commitar — está no .gitignore)
+OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...  # quando o provider Anthropic for implementado
+# RUST_LOG=innerwarden_agent=debug
+```
+
+O agent carrega `.env` automaticamente ao iniciar. Em produção, use variáveis de ambiente reais — o `.env` é silenciosamente ignorado se não existir.
+
 ### Agent (`agent.toml`) — todos os campos têm defaults; arquivo é opcional
 
 ```toml
@@ -399,17 +414,36 @@ make run-agent                              # lê de ./data/
 innerwarden-agent --data-dir ./data --once  # roda uma vez e sai
 
 # Smoke test com AI em dry_run (seguro):
-OPENAI_API_KEY=sk-... innerwarden-agent \
-  --data-dir ./data \
-  --config agent-test.toml
+# Coloque OPENAI_API_KEY no .env e rode:
+innerwarden-agent --data-dir ./data --config agent-test.toml
 # Deve logar: "DRY RUN: would execute: sudo ufw deny from X"
 ```
+
+---
+
+## Processo de desenvolvimento
+
+**A cada feature ou correção, nesta ordem:**
+
+```
+1. implementar
+2. make test         ← todos os testes devem passar antes de commitar
+3. atualizar CLAUDE.md ← obrigatório: capabilities, workspace, config, próximos passos
+4. git commit (inglês)
+5. git push
+```
+
+> **Regra**: o CLAUDE.md é a fonte de verdade do projeto. Qualquer mudança no
+> comportamento do sistema, nos arquivos gerados, na configuração ou nas dependências
+> deve ser refletida no CLAUDE.md no mesmo commit. Se não está documentado aqui,
+> não existe para quem retomar o projeto.
 
 ---
 
 ## Convenções
 
 - **Commits em inglês** — sem mensagens em português.
+- **CLAUDE.md sempre atualizado** — parte obrigatória do processo, não opcional.
 - **Sensor**: determinístico, sem HTTP/LLM/AI. Collectors são fail-open.
 - **Agent**: camada interpretativa. Pode chamar APIs externas.
 - Cada collector: `run(tx, shared_state)` — async, nunca derruba o processo.
