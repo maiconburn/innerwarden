@@ -39,7 +39,8 @@ pub fn generate(
         out.push_str("## Incidentes\n\n");
         // Sort by severity (highest first)
         let mut sorted_incidents: Vec<&Incident> = incidents.iter().collect();
-        sorted_incidents.sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
+        sorted_incidents
+            .sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
 
         for inc in &sorted_incidents {
             let icon = severity_icon(&inc.severity);
@@ -62,13 +63,11 @@ pub fn generate(
 
     // Correlated clusters (narrative-ready grouping)
     if incidents.len() > 1 {
-        let clusters: Vec<correlation::IncidentCluster> = correlation::build_clusters(
-            incidents,
-            correlation_window_secs,
-        )
-        .into_iter()
-        .filter(|cluster| cluster.size() >= 2)
-        .collect();
+        let clusters: Vec<correlation::IncidentCluster> =
+            correlation::build_clusters(incidents, correlation_window_secs)
+                .into_iter()
+                .filter(|cluster| cluster.size() >= 2)
+                .collect();
 
         if !clusters.is_empty() {
             out.push_str("## Clusters correlacionados\n\n");
@@ -144,8 +143,7 @@ pub fn write(data_dir: &Path, date: &str, markdown: &str) -> Result<()> {
 
 /// Remove summary files older than `keep_days` days from `data_dir`.
 pub fn cleanup_old(data_dir: &Path, keep_days: usize) -> Result<()> {
-    let cutoff = chrono::Local::now().date_naive()
-        - chrono::Duration::days(keep_days as i64);
+    let cutoff = chrono::Local::now().date_naive() - chrono::Duration::days(keep_days as i64);
 
     for entry in std::fs::read_dir(data_dir)
         .with_context(|| format!("failed to read {}", data_dir.display()))?
@@ -238,11 +236,7 @@ fn format_pivot(pivot: &str) -> String {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use innerwarden_core::{
-        entities::EntityRef,
-        event::Severity,
-        incident::Incident,
-    };
+    use innerwarden_core::{entities::EntityRef, event::Severity, incident::Incident};
     use tempfile::TempDir;
 
     fn make_event(kind: &str, severity: Severity, ip: Option<&str>) -> Event {
@@ -255,9 +249,7 @@ mod tests {
             summary: format!("test {kind}"),
             details: serde_json::json!({}),
             tags: vec![],
-            entities: ip
-                .map(|v| vec![EntityRef::ip(v)])
-                .unwrap_or_default(),
+            entities: ip.map(|v| vec![EntityRef::ip(v)]).unwrap_or_default(),
         }
     }
 

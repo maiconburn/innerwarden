@@ -23,7 +23,11 @@ impl OpenAiProvider {
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .expect("failed to build reqwest client");
-        Self { api_key, model, client }
+        Self {
+            api_key,
+            model,
+            client,
+        }
     }
 }
 
@@ -54,7 +58,8 @@ impl AiProvider for OpenAiProvider {
             "max_tokens": 512,
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://api.openai.com/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&body)
@@ -65,7 +70,10 @@ impl AiProvider for OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!("OpenAI API returned {status}: {}", text.chars().take(300).collect::<String>());
+            bail!(
+                "OpenAI API returned {status}: {}",
+                text.chars().take(300).collect::<String>()
+            );
         }
 
         let completion: ChatCompletion = resp
@@ -115,39 +123,47 @@ Respond ONLY with valid JSON using exactly this schema (no extra fields, no mark
 "#;
 
 fn build_prompt(ctx: &DecisionContext<'_>) -> String {
-    let incident_json = serde_json::to_string_pretty(ctx.incident)
-        .unwrap_or_else(|_| "{}".to_string());
+    let incident_json =
+        serde_json::to_string_pretty(ctx.incident).unwrap_or_else(|_| "{}".to_string());
 
     let events_json = {
-        let events: Vec<_> = ctx.recent_events.iter().map(|e| {
-            json!({
-                "ts": e.ts,
-                "kind": e.kind,
-                "summary": e.summary,
-                "severity": format!("{:?}", e.severity),
-                "source": e.source,
+        let events: Vec<_> = ctx
+            .recent_events
+            .iter()
+            .map(|e| {
+                json!({
+                    "ts": e.ts,
+                    "kind": e.kind,
+                    "summary": e.summary,
+                    "severity": format!("{:?}", e.severity),
+                    "source": e.source,
+                })
             })
-        }).collect();
+            .collect();
         serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".to_string())
     };
 
     let related_incidents_json = {
-        let related: Vec<_> = ctx.related_incidents.iter().map(|inc| {
-            json!({
-                "ts": inc.ts,
-                "incident_id": inc.incident_id,
-                "detector_kind": inc.incident_id.split(':').next().unwrap_or("unknown"),
-                "severity": format!("{:?}", inc.severity),
-                "title": inc.title,
-                "summary": inc.summary,
-                "entities": inc.entities,
+        let related: Vec<_> = ctx
+            .related_incidents
+            .iter()
+            .map(|inc| {
+                json!({
+                    "ts": inc.ts,
+                    "incident_id": inc.incident_id,
+                    "detector_kind": inc.incident_id.split(':').next().unwrap_or("unknown"),
+                    "severity": format!("{:?}", inc.severity),
+                    "title": inc.title,
+                    "summary": inc.summary,
+                    "entities": inc.entities,
+                })
             })
-        }).collect();
+            .collect();
         serde_json::to_string_pretty(&related).unwrap_or_else(|_| "[]".to_string())
     };
 
-    let skills_json = serde_json::to_string_pretty(&ctx.available_skills)
-        .unwrap_or_else(|_| "[]".to_string());
+    let skills_json =
+        serde_json::to_string_pretty(&ctx.available_skills).unwrap_or_else(|_| "[]".to_string());
 
     format!(
         r#"Analyze this security incident and decide on a response.
@@ -245,10 +261,16 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
             AiAction::BlockIp { ip, skill_id }
         }
         "monitor" => AiAction::Monitor {
-            ip: raw.target_ip.clone().unwrap_or_else(|| "unknown".to_string()),
+            ip: raw
+                .target_ip
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
         },
         "honeypot" => AiAction::Honeypot {
-            ip: raw.target_ip.clone().unwrap_or_else(|| "unknown".to_string()),
+            ip: raw
+                .target_ip
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
         },
         "request_confirmation" => AiAction::RequestConfirmation {
             summary: raw.reason.clone(),
@@ -257,7 +279,9 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
             if raw.action != "ignore" {
                 warn!(action = %raw.action, "unknown AI action — defaulting to ignore");
             }
-            AiAction::Ignore { reason: raw.reason.clone() }
+            AiAction::Ignore {
+                reason: raw.reason.clone(),
+            }
         }
     };
 
@@ -331,7 +355,10 @@ mod tests {
 
         let d = parse_decision(json).unwrap();
         assert!(matches!(d.action, AiAction::Ignore { .. }));
-        assert!(!d.auto_execute, "downgraded decision must never auto-execute");
+        assert!(
+            !d.auto_execute,
+            "downgraded decision must never auto-execute"
+        );
     }
 
     #[test]

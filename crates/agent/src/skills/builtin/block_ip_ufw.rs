@@ -8,14 +8,20 @@ use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 pub struct BlockIpUfw;
 
 impl ResponseSkill for BlockIpUfw {
-    fn id(&self) -> &'static str { "block-ip-ufw" }
-    fn name(&self) -> &'static str { "Block IP via ufw" }
+    fn id(&self) -> &'static str {
+        "block-ip-ufw"
+    }
+    fn name(&self) -> &'static str {
+        "Block IP via ufw"
+    }
     fn description(&self) -> &'static str {
         "Permanently blocks the attacking IP using ufw (Uncomplicated Firewall). \
          Adds a DENY rule with the 'innerwarden' comment for traceability. \
          Requires: sudo ufw deny from <IP> (configured in /etc/sudoers.d/innerwarden)."
     }
-    fn tier(&self) -> SkillTier { SkillTier::Open }
+    fn tier(&self) -> SkillTier {
+        SkillTier::Open
+    }
     fn applicable_to(&self) -> &'static [&'static str] {
         &["ssh_bruteforce", "port_scan", "credential_stuffing"]
     }
@@ -37,7 +43,10 @@ impl ResponseSkill for BlockIpUfw {
             };
 
             if dry_run {
-                info!(ip, "DRY RUN: would execute: sudo ufw deny from {ip} comment 'innerwarden'");
+                info!(
+                    ip,
+                    "DRY RUN: would execute: sudo ufw deny from {ip} comment 'innerwarden'"
+                );
                 return SkillResult {
                     success: true,
                     message: format!("DRY RUN: would block {ip} via ufw"),

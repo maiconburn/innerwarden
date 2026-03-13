@@ -199,12 +199,7 @@ pub fn generate(data_dir: &Path) -> Result<GeneratedReport> {
     let mut files = Vec::new();
 
     let events_outcome = parse_events_file(&events, &mut counters);
-    record_quality_hints(
-        "events",
-        &events_outcome,
-        analyzed_is_today,
-        &mut counters,
-    );
+    record_quality_hints("events", &events_outcome, analyzed_is_today, &mut counters);
     files.push(file_health_jsonl("events", &events_outcome));
 
     let incidents_outcome = parse_incidents_file(&incidents, &mut counters);
@@ -756,8 +751,9 @@ fn build_anomaly_hints(
         hints.push(AnomalyHint {
             severity: "high".to_string(),
             code: "no_events".to_string(),
-            message: "No events captured for analyzed day; collectors may be blocked or misconfigured."
-                .to_string(),
+            message:
+                "No events captured for analyzed day; collectors may be blocked or misconfigured."
+                    .to_string(),
         });
     }
 
@@ -799,7 +795,8 @@ fn build_anomaly_hints(
     }
 
     if agent_ai_summary.total_decisions >= 10 {
-        let ignore_ratio = agent_ai_summary.ignore_count as f64 / agent_ai_summary.total_decisions as f64;
+        let ignore_ratio =
+            agent_ai_summary.ignore_count as f64 / agent_ai_summary.total_decisions as f64;
         if ignore_ratio > 0.9 {
             hints.push(AnomalyHint {
                 severity: "medium".to_string(),
@@ -942,15 +939,16 @@ fn build_suggestions(report: &TrialReport) -> Vec<String> {
                 .to_string(),
         );
     }
-    if report.detection_summary.total_incidents > 0 && report.agent_ai_summary.total_decisions == 0 {
+    if report.detection_summary.total_incidents > 0 && report.agent_ai_summary.total_decisions == 0
+    {
         suggestions.push(
             "Incidents exist but no AI decisions; verify agent AI config and API key availability."
                 .to_string(),
         );
     }
     if report.agent_ai_summary.total_decisions > 0 {
-        let ignore_ratio =
-            report.agent_ai_summary.ignore_count as f64 / report.agent_ai_summary.total_decisions as f64;
+        let ignore_ratio = report.agent_ai_summary.ignore_count as f64
+            / report.agent_ai_summary.total_decisions as f64;
         if ignore_ratio > 0.8 {
             suggestions.push(
                 "Most AI decisions are ignore; review detector thresholds and context_events for signal quality."
@@ -1011,7 +1009,11 @@ fn render_markdown(report: &TrialReport) -> String {
     let mut out = String::new();
     let _ = writeln!(&mut out, "# InnerWarden Trial Report");
     let _ = writeln!(&mut out);
-    let _ = writeln!(&mut out, "- Generated at: {}", report.generated_at.to_rfc3339());
+    let _ = writeln!(
+        &mut out,
+        "- Generated at: {}",
+        report.generated_at.to_rfc3339()
+    );
     let _ = writeln!(&mut out, "- Analyzed date: {}", report.analyzed_date);
     let _ = writeln!(&mut out, "- Data dir: `{}`", report.data_dir);
     let _ = writeln!(&mut out);
@@ -1049,10 +1051,10 @@ fn render_markdown(report: &TrialReport) -> String {
             yes_no(f.exists),
             yes_no(f.readable),
             f.size_bytes,
-            f.jsonl_valid
-                .map(yes_no)
+            f.jsonl_valid.map(yes_no).unwrap_or_else(|| "-".to_string()),
+            f.lines
+                .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string()),
-            f.lines.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
             f.malformed_lines
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string()),
@@ -1191,7 +1193,11 @@ fn render_markdown(report: &TrialReport) -> String {
         }
     }
     let _ = writeln!(&mut out, "- Incidents by detector:");
-    if report.operational_telemetry.incidents_by_detector.is_empty() {
+    if report
+        .operational_telemetry
+        .incidents_by_detector
+        .is_empty()
+    {
         let _ = writeln!(&mut out, "  - none");
     } else {
         for (detector, count) in &report.operational_telemetry.incidents_by_detector {
@@ -1444,7 +1450,11 @@ mod tests {
             tags: vec![],
             entities: vec![EntityRef::ip("1.2.3.4")],
         };
-        fs::write(&incidents_path, format!("{}\n", serde_json::to_string(&inc).unwrap())).unwrap();
+        fs::write(
+            &incidents_path,
+            format!("{}\n", serde_json::to_string(&inc).unwrap()),
+        )
+        .unwrap();
 
         let dec = DecisionEntry {
             ts: Utc::now(),
@@ -1461,7 +1471,11 @@ mod tests {
             estimated_threat: "low".to_string(),
             execution_result: "skipped".to_string(),
         };
-        fs::write(&decisions_path, format!("{}\n", serde_json::to_string(&dec).unwrap())).unwrap();
+        fs::write(
+            &decisions_path,
+            format!("{}\n", serde_json::to_string(&dec).unwrap()),
+        )
+        .unwrap();
 
         fs::write(&summary_path, "# summary\n").unwrap();
         fs::write(&state_path, r#"{"cursors":{"auth_log":10}}"#).unwrap();
@@ -1490,11 +1504,7 @@ mod tests {
             "not-json\n",
         )
         .unwrap();
-        fs::write(
-            dir.path().join(format!("incidents-{date}.jsonl")),
-            "",
-        )
-        .unwrap();
+        fs::write(dir.path().join(format!("incidents-{date}.jsonl")), "").unwrap();
         fs::write(
             dir.path().join(format!("decisions-{date}.jsonl")),
             r#"{"foo":"bar","confidence":0.5}"#,
@@ -1597,7 +1607,11 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        fs::write(&previous_decisions, format!("{previous_decisions_payload}\n")).unwrap();
+        fs::write(
+            &previous_decisions,
+            format!("{previous_decisions_payload}\n"),
+        )
+        .unwrap();
         fs::write(&previous_summary, "# prev\n").unwrap();
 
         let current_events_payload = (0..20)

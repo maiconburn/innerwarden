@@ -209,11 +209,7 @@ struct WorkingCluster {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use innerwarden_core::{
-        entities::EntityRef,
-        event::Severity,
-        incident::Incident,
-    };
+    use innerwarden_core::{entities::EntityRef, event::Severity, incident::Incident};
 
     fn incident(ts_offset_secs: i64, incident_id: &str, entities: Vec<EntityRef>) -> Incident {
         Incident {
@@ -265,7 +261,10 @@ mod tests {
 
         correlator.observe(&old);
         let related = correlator.related_to(&new_incident, 10);
-        assert!(related.is_empty(), "old incident must be outside the window");
+        assert!(
+            related.is_empty(),
+            "old incident must be outside the window"
+        );
     }
 
     #[test]
@@ -281,7 +280,11 @@ mod tests {
                 "ssh_bruteforce:1.2.3.4:b",
                 vec![EntityRef::ip("1.2.3.4"), EntityRef::user("root")],
             ),
-            incident(600, "ssh_bruteforce:9.9.9.9:c", vec![EntityRef::ip("9.9.9.9")]),
+            incident(
+                600,
+                "ssh_bruteforce:9.9.9.9:c",
+                vec![EntityRef::ip("9.9.9.9")],
+            ),
         ];
 
         let clusters = build_clusters(&incidents, 120);
@@ -292,10 +295,7 @@ mod tests {
             .find(|cluster| cluster.incident_ids.len() == 2)
             .expect("expected merged cluster");
         assert_eq!(merged.pivot, "ip:1.2.3.4");
-        assert!(merged
-            .detector_kinds
-            .iter()
-            .any(|kind| kind == "port_scan"));
+        assert!(merged.detector_kinds.iter().any(|kind| kind == "port_scan"));
         assert!(merged
             .detector_kinds
             .iter()

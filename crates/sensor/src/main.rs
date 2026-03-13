@@ -11,9 +11,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use clap::Parser;
 use collectors::{
-    auth_log::AuthLogCollector,
-    docker::DockerCollector,
-    integrity::IntegrityCollector,
+    auth_log::AuthLogCollector, docker::DockerCollector, integrity::IntegrityCollector,
     journald::JournaldCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
@@ -25,7 +23,11 @@ use tokio::time;
 use tracing::{info, warn};
 
 #[derive(Parser)]
-#[command(name = "innerwarden-sensor", version, about = "Lightweight host observability sensor")]
+#[command(
+    name = "innerwarden-sensor",
+    version,
+    about = "Lightweight host observability sensor"
+)]
 struct Cli {
     #[arg(long, default_value = "config.toml")]
     config: String,
@@ -69,17 +71,29 @@ async fn main() -> Result<()> {
     // SSH brute force detector (stateful, lives in main loop)
     let mut ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
         let d = &cfg.detectors.ssh_bruteforce;
-        info!(threshold = d.threshold, window_seconds = d.window_seconds, "ssh_bruteforce detector enabled");
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            "ssh_bruteforce detector enabled"
+        );
         SshBruteforceDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
     let mut credential_stuffing_detector = cfg.detectors.credential_stuffing.enabled.then(|| {
         let d = &cfg.detectors.credential_stuffing;
-        info!(threshold = d.threshold, window_seconds = d.window_seconds, "credential_stuffing detector enabled");
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            "credential_stuffing detector enabled"
+        );
         CredentialStuffingDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
     let mut port_scan_detector = cfg.detectors.port_scan.enabled.then(|| {
         let d = &cfg.detectors.port_scan;
-        info!(threshold = d.threshold, window_seconds = d.window_seconds, "port_scan detector enabled");
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            "port_scan detector enabled"
+        );
         PortScanDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
     });
 
@@ -91,11 +105,8 @@ async fn main() -> Result<()> {
             .unwrap_or(0);
         shared_auth_offset.store(offset, Ordering::Relaxed);
 
-        let collector = AuthLogCollector::new(
-            &cfg.collectors.auth_log.path,
-            &cfg.agent.host_id,
-            offset,
-        );
+        let collector =
+            AuthLogCollector::new(&cfg.collectors.auth_log.path, &cfg.agent.host_id, offset);
         info!(path = %cfg.collectors.auth_log.path, offset, "starting auth_log collector");
         let tx2 = tx.clone();
         let shared = Arc::clone(&shared_auth_offset);
@@ -120,7 +131,11 @@ async fn main() -> Result<()> {
         let paths = ic.paths.iter().map(|p| Path::new(p).to_owned()).collect();
         let collector =
             IntegrityCollector::new(paths, &cfg.agent.host_id, ic.poll_seconds, known_hashes);
-        info!(paths = ic.paths.len(), poll_secs = ic.poll_seconds, "starting integrity collector");
+        info!(
+            paths = ic.paths.len(),
+            poll_secs = ic.poll_seconds,
+            "starting integrity collector"
+        );
         let tx3 = tx.clone();
         let shared = Arc::clone(&shared_integrity_hashes);
         tokio::spawn(async move {

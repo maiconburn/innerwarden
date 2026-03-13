@@ -28,3 +28,33 @@
   "tags": ["auth","ssh","bruteforce"]
 }
 ```
+
+## Honeypot session metadata (honeypot/listener-session-*.json)
+```json
+{
+  "ts": "2026-03-13T16:22:00Z",
+  "status": "completed",
+  "session_id": "20260313T162200Z-1.2.3.4",
+  "target_ip": "1.2.3.4",
+  "service_stats": [
+    {"service":"ssh","listen_port":2222,"accepted":3,"rejected":0}
+  ],
+  "redirect_rules": [
+    {"service":"ssh","from_port":22,"to_port":2222,"applied":true}
+  ]
+}
+```
+
+## Honeypot evidence line (honeypot/listener-session-*.jsonl)
+```json
+{
+  "ts": "2026-03-13T16:22:08Z",
+  "type": "connection",
+  "session_id": "20260313T162200Z-1.2.3.4",
+  "service": "ssh",
+  "peer_ip": "1.2.3.4",
+  "accepted": true,
+  "bytes_captured": 48,
+  "payload_hex": "5353482d322e30"
+}
+```

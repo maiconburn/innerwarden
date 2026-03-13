@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::ai::{AiDecision};
+use crate::ai::AiDecision;
 
 // ---------------------------------------------------------------------------
 // Decision log entry
@@ -76,11 +76,12 @@ impl DecisionWriter {
             self.current_date = today;
         }
 
-        let line = serde_json::to_string(entry)
-            .context("failed to serialize decision entry")?;
+        let line = serde_json::to_string(entry).context("failed to serialize decision entry")?;
         writeln!(self.writer, "{line}").context("failed to write decision entry")?;
         // Flush immediately — audit trail must survive a crash between decisions
-        self.writer.flush().context("failed to flush decision entry")?;
+        self.writer
+            .flush()
+            .context("failed to flush decision entry")?;
         Ok(())
     }
 
@@ -115,9 +116,11 @@ pub fn build_entry(
     use crate::ai::AiAction;
 
     let (action_type, target_ip, skill_id) = match &decision.action {
-        AiAction::BlockIp { ip, skill_id } => {
-            ("block_ip".to_string(), Some(ip.clone()), Some(skill_id.clone()))
-        }
+        AiAction::BlockIp { ip, skill_id } => (
+            "block_ip".to_string(),
+            Some(ip.clone()),
+            Some(skill_id.clone()),
+        ),
         AiAction::Monitor { ip } => ("monitor".to_string(), Some(ip.clone()), None),
         AiAction::Honeypot { ip } => ("honeypot".to_string(), Some(ip.clone()), None),
         AiAction::RequestConfirmation { .. } => ("request_confirmation".to_string(), None, None),

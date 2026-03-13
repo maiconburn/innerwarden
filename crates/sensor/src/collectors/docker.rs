@@ -2,7 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use chrono::Utc;
-use innerwarden_core::{entities::EntityRef, event::{Event, Severity}};
+use innerwarden_core::{
+    entities::EntityRef,
+    event::{Event, Severity},
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -16,7 +19,10 @@ pub struct DockerCollector {
 
 impl DockerCollector {
     pub fn new(host: impl Into<String>, since: Option<String>) -> Self {
-        Self { host: host.into(), since }
+        Self {
+            host: host.into(),
+            since,
+        }
     }
 
     /// Stream Docker events via `docker events --format '{{json .}}'`.
@@ -139,8 +145,12 @@ fn parse_docker_event(line: &str, host: &str) -> Option<(String, Event)> {
 
     let container_id = v["Actor"]["ID"].as_str().unwrap_or("unknown");
     let short_id = &container_id[..container_id.len().min(12)];
-    let name = v["Actor"]["Attributes"]["name"].as_str().unwrap_or(short_id);
-    let image = v["Actor"]["Attributes"]["image"].as_str().unwrap_or("unknown");
+    let name = v["Actor"]["Attributes"]["name"]
+        .as_str()
+        .unwrap_or(short_id);
+    let image = v["Actor"]["Attributes"]["image"]
+        .as_str()
+        .unwrap_or("unknown");
 
     let severity = match action {
         "oom" | "kill" => Severity::High,
@@ -168,9 +178,7 @@ fn parse_docker_event(line: &str, host: &str) -> Option<(String, Event)> {
             "action": action,
         }),
         tags: vec!["container".to_string(), "docker".to_string()],
-        entities: vec![
-            EntityRef::container(name.to_string()),
-        ],
+        entities: vec![EntityRef::container(name.to_string())],
     };
 
     Some((next_since, event))

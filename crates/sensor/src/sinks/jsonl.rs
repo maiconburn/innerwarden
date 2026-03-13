@@ -23,7 +23,12 @@ impl JsonlWriter {
         let data_dir = data_dir.into();
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("failed to create data dir: {}", data_dir.display()))?;
-        Ok(Self { data_dir, write_events, events_writer: None, incidents_writer: None })
+        Ok(Self {
+            data_dir,
+            write_events,
+            events_writer: None,
+            incidents_writer: None,
+        })
     }
 
     pub fn write_event(&mut self, event: &Event) -> Result<()> {
@@ -56,17 +61,28 @@ impl JsonlWriter {
     }
 
     fn events_writer(&mut self, today: NaiveDate) -> Result<&mut DatedWriter> {
-        if self.events_writer.as_ref().map_or(true, |w| w.date != today) {
-            let path = self.data_dir.join(format!("events-{}.jsonl", today.format("%Y-%m-%d")));
+        if self
+            .events_writer
+            .as_ref()
+            .map_or(true, |w| w.date != today)
+        {
+            let path = self
+                .data_dir
+                .join(format!("events-{}.jsonl", today.format("%Y-%m-%d")));
             self.events_writer = Some(DatedWriter::open(path, today)?);
         }
         Ok(self.events_writer.as_mut().unwrap())
     }
 
     fn incidents_writer(&mut self, today: NaiveDate) -> Result<&mut DatedWriter> {
-        if self.incidents_writer.as_ref().map_or(true, |w| w.date != today) {
-            let path =
-                self.data_dir.join(format!("incidents-{}.jsonl", today.format("%Y-%m-%d")));
+        if self
+            .incidents_writer
+            .as_ref()
+            .map_or(true, |w| w.date != today)
+        {
+            let path = self
+                .data_dir
+                .join(format!("incidents-{}.jsonl", today.format("%Y-%m-%d")));
             self.incidents_writer = Some(DatedWriter::open(path, today)?);
         }
         Ok(self.incidents_writer.as_mut().unwrap())
@@ -86,6 +102,9 @@ impl DatedWriter {
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open {}", path.display()))?;
-        Ok(Self { writer: BufWriter::new(file), date })
+        Ok(Self {
+            writer: BufWriter::new(file),
+            date,
+        })
     }
 }

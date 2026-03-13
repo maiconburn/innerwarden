@@ -21,15 +21,23 @@ const CAPTURE_MAX_PACKETS: u64 = 200;
 pub struct MonitorIp;
 
 impl ResponseSkill for MonitorIp {
-    fn id(&self) -> &'static str { "monitor-ip" }
-    fn name(&self) -> &'static str { "Shadow-monitor IP (Premium)" }
+    fn id(&self) -> &'static str {
+        "monitor-ip"
+    }
+    fn name(&self) -> &'static str {
+        "Shadow-monitor IP (Premium)"
+    }
     fn description(&self) -> &'static str {
         "Captures bounded traffic for the target IP without blocking it, writing a .pcap \
          and metadata sidecar for later analysis. Useful to gather evidence before blocking. \
          [PREMIUM] Requires tcpdump privileges."
     }
-    fn tier(&self) -> SkillTier { SkillTier::Premium }
-    fn applicable_to(&self) -> &'static [&'static str] { &[] }
+    fn tier(&self) -> SkillTier {
+        SkillTier::Premium
+    }
+    fn applicable_to(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     fn execute<'a>(
         &'a self,
@@ -117,14 +125,9 @@ impl ResponseSkill for MonitorIp {
                     // timeout returns 124 when duration is reached; in this use-case
                     // this is still a valid bounded capture.
                     if out.status.success() || status == 124 {
-                        if let Err(e) = write_metadata(
-                            &meta_path,
-                            ip,
-                            ctx,
-                            &pcap_path,
-                            status,
-                            &stderr,
-                        ) {
+                        if let Err(e) =
+                            write_metadata(&meta_path, ip, ctx, &pcap_path, status, &stderr)
+                        {
                             return SkillResult {
                                 success: false,
                                 message: format!(
@@ -246,8 +249,15 @@ mod tests {
         let meta_path = dir.path().join("meta.txt");
         let pcap_path = dir.path().join("sample.pcap");
         let ctx = ctx_with_ip(Some("1.2.3.4"));
-        write_metadata(&meta_path, "1.2.3.4".parse().unwrap(), &ctx, &pcap_path, 0, "ok")
-            .unwrap();
+        write_metadata(
+            &meta_path,
+            "1.2.3.4".parse().unwrap(),
+            &ctx,
+            &pcap_path,
+            0,
+            "ok",
+        )
+        .unwrap();
         let content = std::fs::read_to_string(meta_path).unwrap();
         assert!(content.contains("incident_id=incident-1"));
         assert!(content.contains("target_ip=1.2.3.4"));

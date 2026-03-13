@@ -264,9 +264,7 @@ mod tests {
         let snap = state.snapshot("incident_tick");
         assert_eq!(snap.events_by_collector.get("auth.log").copied(), Some(1));
         assert_eq!(
-            snap.incidents_by_detector
-                .get("ssh_bruteforce")
-                .copied(),
+            snap.incidents_by_detector.get("ssh_bruteforce").copied(),
             Some(1)
         );
         assert_eq!(snap.gate_pass_count, 1);
@@ -275,7 +273,10 @@ mod tests {
         assert_eq!(snap.avg_decision_latency_ms, 120.0);
         assert_eq!(snap.dry_run_execution_count, 1);
         assert_eq!(snap.real_execution_count, 0);
-        assert_eq!(snap.errors_by_component.get("ai_provider").copied(), Some(1));
+        assert_eq!(
+            snap.errors_by_component.get("ai_provider").copied(),
+            Some(1)
+        );
         assert_eq!(snap.decisions_by_action.get("block_ip").copied(), Some(1));
     }
 

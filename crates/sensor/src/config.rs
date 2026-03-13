@@ -47,7 +47,10 @@ pub struct JournaldConfig {
 
 impl Default for JournaldConfig {
     fn default() -> Self {
-        Self { enabled: false, units: default_journald_units() }
+        Self {
+            enabled: false,
+            units: default_journald_units(),
+        }
     }
 }
 
@@ -75,7 +78,11 @@ pub struct IntegrityConfig {
 
 impl Default for IntegrityConfig {
     fn default() -> Self {
-        Self { enabled: false, paths: vec![], poll_seconds: default_poll_seconds() }
+        Self {
+            enabled: false,
+            paths: vec![],
+            poll_seconds: default_poll_seconds(),
+        }
     }
 }
 
@@ -89,7 +96,10 @@ pub struct AuthLogConfig {
 
 impl Default for AuthLogConfig {
     fn default() -> Self {
-        Self { enabled: true, path: default_auth_log_path() }
+        Self {
+            enabled: true,
+            path: default_auth_log_path(),
+        }
     }
 }
 
@@ -115,7 +125,11 @@ pub struct SshBruteforceConfig {
 
 impl Default for SshBruteforceConfig {
     fn default() -> Self {
-        Self { enabled: true, threshold: default_threshold(), window_seconds: default_window_seconds() }
+        Self {
+            enabled: true,
+            threshold: default_threshold(),
+            window_seconds: default_window_seconds(),
+        }
     }
 }
 

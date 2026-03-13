@@ -8,14 +8,20 @@ use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 pub struct BlockIpNftables;
 
 impl ResponseSkill for BlockIpNftables {
-    fn id(&self) -> &'static str { "block-ip-nftables" }
-    fn name(&self) -> &'static str { "Block IP via nftables" }
+    fn id(&self) -> &'static str {
+        "block-ip-nftables"
+    }
+    fn name(&self) -> &'static str {
+        "Block IP via nftables"
+    }
     fn description(&self) -> &'static str {
         "Adds the attacking IP to a named blacklist set in nftables. \
          Requires an 'inet filter blacklist' set pre-configured in nftables.conf. \
          Requires: sudo nft add element ... (configured in /etc/sudoers.d/innerwarden)."
     }
-    fn tier(&self) -> SkillTier { SkillTier::Open }
+    fn tier(&self) -> SkillTier {
+        SkillTier::Open
+    }
     fn applicable_to(&self) -> &'static [&'static str] {
         &["ssh_bruteforce", "port_scan", "credential_stuffing"]
     }
@@ -37,7 +43,10 @@ impl ResponseSkill for BlockIpNftables {
             };
 
             if dry_run {
-                info!(ip, "DRY RUN: would execute: sudo nft add element inet filter blacklist {{ {ip} }}");
+                info!(
+                    ip,
+                    "DRY RUN: would execute: sudo nft add element inet filter blacklist {{ {ip} }}"
+                );
                 return SkillResult {
                     success: true,
                     message: format!("DRY RUN: would block {ip} via nftables"),
@@ -46,7 +55,15 @@ impl ResponseSkill for BlockIpNftables {
 
             let element = format!("{{ {ip} }}");
             let output = tokio::process::Command::new("sudo")
-                .args(["nft", "add", "element", "inet", "filter", "blacklist", &element])
+                .args([
+                    "nft",
+                    "add",
+                    "element",
+                    "inet",
+                    "filter",
+                    "blacklist",
+                    &element,
+                ])
                 .output()
                 .await;
 

@@ -43,7 +43,10 @@ pub struct NarrativeConfig {
 
 impl Default for NarrativeConfig {
     fn default() -> Self {
-        Self { enabled: true, keep_days: default_keep_days() }
+        Self {
+            enabled: true,
+            keep_days: default_keep_days(),
+        }
     }
 }
 
@@ -222,7 +225,7 @@ impl Default for TelemetryConfig {
 pub struct HoneypotConfig {
     /// Honeypot mode:
     /// - `demo`: synthetic marker only (safe default)
-    /// - `listener`: starts bounded decoy TCP listener
+    /// - `listener`: starts bounded real decoys (ssh/http) with optional redirect
     #[serde(default = "default_honeypot_mode")]
     pub mode: String,
 
@@ -237,6 +240,55 @@ pub struct HoneypotConfig {
     /// Listener lifetime in seconds used in listener mode
     #[serde(default = "default_honeypot_duration_secs")]
     pub duration_secs: u64,
+
+    /// Enabled decoy services in listener mode.
+    /// Supported: `ssh`, `http`.
+    #[serde(default = "default_honeypot_services")]
+    pub services: Vec<String>,
+
+    /// HTTP decoy port used when `http` service is enabled.
+    #[serde(default = "default_honeypot_http_port")]
+    pub http_port: u16,
+
+    /// Accept only connections from the action target IP.
+    #[serde(default = "default_true")]
+    pub strict_target_only: bool,
+
+    /// Allow binding listener on non-loopback addresses.
+    /// Default false for safer isolation.
+    #[serde(default)]
+    pub allow_public_listener: bool,
+
+    /// Hard cap of accepted honeypot connections per session.
+    #[serde(default = "default_honeypot_max_connections")]
+    pub max_connections: usize,
+
+    /// Max inbound payload bytes captured per connection.
+    #[serde(default = "default_honeypot_max_payload_bytes")]
+    pub max_payload_bytes: usize,
+
+    #[serde(default)]
+    pub redirect: HoneypotRedirectConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HoneypotRedirectConfig {
+    /// Enable selective redirection rules for target IP.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Redirect backend (`iptables` for now).
+    #[serde(default = "default_honeypot_redirect_backend")]
+    pub backend: String,
+}
+
+impl Default for HoneypotRedirectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: default_honeypot_redirect_backend(),
+        }
+    }
 }
 
 impl Default for HoneypotConfig {
@@ -246,6 +298,13 @@ impl Default for HoneypotConfig {
             bind_addr: default_honeypot_bind_addr(),
             port: default_honeypot_port(),
             duration_secs: default_honeypot_duration_secs(),
+            services: default_honeypot_services(),
+            http_port: default_honeypot_http_port(),
+            strict_target_only: default_true(),
+            allow_public_listener: false,
+            max_connections: default_honeypot_max_connections(),
+            max_payload_bytes: default_honeypot_max_payload_bytes(),
+            redirect: HoneypotRedirectConfig::default(),
         }
     }
 }
@@ -374,6 +433,26 @@ fn default_honeypot_duration_secs() -> u64 {
     300
 }
 
+fn default_honeypot_services() -> Vec<String> {
+    vec!["ssh".to_string()]
+}
+
+fn default_honeypot_http_port() -> u16 {
+    8080
+}
+
+fn default_honeypot_max_connections() -> usize {
+    64
+}
+
+fn default_honeypot_max_payload_bytes() -> usize {
+    512
+}
+
+fn default_honeypot_redirect_backend() -> String {
+    "iptables".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -400,6 +479,14 @@ mod tests {
         assert_eq!(cfg.honeypot.bind_addr, "127.0.0.1");
         assert_eq!(cfg.honeypot.port, 2222);
         assert_eq!(cfg.honeypot.duration_secs, 300);
+        assert_eq!(cfg.honeypot.services, vec!["ssh".to_string()]);
+        assert_eq!(cfg.honeypot.http_port, 8080);
+        assert!(cfg.honeypot.strict_target_only);
+        assert!(!cfg.honeypot.allow_public_listener);
+        assert_eq!(cfg.honeypot.max_connections, 64);
+        assert_eq!(cfg.honeypot.max_payload_bytes, 512);
+        assert!(!cfg.honeypot.redirect.enabled);
+        assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
 
     #[test]
@@ -431,6 +518,16 @@ mode = "listener"
 bind_addr = "0.0.0.0"
 port = 2223
 duration_secs = 120
+services = ["ssh", "http"]
+http_port = 8088
+strict_target_only = true
+allow_public_listener = true
+max_connections = 10
+max_payload_bytes = 256
+
+[honeypot.redirect]
+enabled = true
+backend = "iptables"
 "#
         )
         .unwrap();
@@ -450,6 +547,17 @@ duration_secs = 120
         assert_eq!(cfg.honeypot.bind_addr, "0.0.0.0");
         assert_eq!(cfg.honeypot.port, 2223);
         assert_eq!(cfg.honeypot.duration_secs, 120);
+        assert_eq!(
+            cfg.honeypot.services,
+            vec!["ssh".to_string(), "http".to_string()]
+        );
+        assert_eq!(cfg.honeypot.http_port, 8088);
+        assert!(cfg.honeypot.strict_target_only);
+        assert!(cfg.honeypot.allow_public_listener);
+        assert_eq!(cfg.honeypot.max_connections, 10);
+        assert_eq!(cfg.honeypot.max_payload_bytes, 256);
+        assert!(cfg.honeypot.redirect.enabled);
+        assert_eq!(cfg.honeypot.redirect.backend, "iptables");
     }
 
     #[test]

@@ -21,14 +21,22 @@ pub struct AuthLogCollector {
 
 impl AuthLogCollector {
     pub fn new(path: impl Into<PathBuf>, host: impl Into<String>, offset: u64) -> Self {
-        Self { path: path.into(), host: host.into(), offset }
+        Self {
+            path: path.into(),
+            host: host.into(),
+            offset,
+        }
     }
 
     /// Tail the log file, polling every second.
     /// Uses spawn_blocking for file I/O so the tokio executor stays free.
     /// `shared_offset` is updated after every successful poll so callers
     /// can read the latest position at any time (e.g. on shutdown).
-    pub async fn run(mut self, tx: mpsc::Sender<Event>, shared_offset: Arc<AtomicU64>) -> Result<()> {
+    pub async fn run(
+        mut self,
+        tx: mpsc::Sender<Event>,
+        shared_offset: Arc<AtomicU64>,
+    ) -> Result<()> {
         info!(path = %self.path.display(), offset = self.offset, "auth_log collector starting");
 
         loop {
@@ -123,7 +131,8 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
         let user = word_after(msg, "for invalid user")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host, source,
+            host,
+            source,
             "ssh.login_failed",
             Severity::Info,
             format!("Failed login — invalid user {user} from {ip}"),
@@ -135,7 +144,8 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
         let user = word_after(msg, "for")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host, source,
+            host,
+            source,
             "ssh.login_failed",
             Severity::Info,
             format!("Failed login for {user} from {ip}"),
@@ -147,7 +157,8 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
         let user = word_after(msg, "Invalid user")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host, source,
+            host,
+            source,
             "ssh.login_failed",
             Severity::Info,
             format!("Invalid user {user} from {ip}"),
@@ -155,12 +166,18 @@ pub fn parse_sshd_message(msg: &str, host: &str, source: &str) -> Option<Event> 
             vec!["auth", "ssh"],
             vec![EntityRef::ip(ip), EntityRef::user(user)],
         ))
-    } else if msg.starts_with("Accepted password for") || msg.starts_with("Accepted publickey for") {
-        let method = if msg.starts_with("Accepted password") { "password" } else { "publickey" };
+    } else if msg.starts_with("Accepted password for") || msg.starts_with("Accepted publickey for")
+    {
+        let method = if msg.starts_with("Accepted password") {
+            "password"
+        } else {
+            "publickey"
+        };
         let user = word_after(msg, "for")?;
         let ip = word_after(msg, "from")?;
         Some(make_event(
-            host, source,
+            host,
+            source,
             "ssh.login_success",
             Severity::Info,
             format!("Login accepted for {user} from {ip} via {method}"),
@@ -222,7 +239,8 @@ mod tests {
 
     #[test]
     fn parse_failed_password() {
-        let line = "Mar 12 06:00:01 host sshd[123]: Failed password for root from 2.3.4.5 port 22 ssh2";
+        let line =
+            "Mar 12 06:00:01 host sshd[123]: Failed password for root from 2.3.4.5 port 22 ssh2";
         let ev = parse_sshd_line(line, "host").unwrap();
         assert_eq!(ev.kind, "ssh.login_failed");
         assert_eq!(ev.details["user"], "root");

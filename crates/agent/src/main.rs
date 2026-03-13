@@ -1,10 +1,10 @@
 mod ai;
-mod correlation;
 mod config;
+mod correlation;
 mod decisions;
 mod narrative;
-mod report;
 mod reader;
+mod report;
 mod skills;
 mod telemetry;
 mod webhook;
@@ -19,7 +19,11 @@ use clap::Parser;
 use tracing::{debug, info, warn};
 
 #[derive(Parser)]
-#[command(name = "innerwarden-agent", version, about = "Interpretive layer — reads sensor JSONL, generates narratives, and auto-responds to incidents")]
+#[command(
+    name = "innerwarden-agent",
+    version,
+    about = "Interpretive layer — reads sensor JSONL, generates narratives, and auto-responds to incidents"
+)]
 struct Cli {
     /// Path to the sensor data directory (where events-*.jsonl and incidents-*.jsonl live)
     #[arg(long, default_value = "/var/lib/innerwarden")]
@@ -113,7 +117,10 @@ async fn main() -> Result<()> {
         telemetry = cfg.telemetry.enabled,
         honeypot_mode = %cfg.honeypot.mode,
         honeypot_bind_addr = %cfg.honeypot.bind_addr,
-        honeypot_port = cfg.honeypot.port,
+        honeypot_services = ?cfg.honeypot.services,
+        honeypot_ssh_port = cfg.honeypot.port,
+        honeypot_http_port = cfg.honeypot.http_port,
+        honeypot_redirect = cfg.honeypot.redirect.enabled,
         responder = cfg.responder.enabled,
         dry_run = cfg.responder.dry_run,
         "innerwarden-agent v{} starting",
@@ -171,7 +178,8 @@ async fn main() -> Result<()> {
 
     if cli.once {
         let handled = process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
-        let new_events = process_narrative_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await?;
+        let new_events =
+            process_narrative_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await?;
         if let Some(w) = &mut state.decision_writer {
             w.flush();
         }
@@ -190,8 +198,7 @@ async fn main() -> Result<()> {
 
         let mut narrative_ticker =
             tokio::time::interval(tokio::time::Duration::from_secs(cli.interval));
-        let mut incident_ticker =
-            tokio::time::interval(tokio::time::Duration::from_secs(ai_poll));
+        let mut incident_ticker = tokio::time::interval(tokio::time::Duration::from_secs(ai_poll));
 
         // SIGTERM / SIGINT
         #[cfg(unix)]
@@ -387,12 +394,9 @@ async fn process_incidents(
         // 1. Webhook — fires for ALL incidents above configured threshold, regardless of AI gate
         if let Some(min_rank) = webhook_min_rank {
             if webhook::severity_rank(&incident.severity) >= min_rank {
-                if let Err(e) = webhook::send_incident(
-                    &cfg.webhook.url,
-                    cfg.webhook.timeout_secs,
-                    incident,
-                )
-                .await
+                if let Err(e) =
+                    webhook::send_incident(&cfg.webhook.url, cfg.webhook.timeout_secs, incident)
+                        .await
                 {
                     state.telemetry.observe_error("webhook");
                     warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
@@ -444,14 +448,12 @@ async fn process_incidents(
         let recent: Vec<&innerwarden_core::event::Event> = all_events
             .iter()
             .filter(|ev| {
-                ev.entities
-                    .iter()
-                    .any(|e| {
-                        (e.r#type == innerwarden_core::entities::EntityType::Ip
-                            && entity_ips.contains(e.value.as_str()))
-                            || (e.r#type == innerwarden_core::entities::EntityType::User
-                                && entity_users.contains(e.value.as_str()))
-                    })
+                ev.entities.iter().any(|e| {
+                    (e.r#type == innerwarden_core::entities::EntityType::Ip
+                        && entity_ips.contains(e.value.as_str()))
+                        || (e.r#type == innerwarden_core::entities::EntityType::User
+                            && entity_users.contains(e.value.as_str()))
+                })
             })
             .rev()
             .take(cfg.ai.context_events)
@@ -490,7 +492,9 @@ async fn process_incidents(
             }
         };
         let latency_ms = decision_start.elapsed().as_millis();
-        state.telemetry.observe_ai_decision(&decision.action, latency_ms);
+        state
+            .telemetry
+            .observe_ai_decision(&decision.action, latency_ms);
 
         // Update the in-memory blocked_set immediately after a BlockIp decision.
         // This prevents a second incident from the same IP (arriving in the same 2s tick)
@@ -514,7 +518,9 @@ async fn process_incidents(
             && decision.confidence >= cfg.ai.confidence_threshold
             && cfg.responder.enabled
         {
-            state.telemetry.observe_execution_path(cfg.responder.dry_run);
+            state
+                .telemetry
+                .observe_execution_path(cfg.responder.dry_run);
             execute_decision(&decision, incident, data_dir, cfg, state).await
         } else if !cfg.responder.enabled {
             "skipped: responder disabled".to_string()
@@ -588,10 +594,11 @@ async fn execute_decision(
                 }
             };
 
-            let skill = state
-                .skill_registry
-                .get(&effective_id)
-                .or_else(|| state.skill_registry.block_skill_for_backend(&cfg.responder.block_backend));
+            let skill = state.skill_registry.get(&effective_id).or_else(|| {
+                state
+                    .skill_registry
+                    .block_skill_for_backend(&cfg.responder.block_backend)
+            });
 
             match skill {
                 Some(skill) => {
@@ -695,10 +702,7 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
     let normalized_mode = match mode.as_str() {
         "demo" | "listener" => mode,
         other => {
-            warn!(
-                mode = other,
-                "unknown honeypot mode; falling back to demo"
-            );
+            warn!(mode = other, "unknown honeypot mode; falling back to demo");
             "demo".to_string()
         }
     };
@@ -706,7 +710,19 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
         mode: normalized_mode,
         bind_addr: cfg.honeypot.bind_addr.clone(),
         port: cfg.honeypot.port,
+        http_port: cfg.honeypot.http_port,
         duration_secs: cfg.honeypot.duration_secs,
+        services: if cfg.honeypot.services.is_empty() {
+            vec!["ssh".to_string()]
+        } else {
+            cfg.honeypot.services.clone()
+        },
+        strict_target_only: cfg.honeypot.strict_target_only,
+        allow_public_listener: cfg.honeypot.allow_public_listener,
+        max_connections: cfg.honeypot.max_connections,
+        max_payload_bytes: cfg.honeypot.max_payload_bytes,
+        redirect_enabled: cfg.honeypot.redirect.enabled,
+        redirect_backend: cfg.honeypot.redirect.backend.clone(),
     }
 }
 
@@ -727,12 +743,30 @@ async fn append_honeypot_marker_event(
 
     let is_listener = runtime.mode == "listener" && !dry_run;
     let (source, kind, summary) = if is_listener {
+        let mut endpoints = Vec::new();
+        if runtime
+            .services
+            .iter()
+            .any(|svc| svc.eq_ignore_ascii_case("ssh"))
+        {
+            endpoints.push(format!("ssh:{}:{}", runtime.bind_addr, runtime.port));
+        }
+        if runtime
+            .services
+            .iter()
+            .any(|svc| svc.eq_ignore_ascii_case("http"))
+        {
+            endpoints.push(format!("http:{}:{}", runtime.bind_addr, runtime.http_port));
+        }
+        if endpoints.is_empty() {
+            endpoints.push(format!("ssh:{}:{}", runtime.bind_addr, runtime.port));
+        }
         (
             "agent.honeypot_listener",
             "honeypot.listener_session_started",
             format!(
-                "Honeypot listener session started for attacker {ip} at {}:{}",
-                runtime.bind_addr, runtime.port
+                "Honeypot listener session started for attacker {ip} at {}",
+                endpoints.join(", ")
             ),
         )
     } else {
@@ -760,10 +794,17 @@ async fn append_honeypot_marker_event(
             "incident_id": incident.incident_id,
             "dry_run": dry_run,
             "listener_bind_addr": runtime.bind_addr,
-            "listener_port": runtime.port,
+            "listener_services": runtime.services.clone(),
+            "listener_ssh_port": runtime.port,
+            "listener_http_port": runtime.http_port,
             "listener_duration_secs": runtime.duration_secs,
+            "listener_strict_target_only": runtime.strict_target_only,
+            "listener_max_connections": runtime.max_connections,
+            "listener_max_payload_bytes": runtime.max_payload_bytes,
+            "listener_redirect_enabled": runtime.redirect_enabled,
+            "listener_redirect_backend": runtime.redirect_backend,
             "note": if is_listener {
-                "Minimal real listener mode. Dedicated full honeypot rebuild remains planned."
+                "Real honeypot listener mode active with bounded decoys and local forensics."
             } else {
                 "Demo-only marker; no real honeypot infrastructure is deployed in this mode."
             }
@@ -771,8 +812,16 @@ async fn append_honeypot_marker_event(
         tags: vec![
             "honeypot".to_string(),
             "decoy".to_string(),
-            if is_listener { "listener".to_string() } else { "demo".to_string() },
-            if is_listener { "foundation".to_string() } else { "simulation".to_string() },
+            if is_listener {
+                "listener".to_string()
+            } else {
+                "demo".to_string()
+            },
+            if is_listener {
+                "real_mode".to_string()
+            } else {
+                "simulation".to_string()
+            },
         ],
         entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
     };
@@ -813,12 +862,14 @@ async fn process_narrative_tick(
     let events_path = data_dir.join(format!("events-{today}.jsonl"));
 
     // Read new events and advance the events cursor
-    let new_events =
-        reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, cursor.events_offset(&today))
-            .map_err(|e| {
-                state.telemetry.observe_error("event_reader");
-                e
-            })?;
+    let new_events = reader::read_new_entries::<innerwarden_core::event::Event>(
+        &events_path,
+        cursor.events_offset(&today),
+    )
+    .map_err(|e| {
+        state.telemetry.observe_error("event_reader");
+        e
+    })?;
 
     let events_count = new_events.entries.len();
     state.telemetry.observe_events(&new_events.entries);
@@ -828,19 +879,19 @@ async fn process_narrative_tick(
     if cfg.narrative.enabled && events_count > 0 {
         let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
         // Always read from offset 0 — summary covers the full day, not just new entries
-        let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
-            .map_err(|e| {
-                state.telemetry.observe_error("narrative_reader");
-                e
-            })?;
-        let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
-            &incidents_path,
-            0,
-        )
-        .map_err(|e| {
-            state.telemetry.observe_error("narrative_reader");
-            e
-        })?;
+        let all_events =
+            reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0).map_err(
+                |e| {
+                    state.telemetry.observe_error("narrative_reader");
+                    e
+                },
+            )?;
+        let all_incidents =
+            reader::read_new_entries::<innerwarden_core::incident::Incident>(&incidents_path, 0)
+                .map_err(|e| {
+                    state.telemetry.observe_error("narrative_reader");
+                    e
+                })?;
 
         let host = all_events
             .entries
@@ -888,8 +939,8 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     };
     use tempfile::TempDir;
 
@@ -1060,10 +1111,22 @@ mod tests {
         }
         let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
         let content = std::fs::read_to_string(&decisions_path).unwrap();
-        assert!(content.contains(attacker_ip), "decision must record the target IP");
-        assert!(content.contains("block_ip"), "decision must record action type");
-        assert!(content.contains("\"dry_run\":true"), "dry_run must be flagged in audit trail");
-        assert!(content.contains("mock"), "AI provider name must appear in audit trail");
+        assert!(
+            content.contains(attacker_ip),
+            "decision must record the target IP"
+        );
+        assert!(
+            content.contains("block_ip"),
+            "decision must record action type"
+        );
+        assert!(
+            content.contains("\"dry_run\":true"),
+            "dry_run must be flagged in audit trail"
+        );
+        assert!(
+            content.contains("mock"),
+            "AI provider name must appear in audit trail"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -1214,7 +1277,11 @@ mod tests {
         }
         let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
         let content = std::fs::read_to_string(&decisions_path).unwrap();
-        assert_eq!(content.lines().count(), 1, "only one decision should be recorded");
+        assert_eq!(
+            content.lines().count(),
+            1,
+            "only one decision should be recorded"
+        );
     }
 
     #[tokio::test]

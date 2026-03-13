@@ -120,8 +120,12 @@ mod tests {
         let mut det = PortScanDetector::new("host", 4, 60);
         let base = Utc::now();
         assert!(det.process(&blocked_event("1.2.3.4", 22, base)).is_none());
-        assert!(det.process(&blocked_event("1.2.3.4", 80, base + Duration::seconds(1))).is_none());
-        assert!(det.process(&blocked_event("1.2.3.4", 443, base + Duration::seconds(2))).is_none());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 80, base + Duration::seconds(1)))
+            .is_none());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 443, base + Duration::seconds(2)))
+            .is_none());
     }
 
     #[test]
@@ -144,8 +148,12 @@ mod tests {
         let mut det = PortScanDetector::new("host", 3, 60);
         let base = Utc::now();
         assert!(det.process(&blocked_event("1.2.3.4", 22, base)).is_none());
-        assert!(det.process(&blocked_event("1.2.3.4", 22, base + Duration::seconds(1))).is_none());
-        assert!(det.process(&blocked_event("1.2.3.4", 22, base + Duration::seconds(2))).is_none());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 22, base + Duration::seconds(1)))
+            .is_none());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 22, base + Duration::seconds(2)))
+            .is_none());
     }
 
     #[test]
@@ -154,9 +162,13 @@ mod tests {
         let base = Utc::now();
         det.process(&blocked_event("1.2.3.4", 22, base));
         det.process(&blocked_event("1.2.3.4", 80, base + Duration::seconds(1)));
-        assert!(det.process(&blocked_event("1.2.3.4", 443, base + Duration::seconds(2))).is_some());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 443, base + Duration::seconds(2)))
+            .is_some());
         // Above threshold still, but should be suppressed in same window.
-        assert!(det.process(&blocked_event("1.2.3.4", 8080, base + Duration::seconds(3))).is_none());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 8080, base + Duration::seconds(3)))
+            .is_none());
     }
 
     #[test]
@@ -166,7 +178,11 @@ mod tests {
         det.process(&blocked_event("1.2.3.4", 22, base - Duration::seconds(20)));
         det.process(&blocked_event("1.2.3.4", 80, base - Duration::seconds(15)));
         assert!(det.process(&blocked_event("1.2.3.4", 443, base)).is_none());
-        assert!(det.process(&blocked_event("1.2.3.4", 8080, base + Duration::seconds(1))).is_none());
-        assert!(det.process(&blocked_event("1.2.3.4", 3306, base + Duration::seconds(2))).is_some());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 8080, base + Duration::seconds(1)))
+            .is_none());
+        assert!(det
+            .process(&blocked_event("1.2.3.4", 3306, base + Duration::seconds(2)))
+            .is_some());
     }
 }

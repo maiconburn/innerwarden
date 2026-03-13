@@ -32,7 +32,7 @@ pub enum AiAction {
     /// Trigger honeypot response.
     /// Behavior depends on runtime mode:
     /// - `demo`: synthetic marker
-    /// - `listener`: bounded decoy listener foundation
+    /// - `listener`: bounded multi-service decoy listeners with optional redirect
     Honeypot { ip: String },
 
     /// Send a confirmation request to the operator webhook before acting.
@@ -68,7 +68,9 @@ impl AiDecision {
     /// Convenience constructor for a no-op decision.
     pub fn ignore(reason: impl Into<String>) -> Self {
         Self {
-            action: AiAction::Ignore { reason: reason.into() },
+            action: AiAction::Ignore {
+                reason: reason.into(),
+            },
             confidence: 1.0,
             auto_execute: false,
             reason: String::new(),
@@ -150,10 +152,7 @@ pub fn should_invoke_ai(incident: &Incident, already_blocked: &HashSet<String>) 
         // should not be auto-blocked without deeper investigation
         if let Ok(addr) = ip_str.parse::<IpAddr>() {
             if is_private_or_loopback(addr) {
-                info!(
-                    ip = ip_str,
-                    "skipping AI analysis for private/loopback IP"
-                );
+                info!(ip = ip_str, "skipping AI analysis for private/loopback IP");
                 return false;
             }
         }

@@ -12,16 +12,16 @@ use tracing::warn;
 
 /// Read new entries from a JSONL file starting at `offset` bytes.
 /// Returns the parsed entries and the new byte offset (end of file).
-pub fn read_new_entries<T: DeserializeOwned>(
-    path: &Path,
-    offset: u64,
-) -> Result<ReadResult<T>> {
+pub fn read_new_entries<T: DeserializeOwned>(path: &Path, offset: u64) -> Result<ReadResult<T>> {
     if !path.exists() {
-        return Ok(ReadResult { entries: Vec::new(), new_offset: 0 });
+        return Ok(ReadResult {
+            entries: Vec::new(),
+            new_offset: 0,
+        });
     }
 
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
 
     let file_len = file.metadata()?.len();
 
@@ -60,7 +60,10 @@ pub fn read_new_entries<T: DeserializeOwned>(
         }
     }
 
-    Ok(ReadResult { entries, new_offset: current_offset })
+    Ok(ReadResult {
+        entries,
+        new_offset: current_offset,
+    })
 }
 
 pub struct ReadResult<T> {
@@ -173,7 +176,8 @@ mod tests {
         f.flush().unwrap();
 
         // Read from saved offset — should only get the new one
-        let r2 = read_new_entries::<innerwarden_core::event::Event>(f.path(), r1.new_offset).unwrap();
+        let r2 =
+            read_new_entries::<innerwarden_core::event::Event>(f.path(), r1.new_offset).unwrap();
         assert_eq!(r2.entries.len(), 1);
         assert_eq!(r2.entries[0].summary, "second");
     }
@@ -183,7 +187,8 @@ mod tests {
         let result = read_new_entries::<innerwarden_core::event::Event>(
             Path::new("/nonexistent/file.jsonl"),
             0,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result.entries.is_empty());
         assert_eq!(result.new_offset, 0);
     }

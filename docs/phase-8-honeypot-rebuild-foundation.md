@@ -32,8 +32,7 @@ Those belong to the full rebuild phase.
 
 ## Next step (Phase 8.2)
 
-Implement production-grade real honeypot architecture with:
-- selective redirection
-- hardened isolation
-- richer evidence collection
-- explicit rollback and operational safeguards
+Implemented in `docs/phase-8-honeypot-real-rebuild.md`:
+- selective redirection (optional, target-IP scoped)
+- stronger isolation guardrails (loopback default, strict target filters)
+- richer evidence collection (`.json` + `.jsonl` artifacts)

@@ -193,6 +193,22 @@ context_events = 20
 confidence_threshold = 1.01
 incident_poll_secs = 2
 
+[honeypot]
+mode = "demo"
+bind_addr = "127.0.0.1"
+port = 2222
+http_port = 8080
+duration_secs = 300
+services = ["ssh"]
+strict_target_only = true
+allow_public_listener = false
+max_connections = 64
+max_payload_bytes = 512
+
+[honeypot.redirect]
+enabled = false
+backend = "iptables"
+
 [responder]
 enabled = false
 dry_run = true

@@ -35,8 +35,18 @@ enabled = true
 [honeypot]
 mode = "demo"
 bind_addr = "127.0.0.1"
-port = 2222
+port = 2222                  # ssh decoy port (listener mode)
+http_port = 8080             # http decoy port (listener mode)
 duration_secs = 300
+services = ["ssh"]           # ["ssh", "http"] for multi-service decoys
+strict_target_only = true
+allow_public_listener = false
+max_connections = 64
+max_payload_bytes = 512
+
+[honeypot.redirect]
+enabled = false
+backend = "iptables"
 
 [responder]
 enabled = true

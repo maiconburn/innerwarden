@@ -45,10 +45,26 @@ pub struct HoneypotRuntimeConfig {
     pub mode: String,
     /// Listener bind address when mode = `listener`
     pub bind_addr: String,
-    /// Listener port when mode = `listener`
+    /// SSH decoy listener port when mode = `listener`
     pub port: u16,
+    /// HTTP decoy listener port when mode = `listener`
+    pub http_port: u16,
     /// Listener lifetime in seconds when mode = `listener`
     pub duration_secs: u64,
+    /// Enabled decoy services. Supported: `ssh`, `http`.
+    pub services: Vec<String>,
+    /// Accept only the target IP while listener session is active.
+    pub strict_target_only: bool,
+    /// Allow non-loopback bind addresses.
+    pub allow_public_listener: bool,
+    /// Hard cap of accepted connections per service listener.
+    pub max_connections: usize,
+    /// Max payload bytes captured per connection.
+    pub max_payload_bytes: usize,
+    /// Optional selective redirection.
+    pub redirect_enabled: bool,
+    /// Redirect backend identifier.
+    pub redirect_backend: String,
 }
 
 impl Default for HoneypotRuntimeConfig {
@@ -57,7 +73,15 @@ impl Default for HoneypotRuntimeConfig {
             mode: "demo".to_string(),
             bind_addr: "127.0.0.1".to_string(),
             port: 2222,
+            http_port: 8080,
             duration_secs: 300,
+            services: vec!["ssh".to_string()],
+            strict_target_only: true,
+            allow_public_listener: false,
+            max_connections: 64,
+            max_payload_bytes: 512,
+            redirect_enabled: false,
+            redirect_backend: "iptables".to_string(),
         }
     }
 }
@@ -165,7 +189,10 @@ impl SkillRegistry {
 
     /// Look up a skill by ID.
     pub fn get(&self, id: &str) -> Option<&dyn ResponseSkill> {
-        self.skills.iter().find(|s| s.id() == id).map(|s| s.as_ref())
+        self.skills
+            .iter()
+            .find(|s| s.id() == id)
+            .map(|s| s.as_ref())
     }
 
     /// Convenience: find the best block skill for the given backend.
@@ -227,7 +254,10 @@ impl Blocklist {
                 }
             }
         }
-        info!(count = list.blocked.len(), "blocklist loaded from ufw status");
+        info!(
+            count = list.blocked.len(),
+            "blocklist loaded from ufw status"
+        );
         list
     }
 }
@@ -263,9 +293,18 @@ mod tests {
     #[test]
     fn block_skill_for_backend_fallback() {
         let reg = SkillRegistry::default_builtin();
-        assert_eq!(reg.block_skill_for_backend("ufw").unwrap().id(), "block-ip-ufw");
-        assert_eq!(reg.block_skill_for_backend("iptables").unwrap().id(), "block-ip-iptables");
-        assert_eq!(reg.block_skill_for_backend("unknown").unwrap().id(), "block-ip-ufw");
+        assert_eq!(
+            reg.block_skill_for_backend("ufw").unwrap().id(),
+            "block-ip-ufw"
+        );
+        assert_eq!(
+            reg.block_skill_for_backend("iptables").unwrap().id(),
+            "block-ip-iptables"
+        );
+        assert_eq!(
+            reg.block_skill_for_backend("unknown").unwrap().id(),
+            "block-ip-ufw"
+        );
     }
 
     #[tokio::test]

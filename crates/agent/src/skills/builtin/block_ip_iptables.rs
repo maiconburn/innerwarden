@@ -8,14 +8,20 @@ use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 pub struct BlockIpIptables;
 
 impl ResponseSkill for BlockIpIptables {
-    fn id(&self) -> &'static str { "block-ip-iptables" }
-    fn name(&self) -> &'static str { "Block IP via iptables" }
+    fn id(&self) -> &'static str {
+        "block-ip-iptables"
+    }
+    fn name(&self) -> &'static str {
+        "Block IP via iptables"
+    }
     fn description(&self) -> &'static str {
         "Blocks the attacking IP by appending a DROP rule to the INPUT chain using iptables. \
          Requires: sudo iptables -A INPUT ... (configured in /etc/sudoers.d/innerwarden). \
          Note: rules are lost on reboot unless persisted with iptables-save."
     }
-    fn tier(&self) -> SkillTier { SkillTier::Open }
+    fn tier(&self) -> SkillTier {
+        SkillTier::Open
+    }
     fn applicable_to(&self) -> &'static [&'static str] {
         &["ssh_bruteforce", "port_scan", "credential_stuffing"]
     }
@@ -46,11 +52,17 @@ impl ResponseSkill for BlockIpIptables {
 
             let output = tokio::process::Command::new("sudo")
                 .args([
-                    "iptables", "-A", "INPUT",
-                    "-s", &ip,
-                    "-j", "DROP",
-                    "-m", "comment",
-                    "--comment", "innerwarden",
+                    "iptables",
+                    "-A",
+                    "INPUT",
+                    "-s",
+                    &ip,
+                    "-j",
+                    "DROP",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    "innerwarden",
                 ])
                 .output()
                 .await;

@@ -56,8 +56,7 @@ impl IntegrityCollector {
             let known = self.known_hashes.clone();
 
             let result =
-                tokio::task::spawn_blocking(move || poll_integrity(&paths, &host, &known))
-                    .await?;
+                tokio::task::spawn_blocking(move || poll_integrity(&paths, &host, &known)).await?;
 
             match result {
                 Ok((events, new_hashes)) => {
@@ -164,7 +163,8 @@ mod tests {
     #[test]
     fn baseline_established_no_event() {
         let f = tmp_with(b"hello");
-        let (events, hashes) = poll_integrity(&[f.path().to_owned()], "host", &HashMap::new()).unwrap();
+        let (events, hashes) =
+            poll_integrity(&[f.path().to_owned()], "host", &HashMap::new()).unwrap();
         assert!(events.is_empty(), "no event on first run");
         assert_eq!(hashes.len(), 1);
     }

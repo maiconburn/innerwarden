@@ -60,11 +60,7 @@ impl SshBruteforceDetector {
         Some(Incident {
             ts: now,
             host: self.host.clone(),
-            incident_id: format!(
-                "ssh_bruteforce:{}:{}",
-                ip,
-                now.format("%Y-%m-%dT%H:%MZ")
-            ),
+            incident_id: format!("ssh_bruteforce:{}:{}", ip, now.format("%Y-%m-%dT%H:%MZ")),
             severity: Severity::High,
             title: format!("Possible SSH brute force from {ip}"),
             summary: format!(
@@ -82,7 +78,11 @@ impl SshBruteforceDetector {
                 "Consider blocking the IP with ufw or fail2ban".to_string(),
                 "Review /var/log/auth.log for the full session".to_string(),
             ],
-            tags: vec!["auth".to_string(), "ssh".to_string(), "bruteforce".to_string()],
+            tags: vec![
+                "auth".to_string(),
+                "ssh".to_string(),
+                "bruteforce".to_string(),
+            ],
             entities: vec![EntityRef::ip(&ip)],
         })
     }
@@ -159,8 +159,12 @@ mod tests {
             det.process(&failed_event("1.2.3.4", base + Duration::seconds(i)));
         }
         // 4th and 5th should not emit another incident
-        assert!(det.process(&failed_event("1.2.3.4", base + Duration::seconds(3))).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", base + Duration::seconds(4))).is_none());
+        assert!(det
+            .process(&failed_event("1.2.3.4", base + Duration::seconds(3)))
+            .is_none());
+        assert!(det
+            .process(&failed_event("1.2.3.4", base + Duration::seconds(4)))
+            .is_none());
     }
 
     #[test]
@@ -183,7 +187,9 @@ mod tests {
         let mut det = SshBruteforceDetector::new("host", 3, 300);
         let base = Utc::now();
         for i in 0..5 {
-            assert!(det.process(&success_event("1.2.3.4", base + Duration::seconds(i))).is_none());
+            assert!(det
+                .process(&success_event("1.2.3.4", base + Duration::seconds(i)))
+                .is_none());
         }
     }
 
@@ -196,7 +202,9 @@ mod tests {
         det.process(&failed_event("1.2.3.4", base - Duration::seconds(15)));
         // 2 new events inside window — total in window = 2, below threshold
         assert!(det.process(&failed_event("1.2.3.4", base)).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", base + Duration::seconds(1))).is_none());
+        assert!(det
+            .process(&failed_event("1.2.3.4", base + Duration::seconds(1)))
+            .is_none());
         // 3rd new event → hits threshold
         let inc = det.process(&failed_event("1.2.3.4", base + Duration::seconds(2)));
         assert!(inc.is_some());

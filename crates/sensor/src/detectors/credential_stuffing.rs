@@ -134,9 +134,19 @@ mod tests {
     fn no_incident_below_threshold() {
         let mut det = CredentialStuffingDetector::new("host", 4, 300);
         let base = Utc::now();
-        assert!(det.process(&failed_event("1.2.3.4", "alice", base)).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", "bob", base + Duration::seconds(1))).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", "carol", base + Duration::seconds(2))).is_none());
+        assert!(det
+            .process(&failed_event("1.2.3.4", "alice", base))
+            .is_none());
+        assert!(det
+            .process(&failed_event("1.2.3.4", "bob", base + Duration::seconds(1)))
+            .is_none());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "carol",
+                base + Duration::seconds(2)
+            ))
+            .is_none());
     }
 
     #[test]
@@ -146,7 +156,11 @@ mod tests {
         det.process(&failed_event("1.2.3.4", "alice", base));
         det.process(&failed_event("1.2.3.4", "bob", base + Duration::seconds(1)));
         let inc = det
-            .process(&failed_event("1.2.3.4", "carol", base + Duration::seconds(2)))
+            .process(&failed_event(
+                "1.2.3.4",
+                "carol",
+                base + Duration::seconds(2),
+            ))
             .expect("incident expected at threshold");
         assert_eq!(inc.severity, Severity::High);
         assert!(inc.incident_id.starts_with("credential_stuffing:1.2.3.4:"));
@@ -157,9 +171,23 @@ mod tests {
     fn repeated_same_user_does_not_raise_unique_count() {
         let mut det = CredentialStuffingDetector::new("host", 3, 300);
         let base = Utc::now();
-        assert!(det.process(&failed_event("1.2.3.4", "root", base)).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", "root", base + Duration::seconds(1))).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", "root", base + Duration::seconds(2))).is_none());
+        assert!(det
+            .process(&failed_event("1.2.3.4", "root", base))
+            .is_none());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "root",
+                base + Duration::seconds(1)
+            ))
+            .is_none());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "root",
+                base + Duration::seconds(2)
+            ))
+            .is_none());
     }
 
     #[test]
@@ -168,28 +196,76 @@ mod tests {
         let base = Utc::now();
         det.process(&failed_event("1.2.3.4", "alice", base));
         det.process(&failed_event("1.2.3.4", "bob", base + Duration::seconds(1)));
-        assert!(det.process(&failed_event("1.2.3.4", "carol", base + Duration::seconds(2))).is_some());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "carol",
+                base + Duration::seconds(2)
+            ))
+            .is_some());
         // Still above threshold but must suppress in the same window.
-        assert!(det.process(&failed_event("1.2.3.4", "dave", base + Duration::seconds(3))).is_none());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "dave",
+                base + Duration::seconds(3)
+            ))
+            .is_none());
     }
 
     #[test]
     fn old_entries_expire_from_window() {
         let mut det = CredentialStuffingDetector::new("host", 3, 10);
         let base = Utc::now();
-        det.process(&failed_event("1.2.3.4", "alice", base - Duration::seconds(20)));
-        det.process(&failed_event("1.2.3.4", "bob", base - Duration::seconds(15)));
-        assert!(det.process(&failed_event("1.2.3.4", "carol", base)).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", "dave", base + Duration::seconds(1))).is_none());
-        assert!(det.process(&failed_event("1.2.3.4", "erin", base + Duration::seconds(2))).is_some());
+        det.process(&failed_event(
+            "1.2.3.4",
+            "alice",
+            base - Duration::seconds(20),
+        ));
+        det.process(&failed_event(
+            "1.2.3.4",
+            "bob",
+            base - Duration::seconds(15),
+        ));
+        assert!(det
+            .process(&failed_event("1.2.3.4", "carol", base))
+            .is_none());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "dave",
+                base + Duration::seconds(1)
+            ))
+            .is_none());
+        assert!(det
+            .process(&failed_event(
+                "1.2.3.4",
+                "erin",
+                base + Duration::seconds(2)
+            ))
+            .is_some());
     }
 
     #[test]
     fn success_events_are_ignored() {
         let mut det = CredentialStuffingDetector::new("host", 3, 300);
         let base = Utc::now();
-        assert!(det.process(&success_event("1.2.3.4", "alice", base)).is_none());
-        assert!(det.process(&success_event("1.2.3.4", "bob", base + Duration::seconds(1))).is_none());
-        assert!(det.process(&success_event("1.2.3.4", "carol", base + Duration::seconds(2))).is_none());
+        assert!(det
+            .process(&success_event("1.2.3.4", "alice", base))
+            .is_none());
+        assert!(det
+            .process(&success_event(
+                "1.2.3.4",
+                "bob",
+                base + Duration::seconds(1)
+            ))
+            .is_none());
+        assert!(det
+            .process(&success_event(
+                "1.2.3.4",
+                "carol",
+                base + Duration::seconds(2)
+            ))
+            .is_none());
     }
 }

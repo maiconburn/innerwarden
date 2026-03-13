@@ -2,7 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use chrono::Utc;
-use innerwarden_core::{entities::EntityRef, event::{Event, Severity}};
+use innerwarden_core::{
+    entities::EntityRef,
+    event::{Event, Severity},
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -17,12 +20,12 @@ pub struct JournaldCollector {
 }
 
 impl JournaldCollector {
-    pub fn new(
-        host: impl Into<String>,
-        units: Vec<String>,
-        cursor: Option<String>,
-    ) -> Self {
-        Self { host: host.into(), units, cursor }
+    pub fn new(host: impl Into<String>, units: Vec<String>, cursor: Option<String>) -> Self {
+        Self {
+            host: host.into(),
+            units,
+            cursor,
+        }
     }
 
     /// Stream journald entries via `journalctl --follow --output=json`.
@@ -34,7 +37,10 @@ impl JournaldCollector {
     ) -> Result<()> {
         // Verify journalctl is available AND the current user can read the journal.
         // Using `-n 0` actually queries the journal (unlike --version which is always ok).
-        let check = Command::new("journalctl").args(["-n", "0", "--output=json"]).output().await;
+        let check = Command::new("journalctl")
+            .args(["-n", "0", "--output=json"])
+            .output()
+            .await;
         match check {
             Err(_) => {
                 warn!("journalctl not found — journald collector disabled");
@@ -263,7 +269,10 @@ mod tests {
 
     #[test]
     fn parses_sshd_failed_from_journald() {
-        let line = journal_line("sshd", "Failed password for invalid user oracle from 1.2.3.4 port 22 ssh2");
+        let line = journal_line(
+            "sshd",
+            "Failed password for invalid user oracle from 1.2.3.4 port 22 ssh2",
+        );
         let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
         assert_eq!(cursor, "test-cursor-abc");
         let ev = ev.expect("should have event");
@@ -275,7 +284,10 @@ mod tests {
 
     #[test]
     fn parses_sshd_accepted_from_journald() {
-        let line = journal_line("sshd", "Accepted publickey for ubuntu from 10.0.0.1 port 54321 ssh2: RSA SHA256:abc");
+        let line = journal_line(
+            "sshd",
+            "Accepted publickey for ubuntu from 10.0.0.1 port 54321 ssh2: RSA SHA256:abc",
+        );
         let (_, ev) = parse_journal_line(&line, "host").unwrap();
         let ev = ev.expect("should have event");
         assert_eq!(ev.kind, "ssh.login_success");
@@ -293,7 +305,10 @@ mod tests {
         assert_eq!(ev.kind, "sudo.command");
         assert_eq!(ev.details["user"], "deploy");
         assert_eq!(ev.details["run_as"], "root");
-        assert!(ev.details["command"].as_str().unwrap().contains("systemctl"));
+        assert!(ev.details["command"]
+            .as_str()
+            .unwrap()
+            .contains("systemctl"));
     }
 
     #[test]
@@ -302,7 +317,10 @@ mod tests {
         let line = journal_line("nginx", "GET /health 200");
         let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
         assert_eq!(cursor, "test-cursor-abc");
-        assert!(ev.is_none(), "unknown identifier should not produce an event");
+        assert!(
+            ev.is_none(),
+            "unknown identifier should not produce an event"
+        );
     }
 
     #[test]
@@ -311,7 +329,10 @@ mod tests {
         let line = journal_line("sudo", "session opened for user root by deploy(uid=1000)");
         let (cursor, ev) = parse_journal_line(&line, "host").unwrap();
         assert_eq!(cursor, "test-cursor-abc");
-        assert!(ev.is_none(), "non-command sudo line should not produce an event");
+        assert!(
+            ev.is_none(),
+            "non-command sudo line should not produce an event"
+        );
     }
 
     #[test]
@@ -336,7 +357,10 @@ mod tests {
 
     #[test]
     fn skips_kernel_message_without_firewall_fields() {
-        let line = journal_line("kernel", "EXT4-fs (vda1): mounted filesystem with ordered data mode");
+        let line = journal_line(
+            "kernel",
+            "EXT4-fs (vda1): mounted filesystem with ordered data mode",
+        );
         let (_, ev) = parse_journal_line(&line, "host").unwrap();
         assert!(ev.is_none());
     }
