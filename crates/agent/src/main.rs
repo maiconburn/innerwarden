@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 #[derive(Parser)]
 #[command(name = "innerwarden-agent", version, about = "Interpretive layer — reads sensor JSONL, generates narratives, and auto-responds to incidents")]
@@ -29,7 +29,7 @@ struct Cli {
     #[arg(long)]
     once: bool,
 
-    /// Poll interval in seconds for the narrative/webhook slow loop (default: 30)
+    /// Poll interval in seconds for the narrative slow loop (default: 30)
     #[arg(long, default_value = "30")]
     interval: u64,
 }
@@ -124,28 +124,24 @@ async fn main() -> Result<()> {
     let mut cursor = reader::AgentCursor::load(&state_path)?;
 
     if cli.once {
-        // In once mode: run AI tick first (fast path), then narrative tick
-        let ai_count = process_ai_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
-        let stats = process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await?;
-        if let Some(w) = &mut state.decision_writer { w.flush(); }
+        let handled = process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+        let new_events = process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await?;
+        if let Some(w) = &mut state.decision_writer {
+            w.flush();
+        }
         cursor.save(&state_path)?;
-        info!(
-            new_events = stats.new_events,
-            new_incidents = stats.new_incidents,
-            ai_analyzed = ai_count,
-            "run complete"
-        );
+        info!(new_events, incidents_handled = handled, "run complete");
     } else {
         let ai_poll = cfg.ai.incident_poll_secs;
         info!(
             narrative_interval_secs = cli.interval,
-            ai_interval_secs = ai_poll,
+            incident_interval_secs = ai_poll,
             "entering continuous mode"
         );
 
         let mut narrative_ticker =
             tokio::time::interval(tokio::time::Duration::from_secs(cli.interval));
-        let mut ai_ticker =
+        let mut incident_ticker =
             tokio::time::interval(tokio::time::Duration::from_secs(ai_poll));
 
         // SIGTERM / SIGINT
@@ -158,17 +154,19 @@ async fn main() -> Result<()> {
         loop {
             #[cfg(unix)]
             let shutdown = tokio::select! {
-                // Fast AI loop
-                _ = ai_ticker.tick() => {
-                    process_ai_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+                _ = incident_ticker.tick() => {
+                    process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+                    // Persist cursor after every incident tick — prevents double-processing on restart
+                    if let Err(e) = cursor.save(&state_path) {
+                        warn!("failed to save cursor after incident tick: {e:#}");
+                    }
                     false
                 }
-                // Slow narrative + webhook loop
                 _ = narrative_ticker.tick() => {
                     match process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await {
-                        Ok(stats) => {
-                            if stats.new_events > 0 || stats.new_incidents > 0 {
-                                info!(new_events = stats.new_events, "narrative tick");
+                        Ok(n) => {
+                            if n > 0 {
+                                info!(new_events = n, "narrative tick");
                             }
                         }
                         Err(e) => warn!("narrative tick error: {e:#}"),
@@ -188,15 +186,18 @@ async fn main() -> Result<()> {
 
             #[cfg(not(unix))]
             let shutdown = tokio::select! {
-                _ = ai_ticker.tick() => {
-                    process_ai_tick(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+                _ = incident_ticker.tick() => {
+                    process_incidents(&cli.data_dir, &mut cursor, &cfg, &mut state).await;
+                    if let Err(e) = cursor.save(&state_path) {
+                        warn!("failed to save cursor after incident tick: {e:#}");
+                    }
                     false
                 }
                 _ = narrative_ticker.tick() => {
                     match process_narrative_tick(&cli.data_dir, &mut cursor, &cfg).await {
-                        Ok(stats) => {
-                            if stats.new_events > 0 || stats.new_incidents > 0 {
-                                info!(new_events = stats.new_events, "narrative tick");
+                        Ok(n) => {
+                            if n > 0 {
+                                info!(new_events = n, "narrative tick");
                             }
                         }
                         Err(e) => warn!("narrative tick error: {e:#}"),
@@ -211,7 +212,9 @@ async fn main() -> Result<()> {
             };
 
             if shutdown {
-                if let Some(w) = &mut state.decision_writer { w.flush(); }
+                if let Some(w) = &mut state.decision_writer {
+                    w.flush();
+                }
                 cursor.save(&state_path)?;
                 break;
             }
@@ -222,27 +225,29 @@ async fn main() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Fast AI tick — runs every 2s, processes only new incidents through AI
+// Incident tick — runs every 2s
+//
+// Responsibilities (in order, for every new incident):
+//   1. Webhook: notify immediately for all incidents above min_severity
+//   2. AI analysis: only for High/Critical that pass the algorithm gate
+//
+// The incident cursor is advanced and saved after every tick, so a crash
+// between ticks never causes double-processing or lost webhook notifications.
 // ---------------------------------------------------------------------------
 
-/// Returns the number of incidents analyzed.
-async fn process_ai_tick(
+/// Returns the number of incidents handled (webhook sent and/or AI analyzed).
+async fn process_incidents(
     data_dir: &Path,
     cursor: &mut reader::AgentCursor,
     cfg: &config::AgentConfig,
     state: &mut AgentState,
 ) -> usize {
-    if !cfg.ai.enabled || state.ai_provider.is_none() {
-        return 0;
-    }
-
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
         .to_string();
 
     let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
-    let events_path = data_dir.join(format!("events-{today}.jsonl"));
 
     let new_incidents = match reader::read_new_entries::<innerwarden_core::incident::Incident>(
         &incidents_path,
@@ -250,7 +255,7 @@ async fn process_ai_tick(
     ) {
         Ok(r) => r,
         Err(e) => {
-            warn!("ai tick: failed to read incidents: {e:#}");
+            warn!("incident tick: failed to read incidents: {e:#}");
             return 0;
         }
     };
@@ -259,37 +264,72 @@ async fn process_ai_tick(
         return 0;
     }
 
-    // Advance the incident cursor
+    // Advance cursor before any async work — prevents double-processing on crash/restart
     cursor.set_incidents_offset(&today, new_incidents.new_offset);
 
-    // Load recent events for context (up to N, from today's event file)
-    let all_events = reader::read_new_entries::<innerwarden_core::event::Event>(
-        &events_path,
-        0,
-    )
-    .map(|r| r.entries)
-    .unwrap_or_default();
+    // Pre-compute webhook threshold once (None = webhook disabled)
+    let webhook_min_rank: Option<u8> = if cfg.webhook.enabled && !cfg.webhook.url.is_empty() {
+        Some(webhook::severity_rank(&cfg.webhook.parsed_min_severity()))
+    } else {
+        None
+    };
 
-    let skill_infos = state.skill_registry.infos();
-    // Clone the Arc so we own a handle that doesn't borrow `state`. This lets us
-    // call execute_decision (which needs &mut state) in the same loop iteration.
-    let provider: Arc<dyn ai::AiProvider> = state.ai_provider.as_ref().unwrap().clone();
-    let provider_name = provider.name();
-    let already_blocked = state.blocklist.as_vec();
-    let blocked_set: HashSet<String> = already_blocked.iter().cloned().collect();
+    // Pre-compute AI context (only if AI is configured)
+    let ai_enabled = cfg.ai.enabled && state.ai_provider.is_some();
+    let (all_events, skill_infos, ai_provider, provider_name, already_blocked, blocked_set) =
+        if ai_enabled {
+            let events_path = data_dir.join(format!("events-{today}.jsonl"));
+            let events =
+                reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)
+                    .map(|r| r.entries)
+                    .unwrap_or_default();
+            let infos = state.skill_registry.infos();
+            // Clone the Arc — owned handle, no borrow of `state`
+            let prov: Arc<dyn ai::AiProvider> = state.ai_provider.as_ref().unwrap().clone();
+            let pname = prov.name();
+            let blocked = state.blocklist.as_vec();
+            let blocked_set: HashSet<String> = blocked.iter().cloned().collect();
+            (events, infos, Some(prov), pname, blocked, blocked_set)
+        } else {
+            (vec![], vec![], None, "", vec![], HashSet::new())
+        };
 
-    let mut analyzed = 0;
+    let mut handled = 0;
 
     for incident in &new_incidents.entries {
-        // Algorithm gate — skip before spending any API credits
+        // 1. Webhook — fires for ALL incidents above configured threshold, regardless of AI gate
+        if let Some(min_rank) = webhook_min_rank {
+            if webhook::severity_rank(&incident.severity) >= min_rank {
+                if let Err(e) = webhook::send_incident(
+                    &cfg.webhook.url,
+                    cfg.webhook.timeout_secs,
+                    incident,
+                )
+                .await
+                {
+                    warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
+                }
+            }
+        }
+
+        // 2. AI analysis — only when AI is enabled and incident passes the gate
+        if !ai_enabled {
+            handled += 1;
+            continue;
+        }
+
         if !ai::should_invoke_ai(incident, &blocked_set) {
             info!(
                 incident_id = %incident.incident_id,
                 severity = ?incident.severity,
                 "AI gate: skipping (low severity / private IP / already blocked)"
             );
+            handled += 1;
             continue;
         }
+
+        // ai_provider is Some when ai_enabled — safe to unwrap
+        let provider = ai_provider.as_ref().unwrap();
 
         info!(
             incident_id = %incident.incident_id,
@@ -297,7 +337,7 @@ async fn process_ai_tick(
             "sending incident to AI for analysis"
         );
 
-        // Build context — filter recent events to the same entity
+        // Build context — filter events to those involving the same entity IPs
         let entity_ips: HashSet<&str> = incident
             .entities
             .iter()
@@ -312,7 +352,7 @@ async fn process_ai_tick(
                     .iter()
                     .any(|e| entity_ips.contains(e.value.as_str()))
             })
-            .rev() // most recent first
+            .rev()
             .take(cfg.ai.context_events)
             .collect();
 
@@ -320,22 +360,25 @@ async fn process_ai_tick(
             incident,
             recent_events: recent,
             already_blocked: already_blocked.clone(),
-            available_skills: skill_infos.iter().map(|s| ai::SkillInfo {
-                id: s.id.clone(),
-                name: s.name.clone(),
-                description: s.description.clone(),
-                tier: match s.tier {
-                    skills::SkillTier::Open => "open".to_string(),
-                    skills::SkillTier::Premium => "premium".to_string(),
-                },
-            }).collect(),
+            available_skills: skill_infos
+                .iter()
+                .map(|s| ai::SkillInfo {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    tier: match s.tier {
+                        skills::SkillTier::Open => "open".to_string(),
+                        skills::SkillTier::Premium => "premium".to_string(),
+                    },
+                })
+                .collect(),
         };
 
         let decision = match provider.decide(&ctx).await {
             Ok(d) => d,
             Err(e) => {
                 warn!(incident_id = %incident.incident_id, "AI decision failed: {e:#}");
-                analyzed += 1;
+                handled += 1;
                 continue;
             }
         };
@@ -355,17 +398,15 @@ async fn process_ai_tick(
             && cfg.responder.enabled
         {
             execute_decision(&decision, incident, cfg, state).await
+        } else if !cfg.responder.enabled {
+            "skipped: responder disabled".to_string()
+        } else if !decision.auto_execute {
+            "skipped: AI did not recommend auto-execution".to_string()
         } else {
-            if !cfg.responder.enabled {
-                "skipped: responder disabled".to_string()
-            } else if !decision.auto_execute {
-                "skipped: AI did not recommend auto-execution".to_string()
-            } else {
-                format!(
-                    "skipped: confidence {:.2} below threshold {:.2}",
-                    decision.confidence, cfg.ai.confidence_threshold
-                )
-            }
+            format!(
+                "skipped: confidence {:.2} below threshold {:.2}",
+                decision.confidence, cfg.ai.confidence_threshold
+            )
         };
 
         // Write to audit trail
@@ -383,10 +424,10 @@ async fn process_ai_tick(
             }
         }
 
-        analyzed += 1;
+        handled += 1;
     }
 
-    analyzed
+    handled
 }
 
 /// Execute an AI decision by finding and running the appropriate skill.
@@ -400,17 +441,17 @@ async fn execute_decision(
 
     match &decision.action {
         AiAction::BlockIp { ip, skill_id } => {
-            // Honour the allowed_skills whitelist
+            // Honour the allowed_skills whitelist; fall back to configured backend default
             if !cfg.responder.allowed_skills.contains(skill_id) {
-                // Fall back to the configured backend's default skill
                 let fallback_id = format!("block-ip-{}", cfg.responder.block_backend);
                 if !cfg.responder.allowed_skills.contains(&fallback_id) {
                     return format!("skipped: skill '{skill_id}' not in allowed_skills");
                 }
             }
 
-            // Prefer the skill ID the AI chose; fall back to configured backend
-            let skill = state.skill_registry.get(skill_id)
+            let skill = state
+                .skill_registry
+                .get(skill_id)
                 .or_else(|| state.skill_registry.block_skill_for_backend(&cfg.responder.block_backend));
 
             match skill {
@@ -454,7 +495,6 @@ async fn execute_decision(
             }
         }
         AiAction::RequestConfirmation { summary } => {
-            // Send a special webhook payload asking for human confirmation
             if cfg.webhook.enabled && !cfg.webhook.url.is_empty() {
                 let payload = serde_json::json!({
                     "type": "confirmation_required",
@@ -478,28 +518,27 @@ async fn execute_decision(
 }
 
 // ---------------------------------------------------------------------------
-// Slow narrative tick — runs every 30s, generates narrative + webhook
+// Narrative tick — runs every 30s
+//
+// Responsibility: regenerate the daily Markdown summary when new events arrive.
+// Webhook and incident processing have been moved to process_incidents so that
+// all incidents are notified in real-time, not batched every 30 seconds.
 // ---------------------------------------------------------------------------
 
-struct NarrativeStats {
-    new_events: usize,
-    new_incidents: usize,
-}
-
+/// Returns the number of new events seen this tick.
 async fn process_narrative_tick(
     data_dir: &Path,
     cursor: &mut reader::AgentCursor,
     cfg: &config::AgentConfig,
-) -> Result<NarrativeStats> {
+) -> Result<usize> {
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
         .to_string();
 
     let events_path = data_dir.join(format!("events-{today}.jsonl"));
-    let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
 
-    // Read new events (for webhook filtering)
+    // Read new events and advance the events cursor
     let new_events = reader::read_new_entries::<innerwarden_core::event::Event>(
         &events_path,
         cursor.events_offset(&today),
@@ -508,32 +547,16 @@ async fn process_narrative_tick(
     let events_count = new_events.entries.len();
     cursor.set_events_offset(&today, new_events.new_offset);
 
-    // Webhook: notify for each new event's incident counterpart
-    if cfg.webhook.enabled && !cfg.webhook.url.is_empty() {
-        // Read new incidents from the current cursor position (may have been advanced by AI tick)
-        let new_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
-            &incidents_path,
-            cursor.incidents_offset(&today),
-        )?;
-        let min_rank = webhook::severity_rank(&cfg.webhook.parsed_min_severity());
-        for incident in &new_incidents.entries {
-            if webhook::severity_rank(&incident.severity) >= min_rank {
-                if let Err(e) =
-                    webhook::send_incident(&cfg.webhook.url, cfg.webhook.timeout_secs, incident)
-                        .await
-                {
-                    warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
-                }
-            }
-        }
-    }
-
-    // Narrative: regenerate daily summary from all events/incidents today
+    // Regenerate daily summary when there are new events
     if cfg.narrative.enabled && events_count > 0 {
+        let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
+        // Always read from offset 0 — summary covers the full day, not just new entries
         let all_events =
             reader::read_new_entries::<innerwarden_core::event::Event>(&events_path, 0)?;
-        let all_incidents =
-            reader::read_new_entries::<innerwarden_core::incident::Incident>(&incidents_path, 0)?;
+        let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
+            &incidents_path,
+            0,
+        )?;
 
         let host = all_events
             .entries
@@ -550,8 +573,5 @@ async fn process_narrative_tick(
         }
     }
 
-    Ok(NarrativeStats {
-        new_events: events_count,
-        new_incidents: 0, // tracked by AI tick
-    })
+    Ok(events_count)
 }
