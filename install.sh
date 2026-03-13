@@ -194,7 +194,8 @@ for grp in adm systemd-journal docker audit; do
 done
 
 run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
-run_root chown root:root "${CONFIG_DIR}"
+# Allow the service user to traverse/read config files without making them world-readable.
+run_root chown root:"${IW_USER}" "${CONFIG_DIR}"
 run_root chmod 750 "${CONFIG_DIR}"
 run_root chown "${IW_USER}:${IW_USER}" "${DATA_DIR}"
 run_root chmod 750 "${DATA_DIR}"
