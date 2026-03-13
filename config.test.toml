@@ -21,6 +21,11 @@ paths = [
 enabled = false  # no journald on macOS
 units = ["sshd", "sudo"]
 
+[collectors.exec_audit]
+enabled = false
+path = "./testdata/sample-audit.log"
+include_tty = false
+
 [collectors.docker]
 enabled = true   # docker binary present; collector exits gracefully if daemon is down
 

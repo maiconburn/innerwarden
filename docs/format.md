@@ -14,6 +14,48 @@
 }
 ```
 
+### Optional shell audit events (when `[collectors.exec_audit]` is enabled)
+
+```json
+{
+  "ts": "2026-03-13T18:10:00Z",
+  "host": "instance-maiconburn",
+  "source": "auditd",
+  "kind": "shell.command_exec",
+  "severity": "info",
+  "summary": "Shell command executed: sudo ufw status",
+  "details": {
+    "audit_ts": "1711800000.123",
+    "audit_id": "4242",
+    "argc": 3,
+    "argv": ["sudo", "ufw", "status"],
+    "command": "sudo ufw status"
+  },
+  "tags": ["audit","shell","exec"]
+}
+```
+
+```json
+{
+  "ts": "2026-03-13T18:10:02Z",
+  "host": "instance-maiconburn",
+  "source": "auditd",
+  "kind": "shell.tty_input",
+  "severity": "low",
+  "summary": "TTY input observed on pts0: ls -la\\r",
+  "details": {
+    "audit_ts": "1711800100.456",
+    "audit_id": "5001",
+    "tty": "pts0",
+    "uid": "1000",
+    "auid": "1000",
+    "raw_hex": "6c73202d6c610d",
+    "decoded_preview": "ls -la\\r"
+  },
+  "tags": ["audit","shell","tty"]
+}
+```
+
 ## Incident line (incidents-*.jsonl)
 ```json
 {

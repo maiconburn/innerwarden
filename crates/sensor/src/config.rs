@@ -34,6 +34,28 @@ pub struct CollectorsConfig {
     pub journald: JournaldConfig,
     #[serde(default)]
     pub docker: DockerConfig,
+    #[serde(default)]
+    pub exec_audit: ExecAuditConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExecAuditConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_exec_audit_path")]
+    pub path: String,
+    #[serde(default)]
+    pub include_tty: bool,
+}
+
+impl Default for ExecAuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_exec_audit_path(),
+            include_tty: false,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +229,10 @@ fn default_poll_seconds() -> u64 {
 
 fn default_auth_log_path() -> String {
     "/var/log/auth.log".to_string()
+}
+
+fn default_exec_audit_path() -> String {
+    "/var/log/audit/audit.log".to_string()
 }
 
 fn default_journald_units() -> Vec<String> {

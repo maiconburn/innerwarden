@@ -31,6 +31,7 @@ AGENT_ENV="${CONFIG_DIR}/agent.env"
 
 SENSOR_UNIT="/etc/systemd/system/innerwarden-sensor.service"
 AGENT_UNIT="/etc/systemd/system/innerwarden-agent.service"
+AUDIT_RULE_FILE="/etc/audit/rules.d/innerwarden-shell-audit.rules"
 
 log() {
   printf '[innerwarden-install] %s\n' "$*"
@@ -39,6 +40,34 @@ log() {
 fail() {
   printf '[innerwarden-install] ERROR: %s\n' "$*" >&2
   exit 1
+}
+
+normalize_bool() {
+  case "${1,,}" in
+    1|true|yes|y|on)
+      echo "true"
+      ;;
+    *)
+      echo "false"
+      ;;
+  esac
+}
+
+prompt_yes_no() {
+  local question="$1"
+  local default_answer="$2" # yes|no
+  local suffix answer normalized
+
+  if [[ "${default_answer}" == "yes" ]]; then
+    suffix="[Y/n]"
+  else
+    suffix="[y/N]"
+  fi
+
+  read -r -p "${question} ${suffix} " answer
+  answer="${answer:-${default_answer}}"
+  normalized="$(normalize_bool "${answer}")"
+  [[ "${normalized}" == "true" ]]
 }
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -104,6 +133,37 @@ if [[ -z "${OPENAI_API_KEY}" ]]; then
   fail "OPENAI_API_KEY cannot be empty"
 fi
 
+ENABLE_EXEC_AUDIT="${INNERWARDEN_ENABLE_EXEC_AUDIT:-}"
+ENABLE_EXEC_AUDIT_TTY="${INNERWARDEN_ENABLE_EXEC_AUDIT_TTY:-}"
+
+if [[ -t 0 && -z "${ENABLE_EXEC_AUDIT}" ]]; then
+  echo
+  echo "Privacy notice:"
+  echo "  Shell auditing can capture executed commands and, if enabled, terminal input."
+  echo "  This may include sensitive or personal data."
+  echo "  Enable only with explicit legal authorization from the host owner."
+  if prompt_yes_no "Enable shell command audit trail (auditd EXECVE)?" "no"; then
+    ENABLE_EXEC_AUDIT="true"
+  else
+    ENABLE_EXEC_AUDIT="false"
+  fi
+fi
+
+ENABLE_EXEC_AUDIT="$(normalize_bool "${ENABLE_EXEC_AUDIT:-false}")"
+
+if [[ "${ENABLE_EXEC_AUDIT}" == "true" ]]; then
+  if [[ -t 0 && -z "${ENABLE_EXEC_AUDIT_TTY}" ]]; then
+    if prompt_yes_no "Also ingest auditd TTY input records when available? (higher privacy impact)" "no"; then
+      ENABLE_EXEC_AUDIT_TTY="true"
+    else
+      ENABLE_EXEC_AUDIT_TTY="false"
+    fi
+  fi
+  ENABLE_EXEC_AUDIT_TTY="$(normalize_bool "${ENABLE_EXEC_AUDIT_TTY:-false}")"
+else
+  ENABLE_EXEC_AUDIT_TTY="false"
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   log "cargo not found. Installing rustup (user install)..."
   curl -sSf https://sh.rustup.rs | sh -s -- -y
@@ -127,7 +187,7 @@ if ! id "${IW_USER}" >/dev/null 2>&1; then
   run_root useradd -r -s "${NOLOGIN_BIN}" "${IW_USER}"
 fi
 
-for grp in adm systemd-journal docker; do
+for grp in adm systemd-journal docker audit; do
   if getent group "${grp}" >/dev/null 2>&1; then
     run_root usermod -aG "${grp}" "${IW_USER}"
   fi
@@ -162,6 +222,11 @@ path = "/var/log/auth.log"
 enabled = true
 units = ["sshd", "sudo"]
 
+[collectors.exec_audit]
+enabled = ${ENABLE_EXEC_AUDIT}
+path = "/var/log/audit/audit.log"
+include_tty = ${ENABLE_EXEC_AUDIT_TTY}
+
 [collectors.docker]
 enabled = false
 
@@ -175,6 +240,39 @@ enabled = true
 threshold = 8
 window_seconds = 300
 EOF
+
+if [[ "${ENABLE_EXEC_AUDIT}" == "true" ]]; then
+  log "shell command audit enabled (include_tty=${ENABLE_EXEC_AUDIT_TTY})"
+  if run_root test -d /etc/audit/rules.d; then
+    log "writing auditd rules: ${AUDIT_RULE_FILE}"
+    install_from_stdin "${AUDIT_RULE_FILE}" 640 root root <<'EOF'
+# Inner Warden shell command trail (installed with explicit consent)
+-a always,exit -F arch=b64 -S execve -k innerwarden-shell-exec
+-a always,exit -F arch=b32 -S execve -k innerwarden-shell-exec
+EOF
+    if command -v augenrules >/dev/null 2>&1; then
+      if run_root augenrules --load >/dev/null 2>&1; then
+        log "auditd rules loaded via augenrules"
+      else
+        log "WARNING: failed to load auditd rules via augenrules"
+      fi
+    elif command -v auditctl >/dev/null 2>&1; then
+      if run_root auditctl -R "${AUDIT_RULE_FILE}" >/dev/null 2>&1; then
+        log "auditd rules loaded via auditctl"
+      else
+        log "WARNING: failed to load auditd rules via auditctl"
+      fi
+    else
+      log "WARNING: augenrules/auditctl not found; exec trail may remain disabled until auditd is configured"
+    fi
+  else
+    log "WARNING: /etc/audit/rules.d not found; cannot install exec audit rules automatically"
+  fi
+
+  if [[ "${ENABLE_EXEC_AUDIT_TTY}" == "true" ]]; then
+    log "TTY ingestion enabled in sensor config; host must emit auditd type=TTY records (e.g. via pam_tty_audit policy)"
+  fi
+fi
 
 log "writing agent config: ${AGENT_CONFIG}"
 install_from_stdin "${AGENT_CONFIG}" 640 root "${IW_USER}" <<EOF

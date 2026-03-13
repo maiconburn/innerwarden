@@ -17,6 +17,12 @@ enabled = true
 # Optional: only these systemd units
 units = ["sshd", "sudo", "kernel"]
 
+[collectors.exec_audit]
+enabled = false
+path = "/var/log/audit/audit.log"
+# Requires explicit legal authorization; only parse type=TTY when enabled.
+include_tty = false
+
 [collectors.docker]
 enabled = true
 socket = "/var/run/docker.sock"

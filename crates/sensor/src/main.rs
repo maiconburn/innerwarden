@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use clap::Parser;
 use collectors::{
-    auth_log::AuthLogCollector, docker::DockerCollector, integrity::IntegrityCollector,
-    journald::JournaldCollector,
+    auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
+    integrity::IntegrityCollector, journald::JournaldCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::port_scan::PortScanDetector;
@@ -67,6 +67,7 @@ async fn main() -> Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
     let shared_journald_cursor: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let shared_docker_since: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let mut ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -176,6 +177,31 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = collector.run(tx5, shared).await {
                 tracing::error!("docker collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn exec_audit collector
+    if cfg.collectors.exec_audit.enabled {
+        let ec = &cfg.collectors.exec_audit;
+        let offset = state
+            .get_cursor("exec_audit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_exec_audit_offset.store(offset, Ordering::Relaxed);
+        let collector =
+            ExecAuditCollector::new(&ec.path, &cfg.agent.host_id, offset, ec.include_tty);
+        info!(
+            path = %ec.path,
+            include_tty = ec.include_tty,
+            offset,
+            "starting exec_audit collector"
+        );
+        let tx6 = tx.clone();
+        let shared = Arc::clone(&shared_exec_audit_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx6, shared).await {
+                tracing::error!("exec_audit collector error: {e:#}");
             }
         });
     }
@@ -303,6 +329,9 @@ async fn main() -> Result<()> {
     if let Some(since) = shared_docker_since.lock().unwrap().clone() {
         state.set_cursor("docker", serde_json::json!(since));
     }
+
+    let exec_audit_offset = shared_exec_audit_offset.load(Ordering::Relaxed);
+    state.set_cursor("exec_audit", serde_json::json!(exec_audit_offset));
 
     state.save(&state_path)?;
     info!(auth_offset, "state saved");

@@ -10,6 +10,8 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ### Sensor (`innerwarden-sensor`)
 - ✅ Tail de `/var/log/auth.log` com parser SSH completo (falhas, logins, usuários inválidos)
 - ✅ Integração com `journald` (sshd, sudo, kernel/qualquer systemd unit)
+- ✅ Trilha opcional de shell via `auditd` (`type=EXECVE`) com parser de comando executado
+- ✅ Ingestão opcional de `auditd type=TTY` (alto impacto de privacidade, gated por config)
 - ✅ Monitoramento de Docker events (start / stop / die / OOM)
 - ✅ Integridade de arquivos via SHA-256 polling configurável
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
@@ -59,7 +61,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║                            HOST ACTIVITY                               ║
-║   SSH logins · sudo commands · Docker events · File integrity checks   ║
+║ SSH logins · sudo commands · shell audit · Docker events · integrity    ║
 ╚═══════════════════════════════════════╦════════════════════════════════╝
                                         │
                                         ▼
@@ -161,11 +163,13 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
+> Observação: o diagrama acima não expande o collector opcional `exec_audit` (`/var/log/audit/audit.log`), que também alimenta `events-*.jsonl`.
+
 ### Saídas geradas por dia
 
 | Arquivo | Quem escreve | Conteúdo |
 |---------|-------------|---------|
-| `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald) |
+| `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald, auditd opcional) |
 | `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
 | `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação e resultado |
 | `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
@@ -194,6 +198,7 @@ crates/
         auth_log.rs          — tail /var/log/auth.log, parser SSH
         integrity.rs         — SHA-256 polling de arquivos
         journald.rs          — subprocess journalctl --follow --output=json
+        exec_audit.rs        — tail /var/log/audit/audit.log (EXECVE + TTY opcional)
         docker.rs            — subprocess docker events --format '{{json .}}'
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
@@ -240,13 +245,14 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 105 testes (40 sensor + 65 agent)
+make test             # 109 testes (44 sensor + 65 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
 
 # Instalação trial em servidor Linux (systemd)
 ./install.sh          # pede OPENAI_API_KEY, instala binários em /usr/local/bin,
+                      # pede consentimento explícito para trilha de shell audit (opcional),
                       # cria /etc/innerwarden/{config.toml,agent.toml,agent.env},
                       # cria/ativa innerwarden-sensor + innerwarden-agent,
                       # sobe em modo seguro (responder.enabled=false, dry_run=true)
@@ -299,6 +305,11 @@ path = "/var/log/auth.log"
 [collectors.journald]
 enabled = true
 units = ["sshd", "sudo", "kernel"]   # "sshd" não "ssh"; "kernel" habilita sinais de firewall/port scan
+
+[collectors.exec_audit]
+enabled = false
+path = "/var/log/audit/audit.log"
+include_tty = false   # alto impacto de privacidade; habilite só com autorização explícita
 
 [collectors.docker]
 enabled = true
@@ -504,6 +515,14 @@ echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *" \
 # requer permissão sudo para timeout+tcpdump; ajuste paths conforme distro.
 # Exemplo mínimo (revise com cuidado antes de usar em produção):
 # innerwarden ALL=(ALL) NOPASSWD: /usr/bin/timeout *, /usr/sbin/tcpdump *
+
+# Shell audit trail (opcional, alto impacto de privacidade):
+# - habilite apenas com autorização explícita do dono do host
+# - o install.sh pode criar automaticamente:
+#   /etc/audit/rules.d/innerwarden-shell-audit.rules
+# - se necessário, garanta acesso ao audit.log:
+#   sudo usermod -aG adm innerwarden
+#   sudo usermod -aG audit innerwarden   # quando o grupo existir
 ```
 
 O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
@@ -538,11 +557,12 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 105 testes (40 sensor + 65 agent) — todos devem passar
+make test   # 109 testes (44 sensor + 65 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
 - `sample-auth.log` — 20 linhas SSH (9 falhas de 203.0.113.10, 8 de 198.51.100.5)
+- `sample-audit.log` — exemplos de `auditd` (`EXECVE` + `TTY`) para testes locais de shell trail
 - `watched/sshd_config`, `watched/sudoers` — fixtures para integrity watcher
 
 Testes de integração local:
@@ -618,6 +638,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 7.2 (concluída): correlação temporal simples por janela + entidade
 - Fase 7.3 (concluída): telemetria operacional leve
 - Fase 7.4 (concluída): honeypot demo only (simulação controlada)
+- Fase 7.5 (concluída): trilha opcional de shell (`auditd EXECVE` + `TTY` opcional) com consentimento explícito no instalador
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
