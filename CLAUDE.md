@@ -628,3 +628,36 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Honeypot roadmap (pausado): sem fase 8.8 ativa; evolução segue em maintenance mode até novo objetivo explícito
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
 - Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md` e `docs/phase-8-honeypot-runtime-profile-attested-handoff.md`
+
+---
+
+## Future Track — Edge / Web Abuse Defense
+
+Status: future exploration, not part of current MVP.
+
+After the host-security core is stable, InnerWarden may evolve to cover high-cost web route protection as an additional product capability.
+
+This future track is not about blocking all AI crawlers or all automation.
+Its purpose would be to protect expensive or abuse-prone routes, such as:
+
+- search endpoints
+- repository queries
+- advanced filters
+- export/download routes
+- other dynamic high-cost paths
+
+Possible future direction:
+
+- access log collectors for Nginx / Apache
+- detectors for automated high-cost access
+- route classification by cost/sensitivity
+- optional response skills such as temporary deny or rate limiting
+- reuse of the existing AI-assisted decision layer
+
+This is currently out of scope for the active roadmap.
+The current priority remains:
+
+1. production rollout hardening
+2. temporal correlation
+3. operational telemetry
+4. core host-security quality
