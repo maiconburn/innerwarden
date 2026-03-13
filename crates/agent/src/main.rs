@@ -1,4 +1,5 @@
 mod ai;
+mod correlation;
 mod config;
 mod decisions;
 mod narrative;
@@ -46,6 +47,7 @@ struct Cli {
 struct AgentState {
     skill_registry: skills::SkillRegistry,
     blocklist: skills::Blocklist,
+    correlator: correlation::TemporalCorrelator,
     /// Wrapped in Arc so we can clone a handle for use within a loop iteration
     /// without holding a borrow of `state` across async calls that need `&mut state`.
     ai_provider: Option<Arc<dyn ai::AiProvider>>,
@@ -102,6 +104,8 @@ async fn main() -> Result<()> {
         narrative = cfg.narrative.enabled,
         webhook = cfg.webhook.enabled,
         ai = cfg.ai.enabled,
+        correlation = cfg.correlation.enabled,
+        correlation_window_secs = cfg.correlation.window_seconds,
         responder = cfg.responder.enabled,
         dry_run = cfg.responder.dry_run,
         "innerwarden-agent v{} starting",
@@ -123,6 +127,7 @@ async fn main() -> Result<()> {
         } else {
             skills::Blocklist::default()
         },
+        correlator: correlation::TemporalCorrelator::new(cfg.correlation.window_seconds, 4096),
         ai_provider: if cfg.ai.enabled {
             Some(Arc::from(ai::build_provider(&cfg.ai)))
         } else {
@@ -324,6 +329,26 @@ async fn process_incidents(
     let mut handled = 0;
 
     for incident in &new_incidents.entries {
+        let related_incidents = if cfg.correlation.enabled {
+            state
+                .correlator
+                .related_to(incident, cfg.correlation.max_related_incidents)
+        } else {
+            Vec::new()
+        };
+        if cfg.correlation.enabled {
+            if !related_incidents.is_empty() {
+                info!(
+                    incident_id = %incident.incident_id,
+                    correlated_count = related_incidents.len(),
+                    "temporal correlation: related incidents found"
+                );
+            }
+            // Observe early so correlation history stays consistent even when this
+            // incident is later skipped by gate or AI call fails.
+            state.correlator.observe(incident);
+        }
+
         // 1. Webhook — fires for ALL incidents above configured threshold, regardless of AI gate
         if let Some(min_rank) = webhook_min_rank {
             if webhook::severity_rank(&incident.severity) >= min_rank {
@@ -361,14 +386,21 @@ async fn process_incidents(
         info!(
             incident_id = %incident.incident_id,
             provider = provider_name,
+            correlated_count = related_incidents.len(),
             "sending incident to AI for analysis"
         );
 
-        // Build context — filter events to those involving the same entity IPs
+        // Build context — filter events to those involving the same incident IPs/users
         let entity_ips: HashSet<&str> = incident
             .entities
             .iter()
             .filter(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+            .map(|e| e.value.as_str())
+            .collect();
+        let entity_users: HashSet<&str> = incident
+            .entities
+            .iter()
+            .filter(|e| e.r#type == innerwarden_core::entities::EntityType::User)
             .map(|e| e.value.as_str())
             .collect();
 
@@ -377,15 +409,23 @@ async fn process_incidents(
             .filter(|ev| {
                 ev.entities
                     .iter()
-                    .any(|e| entity_ips.contains(e.value.as_str()))
+                    .any(|e| {
+                        (e.r#type == innerwarden_core::entities::EntityType::Ip
+                            && entity_ips.contains(e.value.as_str()))
+                            || (e.r#type == innerwarden_core::entities::EntityType::User
+                                && entity_users.contains(e.value.as_str()))
+                    })
             })
             .rev()
             .take(cfg.ai.context_events)
             .collect();
+        let related_refs: Vec<&innerwarden_core::incident::Incident> =
+            related_incidents.iter().collect();
 
         let ctx = ai::DecisionContext {
             incident,
             recent_events: recent,
+            related_incidents: related_refs,
             already_blocked: already_blocked.clone(),
             available_skills: skill_infos
                 .iter()
@@ -607,7 +647,13 @@ async fn process_narrative_tick(
             .or_else(|| all_incidents.entries.first().map(|i| i.host.as_str()))
             .unwrap_or("unknown");
 
-        let md = narrative::generate(&today, host, &all_events.entries, &all_incidents.entries);
+        let md = narrative::generate(
+            &today,
+            host,
+            &all_events.entries,
+            &all_incidents.entries,
+            cfg.correlation.window_seconds,
+        );
         if let Err(e) = narrative::write(data_dir, &today, &md) {
             warn!("failed to write daily summary: {e:#}");
         } else {
@@ -666,6 +712,24 @@ mod tests {
         }
     }
 
+    struct CorrelationInspectingMockAiProvider {
+        decision: ai::AiDecision,
+        last_related_count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ai::AiProvider for CorrelationInspectingMockAiProvider {
+        fn name(&self) -> &'static str {
+            "mock-correlation"
+        }
+
+        async fn decide(&self, ctx: &ai::DecisionContext<'_>) -> anyhow::Result<ai::AiDecision> {
+            self.last_related_count
+                .store(ctx.related_incidents.len(), Ordering::SeqCst);
+            Ok(self.decision.clone())
+        }
+    }
+
     /// Write a minimal Incident JSON line (ssh brute-force from an external IP).
     fn incident_line(ip: &str) -> String {
         serde_json::to_string(&innerwarden_core::incident::Incident {
@@ -678,6 +742,22 @@ mod tests {
             evidence: serde_json::json!({"failed_attempts": 9}),
             recommended_checks: vec![],
             tags: vec!["ssh".to_string()],
+            entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
+        })
+        .unwrap()
+    }
+
+    fn incident_line_with_kind(ip: &str, kind: &str) -> String {
+        serde_json::to_string(&innerwarden_core::incident::Incident {
+            ts: chrono::Utc::now(),
+            host: "test-host".to_string(),
+            incident_id: format!("{kind}:{ip}:test"),
+            severity: innerwarden_core::event::Severity::High,
+            title: format!("{kind} detected"),
+            summary: format!("{kind} from {ip}"),
+            evidence: serde_json::json!({"kind": kind}),
+            recommended_checks: vec![],
+            tags: vec![kind.to_string()],
             entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
         })
         .unwrap()
@@ -739,6 +819,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };
@@ -822,6 +903,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };
@@ -892,6 +974,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
             ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
             decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
         };
@@ -911,5 +994,76 @@ mod tests {
         let decisions_path = dir.path().join(format!("decisions-{today}.jsonl"));
         let content = std::fs::read_to_string(&decisions_path).unwrap();
         assert_eq!(content.lines().count(), 1, "only one decision should be recorded");
+    }
+
+    #[tokio::test]
+    async fn temporal_correlation_context_is_passed_to_ai() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let attacker_ip = "2.3.4.5";
+        let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
+        let mut f = std::fs::File::create(&incidents_path).unwrap();
+        writeln!(f, "{}", incident_line_with_kind(attacker_ip, "port_scan")).unwrap();
+        writeln!(
+            f,
+            "{}",
+            incident_line_with_kind(attacker_ip, "credential_stuffing")
+        )
+        .unwrap();
+        drop(f);
+
+        let cfg = config::AgentConfig {
+            ai: config::AiConfig {
+                enabled: true,
+                confidence_threshold: 0.5,
+                context_events: 5,
+                ..config::AiConfig::default()
+            },
+            correlation: config::CorrelationConfig {
+                enabled: true,
+                window_seconds: 300,
+                max_related_incidents: 8,
+            },
+            responder: config::ResponderConfig {
+                enabled: false,
+                ..config::ResponderConfig::default()
+            },
+            ..config::AgentConfig::default()
+        };
+
+        let related_count = Arc::new(AtomicUsize::new(0));
+        let mock = Arc::new(CorrelationInspectingMockAiProvider {
+            decision: ai::AiDecision {
+                action: ai::AiAction::Ignore {
+                    reason: "test correlation".to_string(),
+                },
+                confidence: 0.9,
+                auto_execute: false,
+                reason: "test correlation".to_string(),
+                alternatives: vec![],
+                estimated_threat: "medium".to_string(),
+            },
+            last_related_count: related_count.clone(),
+        });
+
+        let mut state = AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
+            ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
+            decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+        };
+
+        let mut cursor = reader::AgentCursor::default();
+        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        assert_eq!(handled, 2);
+        assert!(
+            related_count.load(Ordering::SeqCst) >= 1,
+            "second correlated incident should carry prior incident context"
+        );
     }
 }

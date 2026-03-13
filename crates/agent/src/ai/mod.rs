@@ -84,6 +84,8 @@ pub struct DecisionContext<'a> {
     pub incident: &'a Incident,
     /// Recent events from the same entity (IP/user) for contextual analysis
     pub recent_events: Vec<&'a Event>,
+    /// Temporally correlated incidents sharing pivot(s) (ip/user/detector kind)
+    pub related_incidents: Vec<&'a Incident>,
     /// IPs already in the blocklist (to avoid duplicate blocks)
     pub already_blocked: Vec<String>,
     /// Available skill IDs (sent to the AI so it can select the right one)

@@ -8,12 +8,20 @@ use innerwarden_core::{
     incident::Incident,
 };
 
+use crate::correlation;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Generate a Markdown daily summary from all events and incidents for a date.
-pub fn generate(date: &str, host: &str, events: &[Event], incidents: &[Incident]) -> String {
+pub fn generate(
+    date: &str,
+    host: &str,
+    events: &[Event],
+    incidents: &[Incident],
+    correlation_window_secs: u64,
+) -> String {
     let mut out = String::with_capacity(2048);
 
     // Header
@@ -47,6 +55,37 @@ pub fn generate(date: &str, host: &str, events: &[Event], incidents: &[Incident]
                 for check in &inc.recommended_checks {
                     out.push_str(&format!("  - {check}\n"));
                 }
+            }
+            out.push('\n');
+        }
+    }
+
+    // Correlated clusters (narrative-ready grouping)
+    if incidents.len() > 1 {
+        let clusters: Vec<correlation::IncidentCluster> = correlation::build_clusters(
+            incidents,
+            correlation_window_secs,
+        )
+        .into_iter()
+        .filter(|cluster| cluster.size() >= 2)
+        .collect();
+
+        if !clusters.is_empty() {
+            out.push_str("## Clusters correlacionados\n\n");
+            for cluster in clusters {
+                let kinds = cluster.detector_kinds.join(", ");
+                let window = format!(
+                    "{} -> {} UTC",
+                    cluster.start_ts.format("%H:%M"),
+                    cluster.end_ts.format("%H:%M")
+                );
+                out.push_str(&format!(
+                    "- **{}** | {} incidentes | detectores: {} | janela: {}\n",
+                    format_pivot(&cluster.pivot),
+                    cluster.size(),
+                    kinds,
+                    window
+                ));
             }
             out.push('\n');
         }
@@ -178,6 +217,19 @@ fn top_n(counts: &HashMap<String, usize>, n: usize) -> Vec<(&String, usize)> {
     items
 }
 
+fn format_pivot(pivot: &str) -> String {
+    if let Some(value) = pivot.strip_prefix("ip:") {
+        return format!("IP {}", value);
+    }
+    if let Some(value) = pivot.strip_prefix("user:") {
+        return format!("User {}", value);
+    }
+    if let Some(value) = pivot.strip_prefix("detector:") {
+        return format!("Detector {}", value);
+    }
+    pivot.to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -232,7 +284,7 @@ mod tests {
             make_event("ssh.login_success", Severity::Info, None),
         ];
         let incidents = vec![make_incident("SSH Brute Force", Severity::High)];
-        let md = generate("2026-03-12", "my-server", &events, &incidents);
+        let md = generate("2026-03-12", "my-server", &events, &incidents, 300);
 
         assert!(md.contains("# Inner Warden — 2026-03-12"));
         assert!(md.contains("**Host:** my-server"));
@@ -247,7 +299,7 @@ mod tests {
     #[test]
     fn generates_markdown_no_incidents() {
         let events = vec![make_event("sudo.command", Severity::Info, None)];
-        let md = generate("2026-03-12", "host", &events, &[]);
+        let md = generate("2026-03-12", "host", &events, &[], 300);
         assert!(md.contains("Nenhum incidente"));
         assert!(md.contains("sudo.command"));
     }
@@ -256,7 +308,7 @@ mod tests {
     fn write_and_cleanup() {
         let dir = TempDir::new().unwrap();
         let date = "2026-03-12";
-        let md = generate(date, "host", &[], &[]);
+        let md = generate(date, "host", &[], &[], 300);
         write(dir.path(), date, &md).unwrap();
         assert!(dir.path().join(format!("summary-{date}.md")).exists());
 
@@ -270,5 +322,42 @@ mod tests {
         assert!(!dir.path().join(format!("summary-{old_date}.md")).exists());
         // Today's file survives
         assert!(dir.path().join(format!("summary-{date}.md")).exists());
+    }
+
+    #[test]
+    fn includes_correlation_cluster_section() {
+        let now = Utc::now();
+        let incidents = vec![
+            Incident {
+                ts: now,
+                host: "h".into(),
+                incident_id: "port_scan:1.2.3.4:a".into(),
+                severity: Severity::High,
+                title: "Port scan".into(),
+                summary: "scan".into(),
+                evidence: serde_json::json!({}),
+                recommended_checks: vec![],
+                tags: vec![],
+                entities: vec![EntityRef::ip("1.2.3.4")],
+            },
+            Incident {
+                ts: now + chrono::Duration::seconds(30),
+                host: "h".into(),
+                incident_id: "ssh_bruteforce:1.2.3.4:b".into(),
+                severity: Severity::High,
+                title: "Brute force".into(),
+                summary: "bf".into(),
+                evidence: serde_json::json!({}),
+                recommended_checks: vec![],
+                tags: vec![],
+                entities: vec![EntityRef::ip("1.2.3.4"), EntityRef::user("root")],
+            },
+        ];
+
+        let md = generate("2026-03-12", "host", &[], &incidents, 120);
+        assert!(md.contains("Clusters correlacionados"));
+        assert!(md.contains("IP 1.2.3.4"));
+        assert!(md.contains("port_scan"));
+        assert!(md.contains("ssh_bruteforce"));
     }
 }

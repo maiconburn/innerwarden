@@ -49,6 +49,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Carregamento automático de `.env` na inicialização (dotenvy, fail-silent)
 - ✅ Replay QA harness end-to-end (`make replay-qa`) com assertions estáveis de artefatos
 - ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
+- ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
 
 ---
 
@@ -196,8 +197,9 @@ crates/
   agent/    — binário innerwarden-agent
     src/
       main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
-      config.rs              — AgentConfig: narrative, webhook, ai, responder
+      config.rs              — AgentConfig: narrative, webhook, ai, correlation, responder
       reader.rs              — JSONL incremental reader + AgentCursor persistence
+      correlation.rs         — correlação temporal leve + clusterização de incidentes
       report.rs              — relatório operacional v2 (`--report`) com tendências e anomaly hints
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
@@ -229,7 +231,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 77 testes (40 sensor + 37 agent)
+make test             # 82 testes (40 sensor + 42 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -349,6 +351,11 @@ context_events = 20        # eventos recentes enviados como contexto
 confidence_threshold = 0.8 # abaixo disso → não auto-executa
 incident_poll_secs = 2     # intervalo do loop rápido
 
+[correlation]
+enabled = true
+window_seconds = 300       # janela temporal para correlacionar incidentes
+max_related_incidents = 8  # contexto correlacionado enviado para AI
+
 [responder]
 enabled = true
 dry_run = true             # SEGURANÇA: começa sempre em dry_run
@@ -454,7 +461,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 77 testes (40 sensor + 37 agent) — todos devem passar
+make test   # 82 testes (40 sensor + 42 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -530,8 +537,8 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 4 (concluída): Agent `--report` v2 (tendências e anomalias adicionais)
 - Fase 5 (concluída): Skill `monitor-ip` real (execução continua segura por config)
 - Fase 7.1 (concluída): Production rollout hardening (playbook + smoke checks + rollback rápido)
-- Fase 7.2 (ativa): correlação temporal simples por janela + entidade
-- Fase 7.3 (planejada): telemetria operacional leve
+- Fase 7.2 (concluída): correlação temporal simples por janela + entidade
+- Fase 7.3 (ativa): telemetria operacional leve
 - Fase 7.4 (planejada): honeypot demo only (simulação controlada)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`
+- Referência do roadmap: `docs/development-plan.md` e `docs/phase-7-temporal-correlation.md`

@@ -131,6 +131,21 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
         serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".to_string())
     };
 
+    let related_incidents_json = {
+        let related: Vec<_> = ctx.related_incidents.iter().map(|inc| {
+            json!({
+                "ts": inc.ts,
+                "incident_id": inc.incident_id,
+                "detector_kind": inc.incident_id.split(':').next().unwrap_or("unknown"),
+                "severity": format!("{:?}", inc.severity),
+                "title": inc.title,
+                "summary": inc.summary,
+                "entities": inc.entities,
+            })
+        }).collect();
+        serde_json::to_string_pretty(&related).unwrap_or_else(|_| "[]".to_string())
+    };
+
     let skills_json = serde_json::to_string_pretty(&ctx.available_skills)
         .unwrap_or_else(|_| "[]".to_string());
 
@@ -143,6 +158,9 @@ INCIDENT:
 RECENT EVENTS FROM THE SAME ENTITY (last {count}):
 {events_json}
 
+TEMPORALLY CORRELATED INCIDENTS (last {related_count}, grouped by pivot ip/user/detector):
+{related_incidents_json}
+
 ALREADY BLOCKED IPs (do not block these again):
 {blocked:?}
 
@@ -153,6 +171,8 @@ Select the best skill and return a JSON decision."#,
         incident_json = incident_json,
         events_json = events_json,
         count = ctx.recent_events.len(),
+        related_incidents_json = related_incidents_json,
+        related_count = ctx.related_incidents.len(),
         blocked = ctx.already_blocked,
         skills_json = skills_json,
     )

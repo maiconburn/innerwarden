@@ -17,6 +17,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub ai: AiConfig,
     #[serde(default)]
+    pub correlation: CorrelationConfig,
+    #[serde(default)]
     pub responder: ResponderConfig,
 }
 
@@ -163,6 +165,35 @@ impl AiConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Temporal correlation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CorrelationConfig {
+    /// Enable lightweight temporal incident correlation (window + entity pivots)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Correlation window in seconds
+    #[serde(default = "default_correlation_window_secs")]
+    pub window_seconds: u64,
+
+    /// Max number of related incidents attached to AI context
+    #[serde(default = "default_max_related_incidents")]
+    pub max_related_incidents: usize,
+}
+
+impl Default for CorrelationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_seconds: default_correlation_window_secs(),
+            max_related_incidents: default_max_related_incidents(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Responder
 // ---------------------------------------------------------------------------
 
@@ -258,6 +289,14 @@ fn default_block_backend() -> String {
     "ufw".to_string()
 }
 
+fn default_correlation_window_secs() -> u64 {
+    300
+}
+
+fn default_max_related_incidents() -> usize {
+    8
+}
+
 fn default_allowed_skills() -> Vec<String> {
     vec!["block-ip-ufw".to_string(), "monitor-ip".to_string()]
 }
@@ -280,6 +319,9 @@ mod tests {
         assert!(!cfg.webhook.enabled);
         assert_eq!(cfg.webhook.min_severity, "medium");
         assert_eq!(cfg.webhook.timeout_secs, 10);
+        assert!(cfg.correlation.enabled);
+        assert_eq!(cfg.correlation.window_seconds, 300);
+        assert_eq!(cfg.correlation.max_related_incidents, 8);
     }
 
     #[test]
@@ -297,6 +339,11 @@ enabled = true
 url = "https://hooks.example.com/notify"
 min_severity = "high"
 timeout_secs = 5
+
+[correlation]
+enabled = true
+window_seconds = 120
+max_related_incidents = 4
 "#
         )
         .unwrap();
@@ -308,6 +355,9 @@ timeout_secs = 5
         assert_eq!(cfg.webhook.url, "https://hooks.example.com/notify");
         assert_eq!(cfg.webhook.parsed_min_severity(), Severity::High);
         assert_eq!(cfg.webhook.timeout_secs, 5);
+        assert!(cfg.correlation.enabled);
+        assert_eq!(cfg.correlation.window_seconds, 120);
+        assert_eq!(cfg.correlation.max_related_incidents, 4);
     }
 
     #[test]

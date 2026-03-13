@@ -24,6 +24,11 @@ context_events = 10
 confidence_threshold = 0.8
 incident_poll_secs = 2
 
+[correlation]
+enabled = true
+window_seconds = 300
+max_related_incidents = 8
+
 [responder]
 enabled = true
 dry_run = true              # SAFE: logs "DRY RUN: would execute..." — no real blocks
