@@ -213,7 +213,7 @@ examples/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 52 testes (27 sensor + 25 agent)
+make test             # 54 testes (27 sensor + 27 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -409,7 +409,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 52 testes (27 sensor + 25 agent) — todos devem passar
+make test   # 54 testes (27 sensor + 27 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -423,9 +423,12 @@ make run-agent                              # lê de ./data/
 innerwarden-agent --data-dir ./data --once  # roda uma vez e sai
 
 # Smoke test com AI em dry_run (seguro):
-# Coloque OPENAI_API_KEY no .env e rode:
+# 1. Coloque OPENAI_API_KEY no .env
+# 2. Rode o sensor para gerar dados: make run-sensor
+# 3. Rode o agent com a config de teste:
 innerwarden-agent --data-dir ./data --config agent-test.toml
 # Deve logar: "DRY RUN: would execute: sudo ufw deny from X"
+# Decisões ficam em: ./data/decisions-YYYY-MM-DD.jsonl
 ```
 
 ---
