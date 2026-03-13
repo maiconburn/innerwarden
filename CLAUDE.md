@@ -58,6 +58,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
 - ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
 - ✅ Dashboard local read-only (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria (sem endpoints de ação) + autenticação HTTP Basic obrigatória
+- ✅ Dashboard D2 — UX de investigação estilo Clarity: split-pane com lista de atacantes à esquerda (agrupados por IP, badge de outcome BLOCKED/ACTIVE/MONITORING/HONEYPOT, detectors, severidade máxima) e timeline de jornada do atacante à direita (events → incidents → decisions → honeypot captures), cada nó expandível; novos endpoints `/api/entities` e `/api/journey`; auto-refresh 5s da lista sem perder journey aberta
 
 ---
 
@@ -257,7 +258,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 141 testes (48 sensor + 93 agent)
+make test             # 144 testes (48 sensor + 96 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -596,7 +597,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 141 testes (48 sensor + 93 agent) — todos devem passar
+make test   # 144 testes (48 sensor + 96 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -680,7 +681,8 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 7.5 (concluída): trilha opcional de shell (`auditd EXECVE` + `TTY` opcional) com consentimento explícito no instalador
 - Fase 7.6 (concluída): resposta de abuso de privilégio (`sudo_abuse` + ação AI `suspend_user_sudo` com TTL e cleanup)
 - Fase D1 (concluída): dashboard local read-only (`--dashboard`) para visibilidade operacional sem execução de ações
-- Fase D2 (próxima): UX de investigação (filtros, pivôs e drill-down por entidade)
+- Fase D2.1 (concluída): UX de investigação "jornada do atacante" (split-pane com overview lateral + timeline expandível por IP via `/api/entities` e `/api/journey`)
+- Fase D2.2 (próxima): filtros e pivôs avançados (severidade/detector/entidade) + drill-down adicional
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
