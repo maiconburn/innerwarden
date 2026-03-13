@@ -137,6 +137,12 @@ pub struct HoneypotRuntimeConfig {
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
     pub redirect_backend: String,
+    /// Interaction level: `banner` (static banner only) | `medium` (protocol emulation).
+    pub interaction: String,
+    /// Max SSH auth attempts before disconnecting client (medium interaction only).
+    pub ssh_max_auth_attempts: usize,
+    /// Max HTTP requests per connection (medium interaction only).
+    pub http_max_requests: usize,
 }
 
 impl Default for HoneypotRuntimeConfig {
@@ -192,6 +198,9 @@ impl Default for HoneypotRuntimeConfig {
             external_handoff_attestation_expected_receiver: String::new(),
             redirect_enabled: false,
             redirect_backend: "iptables".to_string(),
+            interaction: "banner".to_string(),
+            ssh_max_auth_attempts: 6,
+            http_max_requests: 10,
         }
     }
 }

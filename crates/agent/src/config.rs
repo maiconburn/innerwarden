@@ -293,6 +293,20 @@ pub struct HoneypotConfig {
     #[serde(default = "default_honeypot_lock_stale_secs")]
     pub lock_stale_secs: u64,
 
+    /// Interaction level for decoy listeners:
+    /// - `banner` (default): send static banner, read one payload, close
+    /// - `medium`: full protocol emulation (SSH auth capture, HTTP form capture)
+    #[serde(default = "default_honeypot_interaction")]
+    pub interaction: String,
+
+    /// Max SSH auth attempts before disconnecting client (medium interaction only).
+    #[serde(default = "default_honeypot_ssh_max_auth_attempts")]
+    pub ssh_max_auth_attempts: usize,
+
+    /// Max HTTP requests handled per connection (medium interaction only).
+    #[serde(default = "default_honeypot_http_max_requests")]
+    pub http_max_requests: usize,
+
     #[serde(default)]
     pub sandbox: HoneypotSandboxConfig,
 
@@ -535,6 +549,9 @@ impl Default for HoneypotConfig {
             forensics_max_total_mb: default_honeypot_forensics_max_total_mb(),
             transcript_preview_bytes: default_honeypot_transcript_preview_bytes(),
             lock_stale_secs: default_honeypot_lock_stale_secs(),
+            interaction: default_honeypot_interaction(),
+            ssh_max_auth_attempts: default_honeypot_ssh_max_auth_attempts(),
+            http_max_requests: default_honeypot_http_max_requests(),
             sandbox: HoneypotSandboxConfig::default(),
             pcap_handoff: HoneypotPcapHandoffConfig::default(),
             containment: HoneypotContainmentConfig::default(),
@@ -756,6 +773,18 @@ fn default_honeypot_redirect_backend() -> String {
     "iptables".to_string()
 }
 
+fn default_honeypot_interaction() -> String {
+    "banner".to_string()
+}
+
+fn default_honeypot_ssh_max_auth_attempts() -> usize {
+    6
+}
+
+fn default_honeypot_http_max_requests() -> usize {
+    10
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -794,6 +823,9 @@ mod tests {
         assert_eq!(cfg.honeypot.forensics_max_total_mb, 128);
         assert_eq!(cfg.honeypot.transcript_preview_bytes, 96);
         assert_eq!(cfg.honeypot.lock_stale_secs, 1800);
+        assert_eq!(cfg.honeypot.interaction, "banner");
+        assert_eq!(cfg.honeypot.ssh_max_auth_attempts, 6);
+        assert_eq!(cfg.honeypot.http_max_requests, 10);
         assert!(!cfg.honeypot.sandbox.enabled);
         assert!(cfg.honeypot.sandbox.runner_path.is_empty());
         assert!(cfg.honeypot.sandbox.clear_env);
@@ -887,6 +919,9 @@ forensics_keep_days = 14
 forensics_max_total_mb = 512
 transcript_preview_bytes = 192
 lock_stale_secs = 600
+interaction = "medium"
+ssh_max_auth_attempts = 3
+http_max_requests = 5
 
 [honeypot.sandbox]
 enabled = true
@@ -961,6 +996,9 @@ backend = "iptables"
         assert_eq!(cfg.honeypot.forensics_max_total_mb, 512);
         assert_eq!(cfg.honeypot.transcript_preview_bytes, 192);
         assert_eq!(cfg.honeypot.lock_stale_secs, 600);
+        assert_eq!(cfg.honeypot.interaction, "medium");
+        assert_eq!(cfg.honeypot.ssh_max_auth_attempts, 3);
+        assert_eq!(cfg.honeypot.http_max_requests, 5);
         assert!(cfg.honeypot.sandbox.enabled);
         assert_eq!(
             cfg.honeypot.sandbox.runner_path,

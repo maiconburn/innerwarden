@@ -881,6 +881,9 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
             .clone(),
         redirect_enabled: cfg.honeypot.redirect.enabled,
         redirect_backend: cfg.honeypot.redirect.backend.clone(),
+        interaction: cfg.honeypot.interaction.trim().to_ascii_lowercase(),
+        ssh_max_auth_attempts: cfg.honeypot.ssh_max_auth_attempts,
+        http_max_requests: cfg.honeypot.http_max_requests,
     }
 }
 

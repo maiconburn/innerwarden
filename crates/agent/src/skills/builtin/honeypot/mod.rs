@@ -1,8 +1,12 @@
+pub(crate) mod http_interact;
+pub(crate) mod ssh_interact;
+
 use std::collections::HashSet;
 use std::future::Future;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -73,6 +77,10 @@ struct SessionRuntime {
     transcript_preview_bytes: usize,
     isolation_profile: String,
     evidence_path: PathBuf,
+    /// `banner` | `medium`
+    interaction: String,
+    ssh_max_auth_attempts: usize,
+    http_max_requests: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +106,9 @@ struct SandboxWorkerSpec {
     isolation_profile: String,
     evidence_path: PathBuf,
     endpoints: Vec<SandboxEndpointSpec>,
+    interaction: String,
+    ssh_max_auth_attempts: usize,
+    http_max_requests: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,8 +377,9 @@ impl ResponseSkill for Honeypot {
                 return SkillResult {
                     success: true,
                     message: format!(
-                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; profile={isolation_profile}; containment={}/{}; external_handoff={}; external_attestation={}; {redirect_note}",
+                        "DRY RUN: would start honeypot listeners ({services}) for {}s targeting {target_ip}; interaction={}; profile={isolation_profile}; containment={}/{}; external_handoff={}; external_attestation={}; {redirect_note}",
                         ctx.honeypot.duration_secs,
+                        ctx.honeypot.interaction.trim().to_ascii_lowercase(),
                         ctx.honeypot.containment_mode,
                         ctx.honeypot.containment_jail_profile,
                         ctx.honeypot.external_handoff_enabled,
@@ -546,6 +558,9 @@ impl ResponseSkill for Honeypot {
                     "backend": ctx.honeypot.redirect_backend,
                     "rules": redirect_rules.clone(),
                 },
+                "interaction": ctx.honeypot.interaction.trim().to_ascii_lowercase(),
+                "ssh_max_auth_attempts": ctx.honeypot.ssh_max_auth_attempts,
+                "http_max_requests": ctx.honeypot.http_max_requests,
                 "note": "Real honeypot listener session. Bounded and fail-open."
             });
             if let Err(e) = write_json_file(&metadata_path, &start_metadata).await {
@@ -586,6 +601,9 @@ impl ResponseSkill for Honeypot {
                 transcript_preview_bytes: ctx.honeypot.transcript_preview_bytes,
                 isolation_profile: isolation_profile.to_string(),
                 evidence_path: evidence_path.clone(),
+                interaction: normalize_interaction(&ctx.honeypot.interaction),
+                ssh_max_auth_attempts: ctx.honeypot.ssh_max_auth_attempts,
+                http_max_requests: ctx.honeypot.http_max_requests,
             };
 
             let metadata_path_bg = metadata_path.clone();
@@ -908,6 +926,9 @@ pub(crate) async fn run_sandbox_worker(spec_path: &Path, result_path: &Path) -> 
             transcript_preview_bytes: spec.transcript_preview_bytes,
             isolation_profile: spec.isolation_profile,
             evidence_path: spec.evidence_path,
+            interaction: normalize_interaction(&spec.interaction),
+            ssh_max_auth_attempts: spec.ssh_max_auth_attempts,
+            http_max_requests: spec.http_max_requests,
         };
 
         let stats = run_listeners_from_endpoints(endpoints, runtime)
@@ -1087,6 +1108,9 @@ async fn run_sandbox_session(
         isolation_profile: runtime.isolation_profile.clone(),
         evidence_path: runtime.evidence_path.clone(),
         endpoints: endpoints.iter().map(SandboxEndpointSpec::from).collect(),
+        interaction: runtime.interaction.clone(),
+        ssh_max_auth_attempts: runtime.ssh_max_auth_attempts,
+        http_max_requests: runtime.http_max_requests,
     };
     let spec_value = serde_json::to_value(spec)
         .map_err(|e| format!("sandbox runner: spec serialize failed: {e}"))?;
@@ -1887,6 +1911,7 @@ async fn run_listener(
         port = endpoint.listen_port,
         target_ip = %runtime.target_ip,
         strict_target_only = runtime.strict_target_only,
+        interaction = %runtime.interaction,
         "honeypot listener started"
     );
 
@@ -1900,6 +1925,19 @@ async fn run_listener(
         read_timeouts: 0,
     };
 
+    let is_medium = runtime.interaction == "medium";
+
+    // Build SSH config once for this listener (ephemeral key per session).
+    let ssh_config: Option<Arc<russh::server::Config>> =
+        if is_medium && endpoint.service == "ssh" {
+            Some(ssh_interact::build_ssh_config(runtime.ssh_max_auth_attempts))
+        } else {
+            None
+        };
+
+    // Per-connection timeout: 60s max (protocol interaction is bounded).
+    let conn_timeout = Duration::from_secs(60);
+
     let deadline = tokio::time::Instant::now() + Duration::from_secs(runtime.duration_secs);
     while tokio::time::Instant::now() < deadline {
         if (stats.accepted + stats.rejected) >= runtime.max_connections as u64 {
@@ -1907,8 +1945,8 @@ async fn run_listener(
         }
 
         let now = tokio::time::Instant::now();
-        let timeout = deadline.duration_since(now);
-        let accepted = tokio::time::timeout(timeout, listener.accept()).await;
+        let accept_timeout = deadline.duration_since(now);
+        let accepted = tokio::time::timeout(accept_timeout, listener.accept()).await;
 
         let (mut socket, peer) = match accepted {
             Ok(Ok(pair)) => pair,
@@ -1922,46 +1960,152 @@ async fn run_listener(
         let is_target = peer.ip() == runtime.target_ip;
         let allowed = !runtime.strict_target_only || is_target;
 
-        let payload = capture_payload(
-            &mut socket,
-            runtime.max_payload_bytes,
-            runtime.transcript_preview_bytes,
-        )
-        .await;
-
-        if payload.read_timed_out {
-            stats.read_timeouts += 1;
-        }
-        stats.payload_bytes_captured += payload.bytes_captured as u64;
-
-        if allowed {
-            stats.accepted += 1;
-            let _ = socket.write_all(endpoint.banner).await;
-        } else {
+        if !allowed {
             stats.rejected += 1;
+            let entry = serde_json::json!({
+                "ts": Utc::now().to_rfc3339(),
+                "type": "connection_rejected",
+                "session_id": runtime.session_id.clone(),
+                "service": endpoint.service.clone(),
+                "peer_ip": peer.ip().to_string(),
+                "target_ip": runtime.target_ip.to_string(),
+                "target_match": false,
+                "interaction": runtime.interaction.clone(),
+                "isolation_profile": runtime.isolation_profile.clone(),
+            });
+            if let Err(e) = append_json_line(&runtime.evidence_path, &entry).await {
+                warn!(path = %runtime.evidence_path.display(), "failed to append rejection evidence: {e}");
+            }
+            continue;
         }
 
-        let entry = serde_json::json!({
-            "ts": Utc::now().to_rfc3339(),
-            "type": "connection",
-            "session_id": runtime.session_id.clone(),
-            "service": endpoint.service.clone(),
-            "bind_addr": endpoint.bind_addr.clone(),
-            "listen_port": endpoint.listen_port,
-            "peer": peer.to_string(),
-            "peer_ip": peer.ip().to_string(),
-            "target_ip": runtime.target_ip.to_string(),
-            "target_match": is_target,
-            "accepted": allowed,
-            "bytes_captured": payload.bytes_captured,
-            "payload_hex": payload.payload_hex,
-            "transcript_preview": payload.transcript_preview,
-            "protocol_guess": payload.protocol_guess,
-            "read_timed_out": payload.read_timed_out,
-            "isolation_profile": runtime.isolation_profile.clone(),
-        });
-        if let Err(e) = append_json_line(&runtime.evidence_path, &entry).await {
-            warn!(path = %runtime.evidence_path.display(), "failed to append honeypot evidence line: {e}");
+        stats.accepted += 1;
+
+        if is_medium {
+            // Medium interaction: full protocol emulation.
+            let entry = match endpoint.service.as_str() {
+                "ssh" => {
+                    let cfg = ssh_config.clone().expect("SSH config must be set for medium mode");
+                    let evidence = ssh_interact::handle_connection(socket, cfg, conn_timeout).await;
+                    serde_json::json!({
+                        "ts": Utc::now().to_rfc3339(),
+                        "type": "ssh_connection",
+                        "session_id": runtime.session_id.clone(),
+                        "service": "ssh",
+                        "bind_addr": endpoint.bind_addr.clone(),
+                        "listen_port": endpoint.listen_port,
+                        "peer_ip": peer.ip().to_string(),
+                        "target_ip": runtime.target_ip.to_string(),
+                        "target_match": is_target,
+                        "accepted": true,
+                        "interaction": "medium",
+                        "isolation_profile": runtime.isolation_profile.clone(),
+                        "auth_attempts": evidence.auth_attempts,
+                        "auth_attempts_count": evidence.auth_attempts.len(),
+                    })
+                }
+                "http" => {
+                    let evidence = http_interact::handle_connection(
+                        &mut socket,
+                        runtime.http_max_requests,
+                        runtime.max_payload_bytes,
+                        runtime.transcript_preview_bytes,
+                        conn_timeout,
+                    )
+                    .await;
+                    serde_json::json!({
+                        "ts": Utc::now().to_rfc3339(),
+                        "type": "http_connection",
+                        "session_id": runtime.session_id.clone(),
+                        "service": "http",
+                        "bind_addr": endpoint.bind_addr.clone(),
+                        "listen_port": endpoint.listen_port,
+                        "peer_ip": peer.ip().to_string(),
+                        "target_ip": runtime.target_ip.to_string(),
+                        "target_match": is_target,
+                        "accepted": true,
+                        "interaction": "medium",
+                        "isolation_profile": runtime.isolation_profile.clone(),
+                        "http_requests": evidence.requests,
+                        "http_requests_count": evidence.requests.len(),
+                    })
+                }
+                other => {
+                    // Unsupported service in medium mode: fallback to banner.
+                    warn!(service = other, "medium interaction not supported for service, falling back to banner");
+                    let payload = capture_payload(
+                        &mut socket,
+                        runtime.max_payload_bytes,
+                        runtime.transcript_preview_bytes,
+                    )
+                    .await;
+                    if payload.read_timed_out {
+                        stats.read_timeouts += 1;
+                    }
+                    stats.payload_bytes_captured += payload.bytes_captured as u64;
+                    let _ = socket.write_all(endpoint.banner).await;
+                    serde_json::json!({
+                        "ts": Utc::now().to_rfc3339(),
+                        "type": "connection",
+                        "session_id": runtime.session_id.clone(),
+                        "service": other,
+                        "bind_addr": endpoint.bind_addr.clone(),
+                        "listen_port": endpoint.listen_port,
+                        "peer_ip": peer.ip().to_string(),
+                        "target_ip": runtime.target_ip.to_string(),
+                        "target_match": is_target,
+                        "accepted": true,
+                        "interaction": "banner",
+                        "bytes_captured": payload.bytes_captured,
+                        "payload_hex": payload.payload_hex,
+                        "transcript_preview": payload.transcript_preview,
+                        "protocol_guess": payload.protocol_guess,
+                        "read_timed_out": payload.read_timed_out,
+                        "isolation_profile": runtime.isolation_profile.clone(),
+                    })
+                }
+            };
+            if let Err(e) = append_json_line(&runtime.evidence_path, &entry).await {
+                warn!(path = %runtime.evidence_path.display(), "failed to append medium evidence: {e}");
+            }
+        } else {
+            // Banner mode (default): read one payload, send static banner.
+            let payload = capture_payload(
+                &mut socket,
+                runtime.max_payload_bytes,
+                runtime.transcript_preview_bytes,
+            )
+            .await;
+
+            if payload.read_timed_out {
+                stats.read_timeouts += 1;
+            }
+            stats.payload_bytes_captured += payload.bytes_captured as u64;
+            let _ = socket.write_all(endpoint.banner).await;
+
+            let entry = serde_json::json!({
+                "ts": Utc::now().to_rfc3339(),
+                "type": "connection",
+                "session_id": runtime.session_id.clone(),
+                "service": endpoint.service.clone(),
+                "bind_addr": endpoint.bind_addr.clone(),
+                "listen_port": endpoint.listen_port,
+                "peer": peer.to_string(),
+                "peer_ip": peer.ip().to_string(),
+                "target_ip": runtime.target_ip.to_string(),
+                "target_match": is_target,
+                "accepted": allowed,
+                "interaction": "banner",
+                "bytes_captured": payload.bytes_captured,
+                "payload_hex": payload.payload_hex,
+                "transcript_preview": payload.transcript_preview,
+                "protocol_guess": payload.protocol_guess,
+                "read_timed_out": payload.read_timed_out,
+                "isolation_profile": runtime.isolation_profile.clone(),
+            });
+            if let Err(e) = append_json_line(&runtime.evidence_path, &entry).await {
+                warn!(path = %runtime.evidence_path.display(), "failed to append honeypot evidence line: {e}");
+            }
         }
     }
 
@@ -1969,6 +2113,7 @@ async fn run_listener(
         service = %endpoint.service,
         accepted = stats.accepted,
         rejected = stats.rejected,
+        interaction = %runtime.interaction,
         "honeypot listener finished"
     );
     stats
@@ -2154,6 +2299,14 @@ fn normalize_isolation_profile(profile: &str) -> &'static str {
         "standard"
     } else {
         "strict_local"
+    }
+}
+
+pub(crate) fn normalize_interaction(level: &str) -> String {
+    if level.eq_ignore_ascii_case("medium") {
+        "medium".to_string()
+    } else {
+        "banner".to_string()
     }
 }
 
@@ -2683,6 +2836,9 @@ mod tests {
                 external_handoff_attestation_expected_receiver: String::new(),
                 redirect_enabled: false,
                 redirect_backend: "iptables".to_string(),
+                interaction: "banner".to_string(),
+                ssh_max_auth_attempts: 6,
+                http_max_requests: 10,
             },
         }
     }
@@ -2880,6 +3036,9 @@ mod tests {
             transcript_preview_bytes: 64,
             isolation_profile: "strict_local".to_string(),
             evidence_path: PathBuf::from("/tmp/evidence.jsonl"),
+            interaction: "banner".to_string(),
+            ssh_max_auth_attempts: 6,
+            http_max_requests: 10,
         };
         let challenge = "challenge-1";
         let receiver = "receiver-a";
@@ -2921,5 +3080,33 @@ mod tests {
             digest,
             "de10c070ac7779a62bda785e6cf5708cfc82f0c131d093a47f963cc1443c1d6f"
         );
+    }
+
+    #[test]
+    fn interaction_normalization_is_stable() {
+        assert_eq!(normalize_interaction("medium"), "medium");
+        assert_eq!(normalize_interaction("MEDIUM"), "medium");
+        assert_eq!(normalize_interaction("Medium"), "medium");
+        assert_eq!(normalize_interaction("banner"), "banner");
+        assert_eq!(normalize_interaction("BANNER"), "banner");
+        assert_eq!(normalize_interaction("unknown"), "banner");
+        assert_eq!(normalize_interaction(""), "banner");
+    }
+
+    #[tokio::test]
+    async fn listener_medium_dry_run_shows_interaction() {
+        let mut context = ctx("listener");
+        context.honeypot.interaction = "medium".to_string();
+        let result = Honeypot.execute(&context, true).await;
+        assert!(result.success);
+        assert!(result.message.contains("interaction=medium"), "message: {}", result.message);
+    }
+
+    #[test]
+    fn config_defaults_to_banner_interaction() {
+        let runtime = HoneypotRuntimeConfig::default();
+        assert_eq!(runtime.interaction, "banner");
+        assert_eq!(runtime.ssh_max_auth_attempts, 6);
+        assert_eq!(runtime.http_max_requests, 10);
     }
 }

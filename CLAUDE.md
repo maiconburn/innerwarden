@@ -39,6 +39,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
 - ✅ Skill premium `honeypot` com hardening 8.7: perfis de jail (`standard|strict`) + handoff externo attested (receiver challenge/HMAC + pin opcional de `receiver_id`)
+- ✅ Honeypot fase 8.8: interação média (`interaction = "medium"`) — SSH real via `russh` (key exchange + captura de credenciais, sem shell) + HTTP com parser manual (captura de formulário de login fake)
 - ✅ Skill open real: `suspend-user-sudo` (negação temporária de sudo via drop-in em `/etc/sudoers.d` + cleanup automático de expiração)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
@@ -239,7 +240,10 @@ crates/
           block_ip_nftables.rs — Open ✅
           suspend_user_sudo.rs — Open ✅ (suspensão temporária de sudo com TTL + cleanup)
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium ✅ (hardening 8.7: jail profile presets + receiver attestation no handoff externo)
+          honeypot/
+            mod.rs         — Premium ✅ (hardening 8.7: jail profile presets + receiver attestation no handoff externo)
+            ssh_interact.rs  — interação SSH via russh (fase 8.8: key exchange + captura de credenciais)
+            http_interact.rs — interação HTTP com login page fake (fase 8.8: captura de formulário)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -253,7 +257,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 122 testes (48 sensor + 74 agent)
+make test             # 141 testes (48 sensor + 93 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -422,6 +426,9 @@ forensics_keep_days = 7
 forensics_max_total_mb = 128
 transcript_preview_bytes = 96
 lock_stale_secs = 1800
+interaction = "banner"         # banner (default) | medium (Cowrie-style: SSH key exchange + HTTP login page)
+ssh_max_auth_attempts = 6      # SSH auth rounds before disconnect (medium interaction only)
+http_max_requests = 10         # max HTTP requests per connection (medium interaction only)
 
 [honeypot.sandbox]
 enabled = false
@@ -589,7 +596,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 122 testes (48 sensor + 74 agent) — todos devem passar
+make test   # 141 testes (48 sensor + 93 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -681,9 +688,9 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 8.5 (concluída): containment avançado (`process|namespace`) + handoff forense externo controlado + checks de lifecycle
 - Fase 8.6 (concluída): isolamento avançado em runtime dedicado (`namespace|jail`) + handoff externo confiável assinado
 - Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
-- Honeypot roadmap (pausado): sem fase 8.8 ativa; evolução segue em maintenance mode até novo objetivo explícito
+- Fase 8.8 (concluída): interação média realista — SSH via `russh` (key exchange + captura de credenciais) + HTTP com login page fake (captura de formulário)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md` e `docs/phase-8-honeypot-runtime-profile-attested-handoff.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`, `docs/phase-8-honeypot-runtime-profile-attested-handoff.md` e `docs/phase-8-honeypot-medium-interaction.md`
 
 ---
 
