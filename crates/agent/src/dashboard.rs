@@ -2122,6 +2122,61 @@ const INDEX_HTML: &str = r#"<!doctype html>
         grid-template-columns: 1fr;
       }
     }
+
+    /* Mobile layout: stack panels and make everything readable */
+    @media (max-width: 860px) {
+      html, body { overflow: auto; }
+      .app { height: auto; min-height: 100vh; }
+      .app-body { flex-direction: column; overflow: visible; }
+
+      .app-header { padding: 10px 12px; }
+      .app-title { font-size: 0.95rem; }
+      .app-badge { display: none; }
+
+      .left-panel {
+        width: 100%;
+        max-height: 56vh;
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+        padding: 10px 10px;
+      }
+
+      .right-panel {
+        padding: 14px 12px;
+        overflow-y: visible;
+      }
+
+      /* KPIs: 1st card (date) full width; rest 2 columns */
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+      .kpi-grid .kpi-card:first-child {
+        grid-column: 1 / -1;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 10px;
+        text-align: left;
+      }
+      .kpi-grid .kpi-card:first-child .kpi-value { margin-top: 0; font-size: 0.8rem; }
+
+      .filters { grid-template-columns: 1fr; }
+      .filters .full { grid-column: auto; }
+
+      .pivot-tabs { grid-template-columns: repeat(3, 1fr); }
+
+      .journey-ip { font-size: 1.05rem; }
+      .journey-subtitle { margin-bottom: 12px; }
+
+      /* Let timeline titles wrap instead of overflowing */
+      .tl-summary { white-space: normal; }
+      .tl-toggle { margin-left: 0; }
+    }
+
+    @media (max-width: 420px) {
+      .left-panel { max-height: 60vh; }
+      .kpi-label { font-size: 0.55rem; }
+      .kpi-value { font-size: 1rem; }
+      .pivot-tab { font-size: 0.64rem; }
+    }
   </style>
 </head>
 <body>
