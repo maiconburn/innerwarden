@@ -46,10 +46,12 @@
     "used": true,
     "runner": "/usr/local/bin/innerwarden-agent",
     "containment": {
-      "requested_mode": "namespace",
-      "effective_mode": "process",
+      "requested_mode": "jail",
+      "effective_mode": "namespace",
       "check_passed": false,
-      "fallback_reason": "namespace runner 'unshare' not found; falling back to process mode"
+      "fallback_reason": "jail runner 'bwrap' not found; falling back to namespace runner 'unshare'",
+      "namespace_runner": "unshare",
+      "jail_runner": "bwrap"
     }
   },
   "pcap_handoff": {
@@ -70,6 +72,11 @@
     "enabled": true,
     "attempted": true,
     "success": true,
+    "trusted": true,
+    "allowlist_enforced": true,
+    "allowlist_match": true,
+    "signature_enabled": true,
+    "signature_file": "honeypot/listener-session-20260313T162200Z-1.2.3.4.external-handoff.sig",
     "command": "/usr/local/bin/iw-handoff",
     "args": ["--session-id","20260313T162200Z-1.2.3.4"],
     "timeout_secs": 20,
@@ -103,4 +110,5 @@
 - `listener-session-*.jsonl`: lifecycle + per-connection forensic evidence
 - `listener-session-*.pcap`: optional bounded handoff capture (`[honeypot.pcap_handoff]`)
 - `listener-session-*.external-handoff.json`: optional external handoff result (`[honeypot.external_handoff]`)
+- `listener-session-*.external-handoff.sig`: optional signed handoff sidecar (HMAC-SHA256)
 - `listener-active.lock`: active session lock (`lock_stale_secs` controls stale recovery)

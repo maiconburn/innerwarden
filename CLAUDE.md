@@ -34,7 +34,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Skill premium `honeypot` com hardening 8.5: containment avançado (`process|namespace`), handoff forense externo controlado e checagens de lifecycle de artefatos
+- ✅ Skill premium `honeypot` com hardening 8.6: containment avançado (`process|namespace|jail`) com fallback controlado + handoff externo confiável (allowlist + assinatura HMAC)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -173,6 +173,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 | `honeypot/listener-session-*.jsonl` | agent | Evidências por conexão/sessão no honeypot listener |
 | `honeypot/listener-session-*.pcap` | agent | Captura limitada opcional de handoff forense (`[honeypot.pcap_handoff]`) |
 | `honeypot/listener-session-*.external-handoff.json` | agent | Resultado da integração externa de forense (`[honeypot.external_handoff]`) |
+| `honeypot/listener-session-*.external-handoff.sig` | agent | Assinatura HMAC-SHA256 do handoff externo (`[honeypot.external_handoff]`) |
 | `honeypot/listener-active.lock` | agent | Lock de sessão ativa (controle de concorrência + stale recovery) |
 | `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
 | `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
@@ -225,7 +226,7 @@ crates/
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium ✅ (hardening 8.5: containment avançado + handoff externo controlado)
+          honeypot.rs        — Premium ✅ (hardening 8.6: jail runtime + handoff externo confiável assinado)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -239,7 +240,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 99 testes (40 sensor + 59 agent)
+make test             # 101 testes (40 sensor + 61 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -396,10 +397,13 @@ timeout_secs = 15
 max_packets = 120
 
 [honeypot.containment]
-mode = "process"             # process | namespace
+mode = "process"             # process | namespace | jail
 require_success = false
 namespace_runner = "unshare"
 namespace_args = ["--fork", "--pid", "--mount-proc"]
+jail_runner = "bwrap"
+jail_args = []
+allow_namespace_fallback = true
 
 [honeypot.external_handoff]
 enabled = false
@@ -408,6 +412,10 @@ args = ["--session-id", "{session_id}", "--target", "{target_ip}", "--metadata",
 timeout_secs = 20
 require_success = false
 clear_env = true
+allowed_commands = ["/usr/local/bin/iw-handoff"]
+enforce_allowlist = false
+signature_enabled = false
+signature_key_env = "INNERWARDEN_HANDOFF_SIGNING_KEY"
 
 [honeypot.redirect]
 enabled = false
@@ -434,7 +442,7 @@ Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ ✅ hardening 8.5 (containment `process|namespace` + handoff externo controlado + lifecycle checks)
+Premium│ honeypot            │ ✅ hardening 8.6 (containment `process|namespace|jail` + handoff confiável allowlist+assinatura)
 ```
 
 Para adicionar uma skill da comunidade:
@@ -511,6 +519,7 @@ data_dir/
   honeypot/listener-session-*.jsonl — evidências por conexão/sessão do honeypot listener
   honeypot/listener-session-*.pcap  — captura limitada opcional de handoff forense
   honeypot/listener-session-*.external-handoff.json — resultado da integração externa de forense
+  honeypot/listener-session-*.external-handoff.sig — assinatura HMAC-SHA256 do handoff externo
   honeypot/listener-active.lock     — lock de sessão honeypot ativa
   summary-YYYY-MM-DD.md         — narrativa diária em Markdown
   state.json                    — cursors do sensor
@@ -524,7 +533,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 99 testes (40 sensor + 59 agent) — todos devem passar
+make test   # 101 testes (40 sensor + 61 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -609,6 +618,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
 - Fase 8.4 (concluída): sandbox runtime dedicado + handoff forense opcional + retenção por budget total
 - Fase 8.5 (concluída): containment avançado (`process|namespace`) + handoff forense externo controlado + checks de lifecycle
-- Fase 8.6 (planejada): isolamento avançado em runtime dedicado (namespace/jail fortalecido) + handoff externo assinado
+- Fase 8.6 (concluída): isolamento avançado em runtime dedicado (`namespace|jail`) + handoff externo confiável assinado
+- Fase 8.7 (planejada): perfis de jail mais restritivos + receiver attestation no handoff externo
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md` e `docs/phase-8-honeypot-advanced-containment.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md` e `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`

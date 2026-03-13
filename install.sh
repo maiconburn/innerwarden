@@ -226,6 +226,9 @@ mode = "process"
 require_success = false
 namespace_runner = "unshare"
 namespace_args = ["--fork", "--pid", "--mount-proc"]
+jail_runner = "bwrap"
+jail_args = []
+allow_namespace_fallback = true
 
 [honeypot.external_handoff]
 enabled = false
@@ -234,6 +237,10 @@ args = ["--session-id", "{session_id}", "--target", "{target_ip}", "--metadata",
 timeout_secs = 20
 require_success = false
 clear_env = true
+allowed_commands = ["/usr/local/bin/iw-handoff"]
+enforce_allowlist = false
+signature_enabled = false
+signature_key_env = "INNERWARDEN_HANDOFF_SIGNING_KEY"
 
 [honeypot.redirect]
 enabled = false

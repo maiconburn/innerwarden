@@ -93,6 +93,12 @@ pub struct HoneypotRuntimeConfig {
     pub containment_namespace_runner: String,
     /// Arguments passed to namespace wrapper before the agent runner.
     pub containment_namespace_args: Vec<String>,
+    /// Jail wrapper runner (e.g., `bwrap`) when containment mode is `jail`.
+    pub containment_jail_runner: String,
+    /// Arguments passed to jail wrapper before the agent runner.
+    pub containment_jail_args: Vec<String>,
+    /// Allow fallback from `jail` to `namespace` when jail runner is unavailable.
+    pub containment_allow_namespace_fallback: bool,
     /// Execute optional external handoff command after session completion.
     pub external_handoff_enabled: bool,
     /// External handoff command.
@@ -105,6 +111,14 @@ pub struct HoneypotRuntimeConfig {
     pub external_handoff_require_success: bool,
     /// Clear environment before launching external handoff.
     pub external_handoff_clear_env: bool,
+    /// Command allowlist for trusted external handoff.
+    pub external_handoff_allowed_commands: Vec<String>,
+    /// Require command allowlist match.
+    pub external_handoff_enforce_allowlist: bool,
+    /// Sign handoff result (HMAC-SHA256) when enabled.
+    pub external_handoff_signature_enabled: bool,
+    /// Env var name containing signing key.
+    pub external_handoff_signature_key_env: String,
     /// Optional selective redirection.
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
@@ -144,12 +158,19 @@ impl Default for HoneypotRuntimeConfig {
                 "--pid".to_string(),
                 "--mount-proc".to_string(),
             ],
+            containment_jail_runner: "bwrap".to_string(),
+            containment_jail_args: vec![],
+            containment_allow_namespace_fallback: true,
             external_handoff_enabled: false,
             external_handoff_command: String::new(),
             external_handoff_args: vec![],
             external_handoff_timeout_secs: 20,
             external_handoff_require_success: false,
             external_handoff_clear_env: true,
+            external_handoff_allowed_commands: vec![],
+            external_handoff_enforce_allowlist: false,
+            external_handoff_signature_enabled: false,
+            external_handoff_signature_key_env: "INNERWARDEN_HANDOFF_SIGNING_KEY".to_string(),
             redirect_enabled: false,
             redirect_backend: "iptables".to_string(),
         }
