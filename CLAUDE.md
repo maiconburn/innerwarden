@@ -1,41 +1,154 @@
 # Inner Warden — CLAUDE.md
 
-Observabilidade de host com dois componentes Rust: **sensor** (coleta determinística) e **agent** (camada interpretativa).
+Observabilidade e resposta autônoma de host com dois componentes Rust:
+**sensor** (coleta determinística, zero AI) e **agent** (inteligência em tempo real).
 
 ---
 
-## Arquitetura
+## O que o sistema faz hoje
+
+### Sensor (`innerwarden-sensor`)
+- ✅ Tail de `/var/log/auth.log` com parser SSH completo (falhas, logins, usuários inválidos)
+- ✅ Integração com `journald` (sshd, sudo, qualquer systemd unit)
+- ✅ Monitoramento de Docker events (start / stop / die / OOM)
+- ✅ Integridade de arquivos via SHA-256 polling configurável
+- ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
+- ✅ Output JSONL append-only com rotação diária automática
+- ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
+- ✅ Flush duplo: por contagem (50 eventos) + por tempo (intervalo de 5s)
+- ✅ Graceful shutdown (SIGINT/SIGTERM) com persistência de cursors
+
+### Agent (`innerwarden-agent`)
+- ✅ Leitura incremental de JSONL via byte-offset cursors (sem re-leitura)
+- ✅ Config TOML com defaults sensatos — `--config` é opcional
+- ✅ **Algorithm gate** — pré-filtra incidentes sem custo de API (severity, IP privado, já bloqueado)
+- ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic/Ollama como stubs extensíveis
+- ✅ Análise AI em tempo real de incidentes High/Critical
+- ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
+- ✅ Auto-execução condicional: só age se `auto_execute=true` AND `confidence ≥ threshold`
+- ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
+- ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
+- ✅ Stubs premium com mensagens amigáveis: `monitor-ip`, `honeypot`
+- ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
+- ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
+- ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
+- ✅ Webhook HTTP POST com filtragem por severidade mínima
+- ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md`
+- ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (AI, 2s) + lento (narrativa, 30s)
+- ✅ Modo `--once` para processamento batch
+
+---
+
+## Fluxo completo do sistema
 
 ```
-host activity → innerwarden-sensor → JSONL outputs → innerwarden-agent → narrative / alerts
+╔══════════════════════════════════════════════════════════════════════════╗
+║                            HOST ACTIVITY                               ║
+║   SSH logins · sudo commands · Docker events · File integrity checks   ║
+╚═══════════════════════════════════════╦════════════════════════════════╝
+                                        │
+                                        ▼
+╔══════════════════════════════════════════════════════════════════════════╗
+║                        innerwarden-sensor                              ║
+║                                                                        ║
+║  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐          ║
+║  │ auth_log │  │ journald │  │  docker  │  │  integrity   │          ║
+║  │  (tail)  │  │(subproc) │  │(subproc) │  │ (SHA-256     │          ║
+║  │ SSH/sudo │  │sshd/sudo │  │events    │  │  polling)    │          ║
+║  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────┬───────┘          ║
+║       └─────────────┴─────────────┴────────────────┘                   ║
+║                           │  mpsc::channel(1024)                       ║
+║                           ▼                                            ║
+║              ┌─────────────────────────┐                               ║
+║              │  Detectors (stateful)   │                               ║
+║              │  ssh_bruteforce         │ ← sliding window por IP       ║
+║              │  (mais no futuro)       │                               ║
+║              └────────────┬────────────┘                               ║
+║                           │ Events + Incidents                         ║
+║                           ▼                                            ║
+║  ┌─────────────────────────────────────────────────────────────────┐   ║
+║  │  JSONL Sinks — append-only, rotação diária                      │   ║
+║  │  · events-YYYY-MM-DD.jsonl                                      │   ║
+║  │  · incidents-YYYY-MM-DD.jsonl                                   │   ║
+║  │  · state.json (cursors de leitura)                              │   ║
+║  └─────────────────────────────────────────────────────────────────┘   ║
+╚═══════════════════════════════════════╦════════════════════════════════╝
+                                        │  data_dir compartilhado
+                                        ▼
+╔══════════════════════════════════════════════════════════════════════════╗
+║                        innerwarden-agent                               ║
+║              (lê via byte-offset cursors — sem re-leitura)             ║
+║                                                                        ║
+║  ╔══════════════════════════════════════════════════════════════════╗   ║
+║  ║  LOOP RÁPIDO — tick a cada 2s                                   ║   ║
+║  ╠══════════════════════════════════════════════════════════════════╣   ║
+║  ║                                                                  ║   ║
+║  ║  Novos incidentes? ──── NÃO ──→ skip                           ║   ║
+║  ║         │ SIM                                                   ║   ║
+║  ║         ▼                                                       ║   ║
+║  ║  ┌─────────────────────────────────────────────────────────┐   ║   ║
+║  ║  │  Algorithm Gate  (puro, sem I/O, sem custo de API)      │   ║   ║
+║  ║  │                                                          │   ║   ║
+║  ║  │  Severity < High?     ──→  ignore (ruído)               │   ║   ║
+║  ║  │  IP já na blocklist?  ──→  ignore (duplicado)           │   ║   ║
+║  ║  │  IP RFC1918/loopback? ──→  ignore (interno)             │   ║   ║
+║  ║  └────────────────────────────┬────────────────────────────┘   ║   ║
+║  ║                               │ PASSA o gate                   ║   ║
+║  ║                               ▼                                ║   ║
+║  ║  ┌──────────────────────────────────────────────────────────┐  ║   ║
+║  ║  │  AI Provider  (plugável via trait AiProvider)            │  ║   ║
+║  ║  │                                                          │  ║   ║
+║  ║  │  ● OpenAI gpt-4o-mini  ◄── real (MVP)                   │  ║   ║
+║  ║  │  ○ Anthropic Claude    ◄── stub (contribua!)            │  ║   ║
+║  ║  │  ○ Ollama (local LLM)  ◄── stub (contribua!)            │  ║   ║
+║  ║  │                                                          │  ║   ║
+║  ║  │  Contexto enviado para a AI:                             │  ║   ║
+║  ║  │  · Incident (severity, entities, summary, evidence)      │  ║   ║
+║  ║  │  · Últimos N eventos da mesma entidade (IP/user)         │  ║   ║
+║  ║  │  · Lista de IPs já bloqueados                            │  ║   ║
+║  ║  │  · Skills disponíveis com descrições                     │  ║   ║
+║  ║  └───────────────────────────┬──────────────────────────────┘  ║   ║
+║  ║                              │ AiDecision { action, confidence, ║   ║
+║  ║                              │             auto_execute, reason }║   ║
+║  ║                              ▼                                  ║   ║
+║  ║  ┌──────────────────────────────────────────────────────────┐  ║   ║
+║  ║  │  Executor  (confidence ≥ threshold AND auto_execute?)    │  ║   ║
+║  ║  │                                                          │  ║   ║
+║  ║  │  NÃO ──→ log "skipped: confidence X below threshold Y"  │  ║   ║
+║  ║  └───────────────────────────┬──────────────────────────────┘  ║   ║
+║  ║                              │ SIM                              ║   ║
+║  ║            ┌─────────────────┼──────────────────┐              ║   ║
+║  ║            │                 │                  │              ║   ║
+║  ║       block_ip          monitor_ip          honeypot           ║   ║
+║  ║   ┌────────────────┐  (premium stub)    (premium stub)        ║   ║
+║  ║   │ block-ip-ufw   │                                           ║   ║
+║  ║   │ block-ip-ipt   │  + request_confirmation                   ║   ║
+║  ║   │ block-ip-nft   │    └→ webhook POST com payload            ║   ║
+║  ║   └────────────────┘                                           ║   ║
+║  ║                              │                                 ║   ║
+║  ║                              ▼                                 ║   ║
+║  ║  decisions-YYYY-MM-DD.jsonl  (audit trail imutável)           ║   ║
+║  ╚══════════════════════════════════════════════════════════════╝   ║
+║                                                                        ║
+║  ╔══════════════════════════════════════════════════════════════════╗   ║
+║  ║  LOOP LENTO — tick a cada 30s                                   ║   ║
+║  ╠══════════════════════════════════════════════════════════════════╣   ║
+║  ║  Novos eventos?     → regenera summary-YYYY-MM-DD.md           ║   ║
+║  ║  Incidente ≥ min?   → webhook POST (notificação)               ║   ║
+║  ╚══════════════════════════════════════════════════════════════════╝   ║
+╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
-### Sensor (innerwarden-sensor)
+### Saídas geradas por dia
 
-```
-collectors → mpsc::channel(1024) → main loop → detectors → sinks
-                                                           ↘ events-YYYY-MM-DD.jsonl
-                                                           ↘ incidents-YYYY-MM-DD.jsonl
-                                                           ↘ state.json (cursors)
-```
-
-- **Collectors** rodam cada um em sua própria `tokio::task`. Usam `spawn_blocking` para I/O de arquivo. Enviam `Event` pelo canal.
-- **Main loop** drena o canal via `tokio::select!`, passa cada evento pelos detectores e grava no sink.
-- **Detectors** são síncronos, stateful, vivem no main loop.
-- **Sinks** gravam JSONL append-only com rotação diária.
-- **State** persiste cursors (offset auth_log, hashes de integridade, cursor journald, since docker) em `state.json` via escrita atômica (`.tmp` → rename).
-- **Shutdown**: `SIGINT`/`SIGTERM` via `tokio::select!` → flush JSONL → ler Arcs → salvar state.json.
-
-### Agent (innerwarden-agent)
-
-```
-events/incidents JSONL → reader (byte-offset cursor) → correlation → narrative / model API
-```
-
-- Lê JSONL incrementalmente via byte offsets (cursor próprio em `agent-state.json`).
-- Modos: `--once` (processa e sai) ou contínuo (poll a cada N segundos).
-- Sem dependência de LLM/HTTP no sensor — toda inteligência interpretativa fica no agent.
-- Preparado para futura integração com model APIs.
+| Arquivo | Quem escreve | Conteúdo |
+|---------|-------------|---------|
+| `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald) |
+| `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
+| `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação e resultado |
+| `summary-YYYY-MM-DD.md` | agent | Narrativa Markdown diária (eventos, incidentes, IPs top) |
+| `state.json` | sensor | Cursors dos collectors (offsets, hashes, timestamps) |
+| `agent-state.json` | agent | Byte offsets de leitura JSONL por data |
 
 ---
 
@@ -43,25 +156,43 @@ events/incidents JSONL → reader (byte-offset cursor) → correlation → narra
 
 ```
 crates/
-  core/     — tipos compartilhados: Event, Incident, EntityRef, Severity
+  core/     — tipos compartilhados: Event, Incident, EntityRef, Severity, EntityType
   sensor/   — binário innerwarden-sensor
     src/
       main.rs
       config.rs
       collectors/
-        auth_log.rs    — tail de /var/log/auth.log, parser SSH
-        integrity.rs   — SHA-256 polling de arquivos
-        journald.rs    — subprocess journalctl --follow --output=json
-        docker.rs      — subprocess docker events --format '{{json .}}'
+        auth_log.rs          — tail /var/log/auth.log, parser SSH
+        integrity.rs         — SHA-256 polling de arquivos
+        journald.rs          — subprocess journalctl --follow --output=json
+        docker.rs            — subprocess docker events --format '{{json .}}'
       detectors/
-        ssh_bruteforce.rs  — sliding window por IP
+        ssh_bruteforce.rs    — sliding window por IP
       sinks/
-        jsonl.rs       — DatedWriter com rotação diária
-        state.rs       — load/save atômico de cursors
+        jsonl.rs             — DatedWriter com rotação diária
+        state.rs             — load/save atômico de cursors
   agent/    — binário innerwarden-agent
     src/
-      main.rs          — CLI + continuous/once mode + SIGTERM
-      reader.rs        — JSONL incremental reader + AgentCursor persistence
+      main.rs                — CLI + dois loops (AI 2s + narrative 30s) + SIGTERM
+      config.rs              — AgentConfig: narrative, webhook, ai, responder
+      reader.rs              — JSONL incremental reader + AgentCursor persistence
+      narrative.rs           — geração de Markdown diário (generate/write/cleanup)
+      webhook.rs             — HTTP POST de notificações de incidente
+      decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
+      ai/
+        mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
+        openai.rs            — implementação real OpenAI (gpt-4o-mini)
+        anthropic.rs         — stub "coming soon / contribute"
+        ollama.rs            — stub "coming soon / contribute"
+      skills/
+        mod.rs               — ResponseSkill trait, SkillRegistry, Blocklist, SkillTier
+        builtin/
+          mod.rs
+          block_ip_ufw.rs    — Open ✅
+          block_ip_iptables.rs — Open ✅
+          block_ip_nftables.rs — Open ✅
+          monitor_ip.rs      — Premium stub 🔵
+          honeypot.rs        — Premium stub 🔵
 examples/
   systemd/innerwarden-sensor.service
 ```
@@ -72,7 +203,7 @@ examples/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 32 testes (26 sensor + 6 agent)
+make test             # 52 testes (27 sensor + 25 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -100,7 +231,7 @@ make status HOST=ubuntu@1.2.3.4
 
 ## Configuração
 
-Arquivo TOML (usado pelo sensor). Exemplo mínimo para produção:
+### Sensor (`config.toml`)
 
 ```toml
 [agent]
@@ -132,9 +263,70 @@ threshold = 8
 window_seconds = 300
 ```
 
-Config de teste local: `config.test.toml` (aponta para `./testdata/`).
+### Agent (`agent.toml`) — todos os campos têm defaults; arquivo é opcional
 
-O agent usa `--data-dir` para apontar ao mesmo diretório de saída do sensor.
+```toml
+[narrative]
+enabled = true       # gera summary-YYYY-MM-DD.md (default: true)
+keep_days = 7        # quantos summaries manter (default: 7)
+
+[webhook]
+enabled = false
+url = "https://hooks.example.com/notify"
+min_severity = "medium"   # debug | info | low | medium | high | critical
+timeout_secs = 10
+
+[ai]
+enabled = true
+provider = "openai"        # openai | anthropic (stub) | ollama (stub)
+# api_key = ""             # ou env var OPENAI_API_KEY
+model = "gpt-4o-mini"      # qualquer modelo do provider
+context_events = 20        # eventos recentes enviados como contexto
+confidence_threshold = 0.8 # abaixo disso → não auto-executa
+incident_poll_secs = 2     # intervalo do loop rápido
+
+[responder]
+enabled = true
+dry_run = true             # SEGURANÇA: começa sempre em dry_run
+block_backend = "ufw"      # ufw | iptables | nftables
+allowed_skills = ["block-ip-ufw", "monitor-ip"]
+```
+
+Config de teste local: `config.test.toml` (aponta para `./testdata/`).
+O agent usa `--data-dir` para apontar ao mesmo `data_dir` do sensor.
+
+---
+
+## Sistema de Skills (open-core)
+
+```
+Tier   │ ID                  │ Status
+───────┼─────────────────────┼────────────────────────────────
+Open   │ block-ip-ufw        │ ✅ executável
+Open   │ block-ip-iptables   │ ✅ executável
+Open   │ block-ip-nftables   │ ✅ executável
+Premium│ monitor-ip          │ 🔵 stub — logs + "coming soon"
+Premium│ honeypot            │ 🔵 stub — logs + "coming soon"
+```
+
+Para adicionar uma skill da comunidade:
+1. Criar struct que implemente `ResponseSkill` trait em `skills/builtin/`
+2. Registrar em `SkillRegistry::default_builtin()`
+3. Abrir PR em https://github.com/maiconburn/innerwarden
+
+O trait `ResponseSkill` exige: `id()`, `name()`, `description()`, `tier()`, `applicable_to()`, `execute()`.
+
+---
+
+## Multi-provider AI
+
+Para adicionar um novo provider de AI:
+1. Criar `crates/agent/src/ai/<nome>.rs` implementando `AiProvider` trait
+2. Registrar em `build_provider()` em `ai/mod.rs`
+3. Abrir PR
+
+O trait requer apenas: `fn name() -> &'static str` e `async fn decide(ctx) -> Result<AiDecision>`.
+Ver `openai.rs` como referência completa.
 
 ---
 
@@ -153,6 +345,19 @@ sudo usermod -aG docker innerwarden
 # Diretório de dados
 sudo mkdir -p /var/lib/innerwarden
 sudo chown innerwarden:innerwarden /var/lib/innerwarden
+
+# Permissões para skills de bloqueio (escolha o backend)
+# ufw:
+echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/ufw deny from *" \
+  | sudo tee /etc/sudoers.d/innerwarden
+
+# iptables (alternativa):
+echo "innerwarden ALL=(ALL) NOPASSWD: /sbin/iptables -A INPUT *" \
+  | sudo tee /etc/sudoers.d/innerwarden
+
+# nftables (alternativa):
+echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *" \
+  | sudo tee /etc/sudoers.d/innerwarden
 ```
 
 O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
@@ -161,21 +366,26 @@ O `data_dir` no config.toml **deve** bater com `ReadWritePaths` no service file.
 
 ## Formato de saída (JSONL)
 
-Dois arquivos por dia em `data_dir/` (contrato entre sensor e agent):
-- `events-YYYY-MM-DD.jsonl` — um JSON por linha
-- `incidents-YYYY-MM-DD.jsonl` — um JSON por linha
+Arquivos em `data_dir/` — contrato entre sensor e agent:
 
-Ver `docs/format.md` para schema completo.
+```
+data_dir/
+  events-YYYY-MM-DD.jsonl       — eventos brutos
+  incidents-YYYY-MM-DD.jsonl    — incidentes detectados
+  decisions-YYYY-MM-DD.jsonl    — decisões da AI (audit trail)
+  summary-YYYY-MM-DD.md         — narrativa diária em Markdown
+  state.json                    — cursors do sensor
+  agent-state.json              — cursors do agent (byte offsets)
+```
 
-State do sensor: `data_dir/state.json`.
-State do agent: `data_dir/agent-state.json` (byte offsets por data).
+Ver `docs/format.md` para schema completo de Event e Incident.
 
 ---
 
 ## Testes
 
 ```bash
-make test   # roda todos os 32 testes (sensor + agent)
+make test   # 52 testes (27 sensor + 25 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -184,9 +394,15 @@ Fixtures em `testdata/`:
 
 Testes de integração local:
 ```bash
-make run-sensor                       # grava em ./data/
-make run-agent                        # lê de ./data/
-innerwarden-agent --data-dir ./data --once   # roda uma vez e sai
+make run-sensor                              # grava em ./data/
+make run-agent                              # lê de ./data/
+innerwarden-agent --data-dir ./data --once  # roda uma vez e sai
+
+# Smoke test com AI em dry_run (seguro):
+OPENAI_API_KEY=sk-... innerwarden-agent \
+  --data-dir ./data \
+  --config agent-test.toml
+# Deve logar: "DRY RUN: would execute: sudo ufw deny from X"
 ```
 
 ---
@@ -194,20 +410,26 @@ innerwarden-agent --data-dir ./data --once   # roda uma vez e sai
 ## Convenções
 
 - **Commits em inglês** — sem mensagens em português.
-- **Sensor**: determinístico, sem HTTP/LLM/AI. Collectors são fail-open (`Ok(())`).
-- **Agent**: camada interpretativa. Pode chamar APIs externas quando necessário.
-- Cada collector: `run(tx, shared_state)` — async, nunca derruba o agente.
+- **Sensor**: determinístico, sem HTTP/LLM/AI. Collectors são fail-open.
+- **Agent**: camada interpretativa. Pode chamar APIs externas.
+- Cada collector: `run(tx, shared_state)` — async, nunca derruba o processo.
 - Erros de I/O nos sinks: logar com `warn!`, não propagar com `?`.
 - Novos tipos de evento: `source` descreve a origem, `kind` descreve o evento.
 - `Event.details`: manter pequeno (< 16KB). Não incluir payloads arbitrários.
 - `spawn_blocking` para qualquer I/O de arquivo síncrono dentro de tasks Tokio.
+- AI provider em `AgentState` usa `Arc<dyn AiProvider>` (não `Box`) para evitar
+  conflitos de borrow checker em async loops com `&mut state`.
 
 ---
 
-## Known issues / próximos passos
+## Próximos passos
 
-- Sensor: `process_event()` propaga erros de write com `?` — trocar para `warn!` + continua.
-- Sensor: flush do JSONL é por contagem (a cada 50 eventos) — adicionar flush por tempo (5s interval).
-- Sensor: journald faz double parse JSON por linha não-interessante — refatorar para parse único.
-- Agent: implementar correlação de eventos e agrupamento temporal.
-- Agent: adicionar geração de narrativa e integração com model APIs.
+- Agent: implementar provider Anthropic Claude (real)
+- Agent: implementar provider Ollama (LLM local, air-gapped)
+- Sensor: adicionar detectores (port scan, credential stuffing, Docker escape)
+- Skills: monitor-ip real (captura de tráfego via tcpdump/ebpf)
+- Skills: honeypot real (integração com cowrie ou similar)
+- Skills: carregamento de skills da comunidade via `~/.config/innerwarden/skills/`
+- Agent: correlação temporal entre múltiplos incidentes
+- Agent: suporte multi-host (agent central lendo data_dirs remotos via SSH/S3)
+- Dashboard TUI para visualização em tempo real
