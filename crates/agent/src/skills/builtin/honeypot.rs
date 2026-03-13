@@ -2627,6 +2627,8 @@ mod tests {
                 entities: vec![],
             },
             target_ip: Some("1.2.3.4".to_string()),
+            target_user: None,
+            duration_secs: None,
             host: "host-a".to_string(),
             data_dir: std::env::temp_dir(),
             honeypot: HoneypotRuntimeConfig {

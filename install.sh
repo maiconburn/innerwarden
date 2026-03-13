@@ -239,6 +239,11 @@ paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
 enabled = true
 threshold = 8
 window_seconds = 300
+
+[detectors.sudo_abuse]
+enabled = false
+threshold = 3
+window_seconds = 300
 EOF
 
 if [[ "${ENABLE_EXEC_AUDIT}" == "true" ]]; then

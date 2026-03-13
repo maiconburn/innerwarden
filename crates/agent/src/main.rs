@@ -1,6 +1,7 @@
 mod ai;
 mod config;
 mod correlation;
+mod dashboard;
 mod decisions;
 mod narrative;
 mod reader;
@@ -40,6 +41,18 @@ struct Cli {
     /// Generate a trial operational report from existing artifacts and exit
     #[arg(long)]
     report: bool,
+
+    /// Run read-only local dashboard server and exit this process only on SIGTERM/SIGINT
+    #[arg(long)]
+    dashboard: bool,
+
+    /// Bind address for dashboard mode (default: localhost only)
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    dashboard_bind: String,
+
+    /// Utility: generate Argon2 password hash for dashboard auth and exit.
+    #[arg(long)]
+    dashboard_generate_password_hash: bool,
 
     /// Poll interval in seconds for the narrative slow loop (default: 30)
     #[arg(long, default_value = "30")]
@@ -96,6 +109,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.dashboard_generate_password_hash {
+        dashboard::generate_password_hash_interactive()?;
+        return Ok(());
+    }
+
     if cli.honeypot_sandbox_runner {
         let spec = cli
             .honeypot_sandbox_spec
@@ -122,6 +140,12 @@ async fn main() -> Result<()> {
             out.markdown_path.display(),
             out.json_path.display()
         );
+        return Ok(());
+    }
+
+    if cli.dashboard {
+        let auth = dashboard::DashboardAuth::from_env()?;
+        dashboard::serve(cli.data_dir.clone(), cli.dashboard_bind.clone(), auth).await?;
         return Ok(());
     }
 
@@ -348,6 +372,28 @@ async fn process_incidents(
     cfg: &config::AgentConfig,
     state: &mut AgentState,
 ) -> usize {
+    if cfg.responder.enabled
+        && cfg
+            .responder
+            .allowed_skills
+            .iter()
+            .any(|id| id == "suspend-user-sudo")
+    {
+        match skills::builtin::cleanup_expired_sudo_suspensions(data_dir, cfg.responder.dry_run)
+            .await
+        {
+            Ok(removed) => {
+                if removed > 0 {
+                    info!(removed, "expired sudo suspensions cleaned up");
+                }
+            }
+            Err(e) => {
+                state.telemetry.observe_error("suspend_user_sudo_cleanup");
+                warn!("failed to cleanup expired sudo suspensions: {e:#}");
+            }
+        }
+    }
+
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
@@ -642,6 +688,8 @@ async fn execute_decision(
                     let ctx = skills::SkillContext {
                         incident: incident.clone(),
                         target_ip: Some(ip.clone()),
+                        target_user: None,
+                        duration_secs: None,
                         host: incident.host.clone(),
                         data_dir: data_dir.to_path_buf(),
                         honeypot: honeypot_runtime(cfg),
@@ -660,6 +708,8 @@ async fn execute_decision(
                 let ctx = skills::SkillContext {
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
+                    target_user: None,
+                    duration_secs: None,
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
                     honeypot: honeypot_runtime(cfg),
@@ -675,6 +725,8 @@ async fn execute_decision(
                 let ctx = skills::SkillContext {
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
+                    target_user: None,
+                    duration_secs: None,
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
                     honeypot: runtime.clone(),
@@ -709,6 +761,29 @@ async fn execute_decision(
                 }
             } else {
                 "skipped: honeypot skill not available".to_string()
+            }
+        }
+        AiAction::SuspendUserSudo {
+            user,
+            duration_secs,
+        } => {
+            let skill_id = "suspend-user-sudo";
+            if !cfg.responder.allowed_skills.iter().any(|id| id == skill_id) {
+                return format!("skipped: skill '{skill_id}' not in allowed_skills");
+            }
+            if let Some(skill) = state.skill_registry.get(skill_id) {
+                let ctx = skills::SkillContext {
+                    incident: incident.clone(),
+                    target_ip: None,
+                    target_user: Some(user.clone()),
+                    duration_secs: Some(*duration_secs),
+                    host: incident.host.clone(),
+                    data_dir: data_dir.to_path_buf(),
+                    honeypot: honeypot_runtime(cfg),
+                };
+                skill.execute(&ctx, cfg.responder.dry_run).await.message
+            } else {
+                "skipped: suspend-user-sudo skill not available".to_string()
             }
         }
         AiAction::RequestConfirmation { summary } => {

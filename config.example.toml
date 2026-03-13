@@ -53,3 +53,9 @@ enabled = false
 # distinct destination ports hit by one source IP within window
 threshold = 12
 window_seconds = 60
+
+[detectors.sudo_abuse]
+enabled = false
+# suspicious sudo commands by same user in window
+threshold = 3
+window_seconds = 300

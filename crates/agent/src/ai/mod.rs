@@ -35,6 +35,10 @@ pub enum AiAction {
     /// - `listener`: bounded multi-service decoy listeners with optional redirect
     Honeypot { ip: String },
 
+    /// Temporarily suspend sudo privileges for a user.
+    /// Implemented by the `suspend-user-sudo` skill using a sudoers drop-in.
+    SuspendUserSudo { user: String, duration_secs: u64 },
+
     /// Send a confirmation request to the operator webhook before acting.
     RequestConfirmation { summary: String },
 

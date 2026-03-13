@@ -30,6 +30,10 @@ run-sensor:
 run-agent:
 	$(CARGO) run -p innerwarden-agent -- --data-dir ./data
 
+.PHONY: run-dashboard
+run-dashboard:
+	$(CARGO) run -p innerwarden-agent -- --data-dir ./data --dashboard
+
 .PHONY: replay-qa
 replay-qa:
 	./scripts/replay_qa.sh

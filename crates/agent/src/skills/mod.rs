@@ -32,6 +32,10 @@ pub struct SkillContext {
     pub incident: Incident,
     /// Primary IP target, if applicable.
     pub target_ip: Option<String>,
+    /// Primary user target, if applicable.
+    pub target_user: Option<String>,
+    /// Optional action duration (seconds), used by temporary containment skills.
+    pub duration_secs: Option<u64>,
     pub host: String,
     /// Shared data dir used by sensor/agent artifacts.
     pub data_dir: PathBuf,
@@ -275,6 +279,7 @@ impl SkillRegistry {
                 Box::new(BlockIpNftables),
                 Box::new(MonitorIp),
                 Box::new(Honeypot),
+                Box::new(SuspendUserSudo),
             ],
         }
     }
@@ -384,6 +389,7 @@ mod tests {
         assert!(reg.get("block-ip-nftables").is_some());
         assert!(reg.get("monitor-ip").is_some());
         assert!(reg.get("honeypot").is_some());
+        assert!(reg.get("suspend-user-sudo").is_some());
         assert!(reg.get("nonexistent").is_none());
     }
 
@@ -391,7 +397,7 @@ mod tests {
     fn registry_infos_are_serializable() {
         let reg = SkillRegistry::default_builtin();
         let infos = reg.infos();
-        assert_eq!(infos.len(), 5);
+        assert_eq!(infos.len(), 6);
         let json = serde_json::to_string(&infos).unwrap();
         assert!(json.contains("block-ip-ufw"));
     }
@@ -430,6 +436,8 @@ mod tests {
                 entities: vec![],
             },
             target_ip: Some("1.2.3.4".into()),
+            target_user: None,
+            duration_secs: None,
             host: "h".into(),
             data_dir: std::env::temp_dir(),
             honeypot: HoneypotRuntimeConfig::default(),

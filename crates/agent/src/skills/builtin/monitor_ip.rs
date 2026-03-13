@@ -213,6 +213,8 @@ mod tests {
                 entities: vec![],
             },
             target_ip: ip.map(|v| v.to_string()),
+            target_user: None,
+            duration_secs: None,
             host: "host-a".to_string(),
             data_dir: std::env::temp_dir(),
             honeypot: crate::skills::HoneypotRuntimeConfig::default(),

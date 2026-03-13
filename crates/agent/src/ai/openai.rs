@@ -111,8 +111,10 @@ Rules:
 
 Respond ONLY with valid JSON using exactly this schema (no extra fields, no markdown):
 {
-  "action": "block_ip" | "monitor" | "honeypot" | "request_confirmation" | "ignore",
+  "action": "block_ip" | "monitor" | "honeypot" | "suspend_user_sudo" | "request_confirmation" | "ignore",
   "target_ip": "<IP or null>",
+  "target_user": "<username or null>",
+  "duration_secs": "<number or null>",
   "skill_id": "<skill id from available_skills, or null>",
   "confidence": <0.0 to 1.0>,
   "auto_execute": <true or false>,
@@ -218,6 +220,8 @@ struct Message {
 struct RawDecision {
     action: String,
     target_ip: Option<String>,
+    target_user: Option<String>,
+    duration_secs: Option<u64>,
     skill_id: Option<String>,
     confidence: f32,
     auto_execute: bool,
@@ -272,6 +276,26 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
         },
+        "suspend_user_sudo" => {
+            let Some(user) = raw.target_user.clone() else {
+                warn!("AI returned suspend_user_sudo with no target_user — downgrading to ignore");
+                return Ok(AiDecision {
+                    action: AiAction::Ignore {
+                        reason: "suspend_user_sudo action had no target user".to_string(),
+                    },
+                    confidence: raw.confidence.clamp(0.0, 1.0),
+                    auto_execute: false,
+                    reason: raw.reason,
+                    alternatives: raw.alternatives,
+                    estimated_threat: raw.estimated_threat,
+                });
+            };
+            let duration_secs = raw.duration_secs.unwrap_or(1800).clamp(60, 86_400);
+            AiAction::SuspendUserSudo {
+                user,
+                duration_secs,
+            }
+        }
         "request_confirmation" => AiAction::RequestConfirmation {
             summary: raw.reason.clone(),
         },
@@ -328,6 +352,8 @@ mod tests {
         let json = r#"{
             "action": "ignore",
             "target_ip": null,
+            "target_user": null,
+            "duration_secs": null,
             "skill_id": null,
             "confidence": 0.9,
             "auto_execute": false,
@@ -345,6 +371,8 @@ mod tests {
         let json = r#"{
             "action": "block_ip",
             "target_ip": null,
+            "target_user": null,
+            "duration_secs": null,
             "skill_id": "block-ip-ufw",
             "confidence": 0.92,
             "auto_execute": true,
@@ -359,6 +387,53 @@ mod tests {
             !d.auto_execute,
             "downgraded decision must never auto-execute"
         );
+    }
+
+    #[test]
+    fn parses_suspend_user_sudo_decision() {
+        let json = r#"{
+            "action": "suspend_user_sudo",
+            "target_ip": null,
+            "target_user": "deploy",
+            "duration_secs": 900,
+            "skill_id": "suspend-user-sudo",
+            "confidence": 0.93,
+            "auto_execute": true,
+            "reason": "Suspicious privileged commands from deploy user",
+            "alternatives": ["request_confirmation"],
+            "estimated_threat": "critical"
+        }"#;
+
+        let d = parse_decision(json).unwrap();
+        assert!(matches!(
+            d.action,
+            AiAction::SuspendUserSudo {
+                ref user,
+                duration_secs
+            } if user == "deploy" && duration_secs == 900
+        ));
+        assert!(d.auto_execute);
+        assert_eq!(d.estimated_threat, "critical");
+    }
+
+    #[test]
+    fn suspend_user_sudo_without_target_user_downgrades_to_ignore() {
+        let json = r#"{
+            "action": "suspend_user_sudo",
+            "target_ip": null,
+            "target_user": null,
+            "duration_secs": 1200,
+            "skill_id": "suspend-user-sudo",
+            "confidence": 0.9,
+            "auto_execute": true,
+            "reason": "missing user",
+            "alternatives": [],
+            "estimated_threat": "high"
+        }"#;
+
+        let d = parse_decision(json).unwrap();
+        assert!(matches!(d.action, AiAction::Ignore { .. }));
+        assert!(!d.auto_execute);
     }
 
     #[test]

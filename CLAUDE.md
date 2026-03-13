@@ -17,6 +17,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
 - ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
 - ✅ Detector de port scan por IP (sliding window por portas de destino únicas em logs de firewall)
+- ✅ Detector de abuso de `sudo` por usuário (`sudo_abuse`: burst de comandos privilegiados suspeitos por janela)
 - ✅ Output JSONL append-only com rotação diária automática
 - ✅ Fail-open: erros de I/O em collectors são logados, nunca derrubam o agente
 - ✅ Flush duplo: por contagem (50 eventos) + por tempo (intervalo de 5s)
@@ -32,11 +33,13 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Análise AI em tempo real de incidentes High/Critical
 - ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
 - ✅ Sanitização de decisão AI: `block_ip` sem `target_ip` é rebaixado para `ignore`
+- ✅ Nova ação AI: `suspend_user_sudo` (suspende sudo de usuário por janela limitada com TTL)
 - ✅ Auto-execução condicional: só age se `auto_execute=true` AND `confidence ≥ threshold`
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
 - ✅ Skill premium `honeypot` com hardening 8.7: perfis de jail (`standard|strict`) + handoff externo attested (receiver challenge/HMAC + pin opcional de `receiver_id`)
+- ✅ Skill open real: `suspend-user-sudo` (negação temporária de sudo via drop-in em `/etc/sudoers.d` + cleanup automático de expiração)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -53,6 +56,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Playbook de rollout hardening + smoke checks remotos (`make rollout-precheck/postcheck`)
 - ✅ Correlação temporal leve de incidentes por janela + pivôs (`ip`, `user`, `detector`) com contexto para AI e clusters narráveis
 - ✅ Telemetria operacional leve (JSONL) com métricas de ingestão, detectores, gate, AI, latência, erros e dry-run vs execução real
+- ✅ Dashboard local read-only (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria (sem endpoints de ação) + autenticação HTTP Basic obrigatória
 
 ---
 
@@ -81,6 +85,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║              │  ssh_bruteforce         │ ← sliding window por IP       ║
 ║              │  credential_stuffing    │ ← usuários distintos por IP    ║
 ║              │  port_scan              │ ← portas únicas por IP         ║
+║              │  sudo_abuse             │ ← comandos sudo suspeitos/user ║
 ║              └────────────┬────────────┘                               ║
 ║                           │ Events + Incidents                         ║
 ║                           ▼                                            ║
@@ -143,8 +148,8 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║  ║                              │ SIM                              ║   ║
 ║  ║            ┌─────────────────┼──────────────────┐              ║   ║
 ║  ║            │                 │                  │              ║   ║
-║  ║       block_ip          monitor_ip          honeypot           ║   ║
-║  ║   ┌────────────────┐  (premium capture) (premium real listener)║   ║
+║  ║   block_ip      monitor_ip      honeypot / suspend_user_sudo   ║   ║
+║  ║   ┌────────────────┐  (premium capture / listener / sudo TTL)  ║   ║
 ║  ║   │ block-ip-ufw   │                                           ║   ║
 ║  ║   │ block-ip-ipt   │  + request_confirmation                   ║   ║
 ║  ║   │ block-ip-nft   │    └→ webhook POST com payload            ║   ║
@@ -171,7 +176,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 |---------|-------------|---------|
 | `events-YYYY-MM-DD.jsonl` | sensor | Um evento por linha (SSH, Docker, integrity, journald, auditd opcional) |
 | `incidents-YYYY-MM-DD.jsonl` | sensor | Incidentes detectados (brute-force, etc.) |
-| `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação e resultado |
+| `decisions-YYYY-MM-DD.jsonl` | agent | Decisões da AI com confidence, ação (`block_ip`/`monitor`/`honeypot`/`suspend_user_sudo`/`ignore`) e resultado |
 | `telemetry-YYYY-MM-DD.jsonl` | agent | Snapshots operacionais (coletores, detectores, gate, AI, latência, erros, dry-run/real) |
 | `honeypot/listener-session-*.json` | agent | Metadados de sessão do honeypot listener (serviços, redirecionamento, stats) |
 | `honeypot/listener-session-*.jsonl` | agent | Evidências por conexão/sessão no honeypot listener |
@@ -204,6 +209,7 @@ crates/
         ssh_bruteforce.rs    — sliding window por IP
         credential_stuffing.rs — spray de usuários distintos por IP
         port_scan.rs         — portas de destino únicas por IP (firewall logs)
+        sudo_abuse.rs        — burst de comandos sudo suspeitos por usuário (janela + threshold)
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
         state.rs             — load/save atômico de cursors
@@ -214,6 +220,7 @@ crates/
       reader.rs              — JSONL incremental reader + AgentCursor persistence
       correlation.rs         — correlação temporal leve + clusterização de incidentes
       telemetry.rs           — telemetria operacional leve (snapshot JSONL por tick)
+      dashboard.rs           — servidor HTTP local read-only + UI operacional
       report.rs              — relatório operacional v2 (`--report`) com tendências, anomaly hints e telemetria
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
@@ -230,6 +237,7 @@ crates/
           block_ip_ufw.rs    — Open ✅
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
+          suspend_user_sudo.rs — Open ✅ (suspensão temporária de sudo com TTL + cleanup)
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
           honeypot.rs        — Premium ✅ (hardening 8.7: jail profile presets + receiver attestation no handoff externo)
 examples/
@@ -245,7 +253,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 109 testes (44 sensor + 65 agent)
+make test             # 122 testes (48 sensor + 74 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -260,6 +268,8 @@ make build-agent      # só o agent
 # Rodar localmente
 make run-sensor       # sensor com config.test.toml
 make run-agent        # agent lendo ./data/
+make run-dashboard    # dashboard read-only em http://127.0.0.1:8787 (requer auth env vars)
+innerwarden-agent --dashboard-generate-password-hash  # gera hash Argon2 para auth do dashboard
 innerwarden-agent --report --data-dir ./data  # gera trial-report-YYYY-MM-DD.{md,json}
 make replay-qa        # replay end-to-end com assertions estáveis de artefatos
 
@@ -333,6 +343,11 @@ window_seconds = 300
 enabled = false       # recomendado habilitar após validar volume de logs de firewall
 threshold = 12        # portas de destino únicas por IP na janela
 window_seconds = 60
+
+[detectors.sudo_abuse]
+enabled = false       # recomendado habilitar com política clara de resposta e governança
+threshold = 3         # comandos sudo suspeitos por usuário na janela
+window_seconds = 300
 ```
 
 ### Variáveis de ambiente (`.env`)
@@ -348,6 +363,17 @@ OPENAI_API_KEY=sk-...
 ```
 
 O agent carrega `.env` automaticamente ao iniciar. Em produção, use variáveis de ambiente reais — o `.env` é silenciosamente ignorado se não existir.
+
+Variáveis para dashboard (read-only + auth obrigatória):
+
+```bash
+# Usuário de login do dashboard
+INNERWARDEN_DASHBOARD_USER=admin
+
+# Hash Argon2 PHC gerado por:
+# innerwarden-agent --dashboard-generate-password-hash
+INNERWARDEN_DASHBOARD_PASSWORD_HASH=$argon2id$...
+```
 
 ### Agent (`agent.toml`) — todos os campos têm defaults; arquivo é opcional
 
@@ -441,7 +467,7 @@ backend = "iptables"
 enabled = true
 dry_run = true             # SEGURANÇA: começa sempre em dry_run
 block_backend = "ufw"      # ufw | iptables | nftables
-allowed_skills = ["block-ip-ufw", "monitor-ip"]  # adicione "honeypot" para permitir execução dessa skill
+allowed_skills = ["block-ip-ufw", "monitor-ip"]  # adicione "honeypot" e/ou "suspend-user-sudo" para permitir execução dessas skills
 ```
 
 Config de teste local: `config.test.toml` (aponta para `./testdata/`).
@@ -457,6 +483,7 @@ Tier   │ ID                  │ Status
 Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
+Open   │ suspend-user-sudo   │ ✅ executável — nega sudo por TTL com cleanup automático
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
 Premium│ honeypot            │ ✅ hardening 8.7 (containment `process|namespace|jail` + jail_profile + handoff externo attested)
 ```
@@ -516,6 +543,11 @@ echo "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *" \
 # Exemplo mínimo (revise com cuidado antes de usar em produção):
 # innerwarden ALL=(ALL) NOPASSWD: /usr/bin/timeout *, /usr/sbin/tcpdump *
 
+# suspend-user-sudo (open, opcional):
+# requer gerenciamento de drop-ins do sudoers e validação visudo.
+# Exemplo mínimo (revise com cuidado antes de usar em produção):
+# innerwarden ALL=(ALL) NOPASSWD: /usr/bin/install *, /usr/sbin/visudo -cf *, /bin/rm -f /etc/sudoers.d/zz-innerwarden-deny-*
+
 # Shell audit trail (opcional, alto impacto de privacidade):
 # - habilite apenas com autorização explícita do dono do host
 # - o install.sh pode criar automaticamente:
@@ -557,7 +589,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 109 testes (44 sensor + 65 agent) — todos devem passar
+make test   # 122 testes (48 sensor + 74 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -639,6 +671,9 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 7.3 (concluída): telemetria operacional leve
 - Fase 7.4 (concluída): honeypot demo only (simulação controlada)
 - Fase 7.5 (concluída): trilha opcional de shell (`auditd EXECVE` + `TTY` opcional) com consentimento explícito no instalador
+- Fase 7.6 (concluída): resposta de abuso de privilégio (`sudo_abuse` + ação AI `suspend_user_sudo` com TTL e cleanup)
+- Fase D1 (concluída): dashboard local read-only (`--dashboard`) para visibilidade operacional sem execução de ações
+- Fase D2 (próxima): UX de investigação (filtros, pivôs e drill-down por entidade)
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)
@@ -648,7 +683,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
 - Honeypot roadmap (pausado): sem fase 8.8 ativa; evolução segue em maintenance mode até novo objetivo explícito
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md` e `docs/phase-8-honeypot-runtime-profile-attested-handoff.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md` e `docs/phase-8-honeypot-runtime-profile-attested-handoff.md`
 
 ---
 

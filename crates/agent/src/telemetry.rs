@@ -189,6 +189,7 @@ fn action_tag(action: &AiAction) -> &'static str {
         AiAction::BlockIp { .. } => "block_ip",
         AiAction::Monitor { .. } => "monitor",
         AiAction::Honeypot { .. } => "honeypot",
+        AiAction::SuspendUserSudo { .. } => "suspend_user_sudo",
         AiAction::RequestConfirmation { .. } => "request_confirmation",
         AiAction::Ignore { .. } => "ignore",
     }

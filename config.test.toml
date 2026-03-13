@@ -43,3 +43,8 @@ window_seconds = 300
 enabled = true
 threshold = 3
 window_seconds = 60
+
+[detectors.sudo_abuse]
+enabled = false
+threshold = 2
+window_seconds = 300

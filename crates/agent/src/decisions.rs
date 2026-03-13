@@ -123,6 +123,11 @@ pub fn build_entry(
         ),
         AiAction::Monitor { ip } => ("monitor".to_string(), Some(ip.clone()), None),
         AiAction::Honeypot { ip } => ("honeypot".to_string(), Some(ip.clone()), None),
+        AiAction::SuspendUserSudo { .. } => (
+            "suspend_user_sudo".to_string(),
+            None,
+            Some("suspend-user-sudo".to_string()),
+        ),
         AiAction::RequestConfirmation { .. } => ("request_confirmation".to_string(), None, None),
         AiAction::Ignore { .. } => ("ignore".to_string(), None, None),
     };

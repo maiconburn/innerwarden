@@ -133,6 +133,8 @@ pub struct DetectorsConfig {
     pub credential_stuffing: CredentialStuffingConfig,
     #[serde(default)]
     pub port_scan: PortScanConfig,
+    #[serde(default)]
+    pub sudo_abuse: SudoAbuseConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +197,26 @@ impl Default for PortScanConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SudoAbuseConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_sudo_abuse_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_sudo_abuse_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for SudoAbuseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_sudo_abuse_threshold(),
+            window_seconds: default_sudo_abuse_window_seconds(),
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -211,6 +233,10 @@ fn default_credential_stuffing_threshold() -> usize {
     6
 }
 
+fn default_sudo_abuse_threshold() -> usize {
+    3
+}
+
 fn default_window_seconds() -> u64 {
     300
 }
@@ -220,6 +246,10 @@ fn default_port_scan_window_seconds() -> u64 {
 }
 
 fn default_credential_stuffing_window_seconds() -> u64 {
+    300
+}
+
+fn default_sudo_abuse_window_seconds() -> u64 {
     300
 }
 
