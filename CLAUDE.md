@@ -221,6 +221,12 @@ make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
 
+# Instalação trial em servidor Linux (systemd)
+./install.sh          # pede OPENAI_API_KEY, instala binários em /usr/local/bin,
+                      # cria /etc/innerwarden/{config.toml,agent.toml,agent.env},
+                      # cria/ativa innerwarden-sensor + innerwarden-agent,
+                      # sobe em modo seguro (responder.enabled=false, dry_run=true)
+
 # Rodar localmente
 make run-sensor       # sensor com config.test.toml
 make run-agent        # agent lendo ./data/
