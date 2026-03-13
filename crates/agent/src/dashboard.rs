@@ -1766,8 +1766,33 @@ const INDEX_HTML: &str = r##"<!doctype html>
       padding: 10px 16px; border-bottom: 1px solid var(--line);
       flex-shrink: 0;
     }
-    .app-title { font-weight: 700; font-size: 1rem; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
-    .logo { display: inline-flex; align-items: center; justify-content: center; color: var(--accent); }
+    .app-title {
+      font-weight: 800;
+      font-size: 1.03rem;
+      letter-spacing: -0.005em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+    }
+    .logo {
+      width: 30px;
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      border-radius: 8px;
+      border: 1px solid rgba(86, 200, 255, 0.35);
+      background: radial-gradient(circle at 30% 25%, rgba(86, 200, 255, 0.24), rgba(7, 18, 24, 0.96) 72%);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 3px 10px rgba(0, 0, 0, 0.35);
+    }
+    .logo svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
+    }
     .app-badge {
       font-size: 0.68rem; color: var(--muted); letter-spacing: 0.02em;
       border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
@@ -2132,6 +2157,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
       .app-header { padding: 10px 12px; }
       .app-title { font-size: 0.95rem; }
+      .logo { width: 28px; height: 28px; }
       .app-badge { display: none; }
 
       .left-panel {
