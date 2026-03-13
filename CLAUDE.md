@@ -463,6 +463,13 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 > deve ser refletida no CLAUDE.md no mesmo commit. Se não está documentado aqui,
 > não existe para quem retomar o projeto.
 
+**Durante o production trial (execução paralela):**
+
+- Desenvolvimento contínuo em branch local dedicada (`codex-dev`)
+- Host de trial permanece estável sem upgrade automático
+- Promoção para produção só acontece por fase, com validação explícita
+- Plano ativo versionado em `docs/development-plan.md`
+
 ---
 
 ## Convenções
@@ -483,12 +490,10 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 
 ## Próximos passos
 
-- Agent: implementar provider Anthropic Claude (real)
-- Agent: implementar provider Ollama (LLM local, air-gapped)
-- Sensor: adicionar detectores (port scan, credential stuffing, Docker escape)
-- Skills: monitor-ip real (captura de tráfego via tcpdump/ebpf)
-- Skills: honeypot real (integração com cowrie ou similar)
-- Skills: carregamento de skills da comunidade via `~/.config/innerwarden/skills/`
-- Agent: correlação temporal entre múltiplos incidentes
-- Agent: suporte multi-host (agent central lendo data_dirs remotos via SSH/S3)
-- Dashboard TUI para visualização em tempo real
+- Fase 1 (ativa): Sensor — detector `port_scan`
+- Fase 2 (planejada): Sensor — detector `credential_stuffing`
+- Fase 3 (planejada): Replay QA harness para validação end-to-end
+- Fase 4 (deferida): Agent `--report` v2 (tendências e anomalias adicionais)
+- Fase 5 (planejada): Skill `monitor-ip` real (execução continua segura por config)
+- Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
+- Referência do roadmap: `docs/development-plan.md`
