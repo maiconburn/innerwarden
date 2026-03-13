@@ -34,7 +34,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Sistema de skills plugável** (open-core: tiers Open e Premium)
 - ✅ Skills built-in: `block-ip-ufw`, `block-ip-iptables`, `block-ip-nftables`
 - ✅ Skill premium real: `monitor-ip` (captura de tráfego limitada em `.pcap` + metadata)
-- ✅ Stub premium com mensagem amigável: `honeypot`
+- ✅ Skill premium demo: `honeypot` (marcador controlado `DEMO/SIMULATION/DECOY`, sem infraestrutura real)
 - ✅ Dry-run por padrão (seguro para produção até o usuário habilitar)
 - ✅ Blocklist em memória (evita bloquear o mesmo IP duas vezes)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
@@ -142,7 +142,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 ║  ║            ┌─────────────────┼──────────────────┐              ║   ║
 ║  ║            │                 │                  │              ║   ║
 ║  ║       block_ip          monitor_ip          honeypot           ║   ║
-║  ║   ┌────────────────┐  (premium capture) (premium stub)        ║   ║
+║  ║   ┌────────────────┐  (premium capture) (premium demo)        ║   ║
 ║  ║   │ block-ip-ufw   │                                           ║   ║
 ║  ║   │ block-ip-ipt   │  + request_confirmation                   ║   ║
 ║  ║   │ block-ip-nft   │    └→ webhook POST com payload            ║   ║
@@ -220,7 +220,7 @@ crates/
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
-          honeypot.rs        — Premium stub 🔵
+          honeypot.rs        — Premium demo ✅ (marcador controlado, TODO real rebuild)
 examples/
   systemd/innerwarden-sensor.service
 scripts/
@@ -234,7 +234,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 85 testes (40 sensor + 45 agent)
+make test             # 86 testes (40 sensor + 46 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -383,7 +383,7 @@ Open   │ block-ip-ufw        │ ✅ executável
 Open   │ block-ip-iptables   │ ✅ executável
 Open   │ block-ip-nftables   │ ✅ executável
 Premium│ monitor-ip          │ ✅ executável — captura limitada (`tcpdump`) + metadata
-Premium│ honeypot            │ 🔵 stub — logs + "coming soon"
+Premium│ honeypot            │ ✅ demo only — marcador `DEMO/SIMULATION/DECOY` (sem honeypot real)
 ```
 
 Para adicionar uma skill da comunidade:
@@ -468,7 +468,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 85 testes (40 sensor + 45 agent) — todos devem passar
+make test   # 86 testes (40 sensor + 46 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -547,6 +547,7 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 - Fase 7.1 (concluída): Production rollout hardening (playbook + smoke checks + rollback rápido)
 - Fase 7.2 (concluída): correlação temporal simples por janela + entidade
 - Fase 7.3 (concluída): telemetria operacional leve
-- Fase 7.4 (planejada): honeypot demo only (simulação controlada)
+- Fase 7.4 (concluída): honeypot demo only (simulação controlada)
+- Próxima trilha (planejada): rebuild do honeypot real (fase dedicada, separado do demo)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md` e `docs/phase-7-operational-telemetry.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md` e `docs/phase-7-honeypot-demo.md`

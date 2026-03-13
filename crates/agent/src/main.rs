@@ -512,7 +512,7 @@ async fn process_incidents(
             && cfg.responder.enabled
         {
             state.telemetry.observe_execution_path(cfg.responder.dry_run);
-            execute_decision(&decision, incident, cfg, state).await
+            execute_decision(&decision, incident, data_dir, cfg, state).await
         } else if !cfg.responder.enabled {
             "skipped: responder disabled".to_string()
         } else if !decision.auto_execute {
@@ -562,6 +562,7 @@ async fn process_incidents(
 async fn execute_decision(
     decision: &ai::AiDecision,
     incident: &innerwarden_core::incident::Incident,
+    data_dir: &Path,
     cfg: &config::AgentConfig,
     state: &mut AgentState,
 ) -> String {
@@ -624,7 +625,26 @@ async fn execute_decision(
                     target_ip: Some(ip.clone()),
                     host: incident.host.clone(),
                 };
-                skill.execute(&ctx, cfg.responder.dry_run).await.message
+                let result = skill.execute(&ctx, cfg.responder.dry_run).await;
+                if result.success {
+                    match append_honeypot_demo_event(data_dir, incident, ip, cfg.responder.dry_run).await {
+                        Ok(path) => format!(
+                            "{} | demo marker written to {}",
+                            result.message,
+                            path.display()
+                        ),
+                        Err(e) => {
+                            state.telemetry.observe_error("honeypot_demo_writer");
+                            warn!("failed to write honeypot demo marker: {e:#}");
+                            format!(
+                                "{} | warning: failed to write honeypot demo marker: {e}",
+                                result.message
+                            )
+                        }
+                    }
+                } else {
+                    result.message
+                }
             } else {
                 "skipped: honeypot skill not available".to_string()
             }
@@ -650,6 +670,60 @@ async fn execute_decision(
             format!("ignored: {reason}")
         }
     }
+}
+
+async fn append_honeypot_demo_event(
+    data_dir: &Path,
+    incident: &innerwarden_core::incident::Incident,
+    ip: &str,
+    dry_run: bool,
+) -> Result<std::path::PathBuf> {
+    use tokio::io::AsyncWriteExt;
+
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let events_path = data_dir.join(format!("events-{today}.jsonl"));
+
+    let event = innerwarden_core::event::Event {
+        ts: chrono::Utc::now(),
+        host: incident.host.clone(),
+        source: "agent.honeypot_demo".to_string(),
+        kind: "honeypot.demo_decoy_hit".to_string(),
+        severity: innerwarden_core::event::Severity::Info,
+        summary: format!(
+            "DEMO/SIMULATION/DECOY: attacker {ip} marked as honeypot hit (controlled marker only)"
+        ),
+        details: serde_json::json!({
+            "mode": "demo",
+            "simulation": true,
+            "decoy": true,
+            "target_ip": ip,
+            "incident_id": incident.incident_id,
+            "dry_run": dry_run,
+            "note": "No real honeypot infrastructure is deployed in this phase."
+        }),
+        tags: vec![
+            "honeypot".to_string(),
+            "demo".to_string(),
+            "simulation".to_string(),
+            "decoy".to_string(),
+        ],
+        entities: vec![innerwarden_core::entities::EntityRef::ip(ip)],
+    };
+
+    let line = serde_json::to_string(&event)?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events_path)
+        .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.write_all(b"\n").await?;
+    file.flush().await?;
+
+    Ok(events_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,5 +1224,69 @@ mod tests {
             related_count.load(Ordering::SeqCst) >= 1,
             "second correlated incident should carry prior incident context"
         );
+    }
+
+    #[tokio::test]
+    async fn honeypot_demo_writes_synthetic_decoy_event() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let attacker_ip = "7.7.7.7";
+        let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
+        let mut f = std::fs::File::create(&incidents_path).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        drop(f);
+
+        let cfg = config::AgentConfig {
+            ai: config::AiConfig {
+                enabled: true,
+                confidence_threshold: 0.5,
+                context_events: 5,
+                ..config::AiConfig::default()
+            },
+            responder: config::ResponderConfig {
+                enabled: true,
+                dry_run: true,
+                block_backend: "ufw".to_string(),
+                allowed_skills: vec!["honeypot".to_string()],
+            },
+            ..config::AgentConfig::default()
+        };
+
+        let mock = Arc::new(MockAiProvider {
+            decision: ai::AiDecision {
+                action: ai::AiAction::Honeypot {
+                    ip: attacker_ip.to_string(),
+                },
+                confidence: 0.95,
+                auto_execute: true,
+                reason: "demo honeypot test".to_string(),
+                alternatives: vec![],
+                estimated_threat: "high".to_string(),
+            },
+        });
+
+        let mut state = AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
+            ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
+            decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+        };
+
+        let mut cursor = reader::AgentCursor::default();
+        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+        assert_eq!(handled, 1);
+
+        let events_path = dir.path().join(format!("events-{today}.jsonl"));
+        let content = std::fs::read_to_string(&events_path).unwrap();
+        assert!(content.contains("honeypot.demo_decoy_hit"));
+        assert!(content.contains("DEMO/SIMULATION/DECOY"));
+        assert!(content.contains(attacker_ip));
     }
 }

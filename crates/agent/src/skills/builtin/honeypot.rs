@@ -5,24 +5,24 @@ use tracing::info;
 
 use crate::skills::{ResponseSkill, SkillContext, SkillResult, SkillTier};
 
-/// Premium skill: engage a honeypot to deceive and fingerprint the attacker.
+/// Premium skill: controlled honeypot demo marker (not a real honeypot).
 ///
-/// Full implementation would:
-/// - Redirect attacker traffic to a sandboxed environment
-/// - Present fake credentials, fake services, fake data
-/// - Collect attacker TTPs (tactics, techniques, procedures)
-/// - Feed intelligence back into the incident for analysis
+/// Current phase behavior:
+/// - Produces a demo/simulation signal that can be used in narrative and product demos.
+/// - Does NOT expose decoy services and does NOT redirect real attacker traffic.
 ///
-/// Community contributions welcome: https://github.com/maiconburn/innerwarden
+/// TODO(real honeypot rebuild):
+/// - Replace this demo behavior with dedicated infrastructure for decoy services,
+///   traffic redirection, and safe forensic capture in a future phase.
 pub struct Honeypot;
 
 impl ResponseSkill for Honeypot {
     fn id(&self) -> &'static str { "honeypot" }
-    fn name(&self) -> &'static str { "Engage Honeypot (Premium)" }
+    fn name(&self) -> &'static str { "Honeypot Demo Marker (Premium)" }
     fn description(&self) -> &'static str {
-        "Redirects attacker traffic to a honeypot environment to gather threat intelligence. \
-         Attacker believes they are attacking the real system while being profiled. \
-         [PREMIUM] Requires dedicated honeypot infrastructure."
+        "Creates a controlled DEMO/SIMULATION/DECOY marker indicating an attacker \
+         'fell into honeypot' for narrative and product demo flows. \
+         This phase does not run real honeypot infrastructure."
     }
     fn tier(&self) -> SkillTier { SkillTier::Premium }
     fn applicable_to(&self) -> &'static [&'static str] { &[] }
@@ -36,15 +36,14 @@ impl ResponseSkill for Honeypot {
             let ip = ctx.target_ip.as_deref().unwrap_or("unknown");
             info!(
                 ip,
-                "🍯 [PREMIUM] honeypot skill is not yet implemented. \
-                 Traffic from {ip} would be redirected to a honeypot here. \
-                 Contributions welcome: https://github.com/maiconburn/innerwarden"
+                "[PREMIUM] honeypot demo marker triggered for {ip} \
+                 (DEMO/SIMULATION/DECOY mode; no real honeypot infrastructure)"
             );
             SkillResult {
                 success: true,
                 message: format!(
-                    "[PREMIUM stub] Would engage honeypot for {ip}. \
-                     Full implementation requires dedicated honeypot infrastructure."
+                    "[PREMIUM DEMO] Honeypot simulation marker armed for {ip}. \
+                     TODO: future phase will replace this with a real honeypot implementation."
                 ),
             }
         })

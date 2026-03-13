@@ -29,8 +29,8 @@ pub enum AiAction {
     /// Premium feature stub; community can implement full tracking.
     Monitor { ip: String },
 
-    /// Engage honeypot to deceive and fingerprint the attacker.
-    /// Premium feature stub; requires dedicated honeypot infrastructure.
+    /// Trigger a controlled honeypot demo marker (DEMO/SIMULATION/DECOY).
+    /// Real honeypot infrastructure is intentionally out of scope for this phase.
     Honeypot { ip: String },
 
     /// Send a confirmation request to the operator webhook before acting.
