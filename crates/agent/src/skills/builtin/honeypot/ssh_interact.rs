@@ -50,7 +50,13 @@ pub(crate) struct HoneypotSshHandler {
 }
 
 impl HoneypotSshHandler {
-    fn record(&self, method: &str, username: &str, password: Option<String>, key_name: Option<String>) {
+    fn record(
+        &self,
+        method: &str,
+        username: &str,
+        password: Option<String>,
+        key_name: Option<String>,
+    ) {
         let mut ev = self.evidence.lock().unwrap_or_else(|e| e.into_inner());
         ev.push(SshAuthAttempt {
             ts: Utc::now().to_rfc3339(),
@@ -70,13 +76,17 @@ impl Handler for HoneypotSshHandler {
     async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_none");
         self.record("none", user, None, None);
-        Ok(Auth::Reject { proceed_with_methods: None })
+        Ok(Auth::Reject {
+            proceed_with_methods: None,
+        })
     }
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_password");
         self.record("password", user, Some(password.to_string()), None);
-        Ok(Auth::Reject { proceed_with_methods: None })
+        Ok(Auth::Reject {
+            proceed_with_methods: None,
+        })
     }
 
     async fn auth_publickey(
@@ -86,7 +96,9 @@ impl Handler for HoneypotSshHandler {
     ) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_publickey");
         self.record("publickey", user, None, Some(key.name().to_string()));
-        Ok(Auth::Reject { proceed_with_methods: None })
+        Ok(Auth::Reject {
+            proceed_with_methods: None,
+        })
     }
 
     async fn auth_keyboard_interactive(
@@ -97,7 +109,9 @@ impl Handler for HoneypotSshHandler {
     ) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_keyboard_interactive");
         self.record("keyboard-interactive", user, None, None);
-        Ok(Auth::Reject { proceed_with_methods: None })
+        Ok(Auth::Reject {
+            proceed_with_methods: None,
+        })
     }
 
     async fn channel_open_session(
@@ -142,11 +156,8 @@ pub(crate) async fn handle_connection(
         evidence: Arc::clone(&bucket),
     };
 
-    let result = tokio::time::timeout(
-        conn_timeout,
-        server::run_stream(config, stream, handler),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(conn_timeout, server::run_stream(config, stream, handler)).await;
 
     match result {
         Ok(Ok(session)) => {
@@ -161,11 +172,10 @@ pub(crate) async fn handle_connection(
         }
     }
 
-    let attempts = bucket
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    SshConnectionEvidence { auth_attempts: attempts }
+    let attempts = bucket.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    SshConnectionEvidence {
+        auth_attempts: attempts,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +231,10 @@ mod tests {
         // Multiple attempts — all must be rejected.
         for i in 0..4u32 {
             let res = h.auth_password("user", &format!("pass{i}")).await.unwrap();
-            assert!(matches!(res, Auth::Reject { .. }), "attempt {i} should reject");
+            assert!(
+                matches!(res, Auth::Reject { .. }),
+                "attempt {i} should reject"
+            );
         }
         assert_eq!(bucket.lock().unwrap().len(), 4);
     }

@@ -136,7 +136,9 @@ async fn read_one_request(
         }
         if let Some(colon) = line.iter().position(|&b| b == b':') {
             let name = String::from_utf8_lossy(&line[..colon]).trim().to_string();
-            let value = String::from_utf8_lossy(&line[colon + 1..]).trim().to_string();
+            let value = String::from_utf8_lossy(&line[colon + 1..])
+                .trim()
+                .to_string();
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.parse().unwrap_or(0);
             }
@@ -177,8 +179,7 @@ async fn read_one_request(
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
 fn trim_cr(b: &[u8]) -> &[u8] {
@@ -237,7 +238,14 @@ fn url_decode(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn interesting_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
-    const KEEP: &[&str] = &["host", "user-agent", "content-type", "authorization", "referer", "accept-language"];
+    const KEEP: &[&str] = &[
+        "host",
+        "user-agent",
+        "content-type",
+        "authorization",
+        "referer",
+        "accept-language",
+    ];
     headers
         .iter()
         .filter(|(name, _)| KEEP.iter().any(|k| name.eq_ignore_ascii_case(k)))
@@ -248,7 +256,9 @@ fn interesting_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
 fn is_form_post(headers: &[(String, String)]) -> bool {
     headers.iter().any(|(name, value)| {
         name.eq_ignore_ascii_case("content-type")
-            && value.to_ascii_lowercase().contains("application/x-www-form-urlencoded")
+            && value
+                .to_ascii_lowercase()
+                .contains("application/x-www-form-urlencoded")
     })
 }
 
@@ -282,9 +292,7 @@ fn http_404() -> Vec<u8> {
 /// Route one request and return the HTTP response bytes.
 fn route(req: &RawRequest, capture: &mut HttpRequestCapture) -> Vec<u8> {
     match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/" | "/admin" | "/dashboard" | "/wp-admin" | "/phpmyadmin") => {
-            http_302("/login")
-        }
+        ("GET", "/" | "/admin" | "/dashboard" | "/wp-admin" | "/phpmyadmin") => http_302("/login"),
         ("GET", "/login") => http_200(LOGIN_HTML_BODY),
         ("POST", "/login") => {
             // Parse credentials from form body.
@@ -374,7 +382,10 @@ mod tests {
         let fields = parse_urlencoded(body);
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0], ("username".to_string(), "admin".to_string()));
-        assert_eq!(fields[1], ("password".to_string(), "secret 123".to_string()));
+        assert_eq!(
+            fields[1],
+            ("password".to_string(), "secret 123".to_string())
+        );
     }
 
     #[test]
@@ -431,9 +442,10 @@ mod tests {
         let req = RawRequest {
             method: "POST".into(),
             path: "/login".into(),
-            headers: vec![
-                ("Content-Type".into(), "application/x-www-form-urlencoded".into()),
-            ],
+            headers: vec![(
+                "Content-Type".into(),
+                "application/x-www-form-urlencoded".into(),
+            )],
             body: body.to_vec(),
             keep_alive: false,
         };
@@ -449,8 +461,14 @@ mod tests {
         let resp_str = String::from_utf8_lossy(&resp);
         assert!(resp_str.contains("Invalid username or password"));
         let fields = cap.form_fields.unwrap();
-        assert_eq!(fields.iter().find(|(k, _)| k == "username").unwrap().1, "hacker");
-        assert_eq!(fields.iter().find(|(k, _)| k == "password").unwrap().1, "p@$$w0rd");
+        assert_eq!(
+            fields.iter().find(|(k, _)| k == "username").unwrap().1,
+            "hacker"
+        );
+        assert_eq!(
+            fields.iter().find(|(k, _)| k == "password").unwrap().1,
+            "p@$$w0rd"
+        );
     }
 
     #[test]

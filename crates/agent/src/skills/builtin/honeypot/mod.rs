@@ -1928,12 +1928,13 @@ async fn run_listener(
     let is_medium = runtime.interaction == "medium";
 
     // Build SSH config once for this listener (ephemeral key per session).
-    let ssh_config: Option<Arc<russh::server::Config>> =
-        if is_medium && endpoint.service == "ssh" {
-            Some(ssh_interact::build_ssh_config(runtime.ssh_max_auth_attempts))
-        } else {
-            None
-        };
+    let ssh_config: Option<Arc<russh::server::Config>> = if is_medium && endpoint.service == "ssh" {
+        Some(ssh_interact::build_ssh_config(
+            runtime.ssh_max_auth_attempts,
+        ))
+    } else {
+        None
+    };
 
     // Per-connection timeout: 60s max (protocol interaction is bounded).
     let conn_timeout = Duration::from_secs(60);
@@ -1985,7 +1986,9 @@ async fn run_listener(
             // Medium interaction: full protocol emulation.
             let entry = match endpoint.service.as_str() {
                 "ssh" => {
-                    let cfg = ssh_config.clone().expect("SSH config must be set for medium mode");
+                    let cfg = ssh_config
+                        .clone()
+                        .expect("SSH config must be set for medium mode");
                     let evidence = ssh_interact::handle_connection(socket, cfg, conn_timeout).await;
                     serde_json::json!({
                         "ts": Utc::now().to_rfc3339(),
@@ -2032,7 +2035,10 @@ async fn run_listener(
                 }
                 other => {
                     // Unsupported service in medium mode: fallback to banner.
-                    warn!(service = other, "medium interaction not supported for service, falling back to banner");
+                    warn!(
+                        service = other,
+                        "medium interaction not supported for service, falling back to banner"
+                    );
                     let payload = capture_payload(
                         &mut socket,
                         runtime.max_payload_bytes,
@@ -3099,7 +3105,11 @@ mod tests {
         context.honeypot.interaction = "medium".to_string();
         let result = Honeypot.execute(&context, true).await;
         assert!(result.success);
-        assert!(result.message.contains("interaction=medium"), "message: {}", result.message);
+        assert!(
+            result.message.contains("interaction=medium"),
+            "message: {}",
+            result.message
+        );
     }
 
     #[test]

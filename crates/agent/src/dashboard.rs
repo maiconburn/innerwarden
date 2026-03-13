@@ -83,9 +83,23 @@ struct ListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct EntitiesQuery {
+    limit: Option<usize>,
+    date: Option<String>,
+    severity_min: Option<String>,
+    detector: Option<String>,
+    group_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct JourneyQuery {
+    subject_type: Option<String>,
+    subject: Option<String>,
+    // Backward compatibility with D2.1 clients
     ip: Option<String>,
     date: Option<String>,
+    severity_min: Option<String>,
+    detector: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -182,12 +196,88 @@ struct JourneyEntry {
 
 #[derive(Debug, Serialize)]
 struct JourneyResponse {
-    ip: String,
+    subject_type: String,
+    subject: String,
     date: String,
     first_seen: Option<chrono::DateTime<Utc>>,
     last_seen: Option<chrono::DateTime<Utc>>,
     outcome: String,
     entries: Vec<JourneyEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct PivotItem {
+    group_by: String,
+    value: String,
+    first_seen: chrono::DateTime<Utc>,
+    last_seen: chrono::DateTime<Utc>,
+    max_severity: String,
+    incident_count: usize,
+    event_count: usize,
+    outcome: String,
+    detectors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PivotResponse {
+    date: String,
+    group_by: String,
+    total: usize,
+    items: Vec<PivotItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PivotKind {
+    Ip,
+    User,
+    Detector,
+}
+
+impl PivotKind {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.unwrap_or("ip").trim().to_ascii_lowercase().as_str() {
+            "user" => Self::User,
+            "detector" => Self::Detector,
+            _ => Self::Ip,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ip => "ip",
+            Self::User => "user",
+            Self::Detector => "detector",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct InvestigationFilters {
+    severity_min: Option<u8>,
+    detector: Option<String>,
+}
+
+impl InvestigationFilters {
+    fn from_query(severity_min: Option<&str>, detector: Option<&str>) -> Self {
+        let severity_min = severity_min
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| severity_order(v.to_ascii_lowercase().as_str()));
+        let severity_min = match severity_min {
+            Some(0) | None => None,
+            other => other,
+        };
+
+        let detector = detector
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_ascii_lowercase());
+
+        Self {
+            severity_min,
+            detector,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +291,7 @@ struct IpAccumulator {
     max_severity: u8,
     max_severity_str: String,
     detectors: BTreeSet<String>,
+    ips: BTreeSet<String>,
     incident_count: usize,
     event_count: usize,
 }
@@ -230,6 +321,7 @@ pub async fn serve(data_dir: PathBuf, bind: String, auth: DashboardAuth) -> Resu
         .route("/api/incidents", get(api_incidents))
         .route("/api/decisions", get(api_decisions))
         .route("/api/entities", get(api_entities))
+        .route("/api/pivots", get(api_pivots))
         .route("/api/journey", get(api_journey))
         .layer(auth_layer)
         .with_state(state);
@@ -389,11 +481,38 @@ async fn api_decisions(
 
 async fn api_entities(
     State(state): State<DashboardState>,
-    Query(query): Query<ListQuery>,
+    Query(query): Query<EntitiesQuery>,
 ) -> Json<EntitiesResponse> {
     let date = resolve_date(query.date.as_deref());
-    let attackers = build_attackers(&state.data_dir, &date);
+    let limit = normalize_limit(query.limit);
+    let group_by = PivotKind::parse(query.group_by.as_deref());
+    let filters =
+        InvestigationFilters::from_query(query.severity_min.as_deref(), query.detector.as_deref());
+
+    let attackers = if group_by == PivotKind::Ip {
+        build_attackers(&state.data_dir, &date, &filters, limit)
+    } else {
+        Vec::new()
+    };
     Json(EntitiesResponse { date, attackers })
+}
+
+async fn api_pivots(
+    State(state): State<DashboardState>,
+    Query(query): Query<EntitiesQuery>,
+) -> Json<PivotResponse> {
+    let date = resolve_date(query.date.as_deref());
+    let limit = normalize_limit(query.limit);
+    let group_by = PivotKind::parse(query.group_by.as_deref());
+    let filters =
+        InvestigationFilters::from_query(query.severity_min.as_deref(), query.detector.as_deref());
+    let items = build_pivots(&state.data_dir, &date, group_by, &filters, limit);
+    Json(PivotResponse {
+        date,
+        group_by: group_by.as_str().to_string(),
+        total: items.len(),
+        items,
+    })
 }
 
 async fn api_journey(
@@ -401,10 +520,20 @@ async fn api_journey(
     Query(query): Query<JourneyQuery>,
 ) -> Json<JourneyResponse> {
     let date = resolve_date(query.date.as_deref());
-    let ip = query.ip.unwrap_or_default();
-    if ip.is_empty() {
+    let subject_type = PivotKind::parse(query.subject_type.as_deref());
+    let subject = query
+        .subject
+        .or(query.ip)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let filters =
+        InvestigationFilters::from_query(query.severity_min.as_deref(), query.detector.as_deref());
+
+    if subject.is_empty() {
         return Json(JourneyResponse {
-            ip: String::new(),
+            subject_type: subject_type.as_str().to_string(),
+            subject: String::new(),
             date,
             first_seen: None,
             last_seen: None,
@@ -412,7 +541,14 @@ async fn api_journey(
             entries: vec![],
         });
     }
-    Json(build_journey(&state.data_dir, &date, &ip))
+
+    Json(build_journey(
+        &state.data_dir,
+        &date,
+        subject_type,
+        &subject,
+        &filters,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +598,34 @@ fn compute_overview(data_dir: &Path, date: &str) -> OverviewResponse {
 
 /// Build the attacker list for a given date.
 /// Only IPs that appear in at least one incident are included.
-fn build_attackers(data_dir: &Path, date: &str) -> Vec<AttackerSummary> {
+fn build_attackers(
+    data_dir: &Path,
+    date: &str,
+    filters: &InvestigationFilters,
+    limit: usize,
+) -> Vec<AttackerSummary> {
+    build_pivots(data_dir, date, PivotKind::Ip, filters, limit)
+        .into_iter()
+        .map(|p| AttackerSummary {
+            ip: p.value,
+            first_seen: p.first_seen,
+            last_seen: p.last_seen,
+            max_severity: p.max_severity,
+            detectors: p.detectors,
+            outcome: p.outcome,
+            incident_count: p.incident_count,
+            event_count: p.event_count,
+        })
+        .collect()
+}
+
+fn build_pivots(
+    data_dir: &Path,
+    date: &str,
+    group_by: PivotKind,
+    filters: &InvestigationFilters,
+    limit: usize,
+) -> Vec<PivotItem> {
     let events =
         read_jsonl::<innerwarden_core::event::Event>(&dated_path(data_dir, "events", date));
     let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&dated_path(
@@ -472,65 +635,94 @@ fn build_attackers(data_dir: &Path, date: &str) -> Vec<AttackerSummary> {
     ));
     let decisions = read_jsonl::<DecisionEntry>(&dated_path(data_dir, "decisions", date));
 
-    let mut ip_data: BTreeMap<String, IpAccumulator> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, IpAccumulator> = BTreeMap::new();
 
-    // Seed from incidents (these define who is an "attacker").
-    for inc in &incidents {
-        let sev_str = format!("{:?}", inc.severity).to_lowercase();
+    for incident in &incidents {
+        if !incident_matches_filters(incident, filters) {
+            continue;
+        }
+
+        let detector = incident_detector(&incident.incident_id).to_string();
+        let sev_str = format!("{:?}", incident.severity).to_lowercase();
         let sev_ord = severity_order(&sev_str);
-        let detector = inc.incident_id.split(':').next().unwrap_or("unknown");
+        let incident_ips = extract_entity_values(&incident.entities, EntityType::Ip);
 
-        for ip in extract_ip_entities(&inc.entities) {
-            let entry = ip_data.entry(ip).or_default();
-            entry.update_time(inc.ts);
+        for key in incident_group_values(incident, group_by) {
+            let entry = grouped.entry(key.clone()).or_default();
+            entry.update_time(incident.ts);
             entry.incident_count += 1;
             if sev_ord > entry.max_severity {
                 entry.max_severity = sev_ord;
                 entry.max_severity_str = sev_str.clone();
             }
-            entry.detectors.insert(detector.to_string());
-        }
-    }
-
-    // Enrich with raw event counts for each attacker IP.
-    for event in &events {
-        for ip in extract_ip_entities(&event.entities) {
-            if let Some(entry) = ip_data.get_mut(&ip) {
-                entry.event_count += 1;
-                entry.update_time(event.ts);
+            entry.detectors.insert(detector.clone());
+            for ip in &incident_ips {
+                entry.ips.insert(ip.clone());
+            }
+            if group_by == PivotKind::Ip {
+                entry.ips.insert(key);
             }
         }
     }
 
-    let mut result: Vec<AttackerSummary> = ip_data
+    for event in &events {
+        if !event_matches_filters(event, filters) {
+            continue;
+        }
+
+        for key in event_group_values(event, group_by) {
+            if let Some(entry) = grouped.get_mut(&key) {
+                entry.event_count += 1;
+                entry.update_time(event.ts);
+                for ip in extract_ip_entities(&event.entities) {
+                    entry.ips.insert(ip);
+                }
+            }
+        }
+    }
+
+    let mut items: Vec<PivotItem> = grouped
         .into_iter()
-        .map(|(ip, data)| {
-            let outcome = determine_outcome(&decisions, &ip, true);
-            AttackerSummary {
-                ip,
-                first_seen: data.first_seen.unwrap_or_else(Utc::now),
-                last_seen: data.last_seen.unwrap_or_else(Utc::now),
-                max_severity: data.max_severity_str,
-                detectors: data.detectors.into_iter().collect(),
+        .map(|(value, acc)| {
+            let outcome = if group_by == PivotKind::Ip {
+                determine_outcome(&decisions, &value, acc.incident_count > 0)
+            } else {
+                determine_outcome_for_ips(&decisions, &acc.ips, acc.incident_count > 0)
+            };
+
+            PivotItem {
+                group_by: group_by.as_str().to_string(),
+                value,
+                first_seen: acc.first_seen.unwrap_or_else(Utc::now),
+                last_seen: acc.last_seen.unwrap_or_else(Utc::now),
+                max_severity: acc.max_severity_str,
+                incident_count: acc.incident_count,
+                event_count: acc.event_count,
                 outcome,
-                incident_count: data.incident_count,
-                event_count: data.event_count,
+                detectors: acc.detectors.into_iter().collect(),
             }
         })
         .collect();
 
-    // Sort by severity descending, then latest activity first.
-    result.sort_by(|a, b| {
+    items.sort_by(|a, b| {
         severity_order(&b.max_severity)
             .cmp(&severity_order(&a.max_severity))
+            .then(b.incident_count.cmp(&a.incident_count))
             .then(b.last_seen.cmp(&a.last_seen))
+            .then(a.value.cmp(&b.value))
     });
-
-    result
+    items.truncate(limit);
+    items
 }
 
-/// Build the full journey timeline for a single IP on a given date.
-fn build_journey(data_dir: &Path, date: &str, ip: &str) -> JourneyResponse {
+/// Build the full journey timeline for a selected subject on a given date.
+fn build_journey(
+    data_dir: &Path,
+    date: &str,
+    subject_type: PivotKind,
+    subject: &str,
+    filters: &InvestigationFilters,
+) -> JourneyResponse {
     let events =
         read_jsonl::<innerwarden_core::event::Event>(&dated_path(data_dir, "events", date));
     let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&dated_path(
@@ -541,13 +733,58 @@ fn build_journey(data_dir: &Path, date: &str, ip: &str) -> JourneyResponse {
     let decisions = read_jsonl::<DecisionEntry>(&dated_path(data_dir, "decisions", date));
 
     let mut entries: Vec<JourneyEntry> = Vec::new();
+    let mut related_ips: BTreeSet<String> = BTreeSet::new();
+    let mut has_incident = false;
 
-    // Raw events for this IP.
+    for incident in incidents {
+        if !incident_matches_filters(&incident, filters) {
+            continue;
+        }
+        if !incident_matches_subject(&incident, subject_type, subject) {
+            continue;
+        }
+
+        has_incident = true;
+        for ip in extract_ip_entities(&incident.entities) {
+            related_ips.insert(ip);
+        }
+
+        entries.push(JourneyEntry {
+            ts: incident.ts,
+            kind: "incident".to_string(),
+            data: serde_json::json!({
+                "incident_id": incident.incident_id,
+                "severity": format!("{:?}", incident.severity).to_lowercase(),
+                "title": incident.title,
+                "summary": incident.summary,
+                "evidence": incident.evidence,
+                "tags": incident.tags,
+            }),
+        });
+    }
+
     for event in events {
-        if extract_ip_entities(&event.entities)
-            .iter()
-            .any(|e| e == ip)
-        {
+        if !event_matches_filters(&event, filters) {
+            continue;
+        }
+
+        let matches_subject = match subject_type {
+            PivotKind::Ip => extract_ip_entities(&event.entities)
+                .iter()
+                .any(|e| e == subject),
+            PivotKind::User => {
+                extract_entity_values(&event.entities, EntityType::User)
+                    .iter()
+                    .any(|u| u == subject)
+                    || has_intersection(&extract_ip_entities(&event.entities), &related_ips)
+            }
+            PivotKind::Detector => {
+                !related_ips.is_empty()
+                    && has_intersection(&extract_ip_entities(&event.entities), &related_ips)
+            }
+        };
+
+        if matches_subject {
             entries.push(JourneyEntry {
                 ts: event.ts,
                 kind: "event".to_string(),
@@ -563,30 +800,23 @@ fn build_journey(data_dir: &Path, date: &str, ip: &str) -> JourneyResponse {
         }
     }
 
-    // Incidents for this IP.
-    for incident in incidents {
-        if extract_ip_entities(&incident.entities)
-            .iter()
-            .any(|e| e == ip)
-        {
-            entries.push(JourneyEntry {
-                ts: incident.ts,
-                kind: "incident".to_string(),
-                data: serde_json::json!({
-                    "incident_id": incident.incident_id,
-                    "severity": format!("{:?}", incident.severity).to_lowercase(),
-                    "title": incident.title,
-                    "summary": incident.summary,
-                    "evidence": incident.evidence,
-                    "tags": incident.tags,
-                }),
-            });
-        }
-    }
-
-    // Decisions for this IP.
     for decision in &decisions {
-        if decision.target_ip.as_deref() == Some(ip) {
+        if let Some(detector_filter) = &filters.detector {
+            if incident_detector(&decision.incident_id) != *detector_filter {
+                continue;
+            }
+        }
+
+        let matches_subject = match subject_type {
+            PivotKind::Ip => decision.target_ip.as_deref() == Some(subject),
+            PivotKind::User | PivotKind::Detector => decision
+                .target_ip
+                .as_ref()
+                .map(|ip| related_ips.contains(ip))
+                .unwrap_or(false),
+        };
+
+        if matches_subject {
             entries.push(JourneyEntry {
                 ts: decision.ts,
                 kind: "decision".to_string(),
@@ -605,20 +835,26 @@ fn build_journey(data_dir: &Path, date: &str, ip: &str) -> JourneyResponse {
         }
     }
 
-    // Honeypot sessions.
-    let mut hp_entries = scan_honeypot_sessions(data_dir, date, ip);
+    let mut honeypot_ips = related_ips.clone();
+    if subject_type == PivotKind::Ip {
+        honeypot_ips.insert(subject.to_string());
+    }
+    let mut hp_entries = scan_honeypot_sessions(data_dir, date, &honeypot_ips);
     entries.append(&mut hp_entries);
 
-    // Sort everything by timestamp.
     entries.sort_by_key(|e| e.ts);
 
     let first_seen = entries.first().map(|e| e.ts);
     let last_seen = entries.last().map(|e| e.ts);
-    let has_incident = entries.iter().any(|e| e.kind == "incident");
-    let outcome = determine_outcome(&decisions, ip, has_incident);
+    let outcome = if subject_type == PivotKind::Ip {
+        determine_outcome(&decisions, subject, has_incident)
+    } else {
+        determine_outcome_for_ips(&decisions, &related_ips, has_incident)
+    };
 
     JourneyResponse {
-        ip: ip.to_string(),
+        subject_type: subject_type.as_str().to_string(),
+        subject: subject.to_string(),
         date: date.to_string(),
         first_seen,
         last_seen,
@@ -627,8 +863,16 @@ fn build_journey(data_dir: &Path, date: &str, ip: &str) -> JourneyResponse {
     }
 }
 
-/// Scan all honeypot JSONL session files for connections from `ip` on `date`.
-fn scan_honeypot_sessions(data_dir: &Path, date: &str, ip: &str) -> Vec<JourneyEntry> {
+/// Scan all honeypot JSONL session files for connections from tracked IPs on `date`.
+fn scan_honeypot_sessions(
+    data_dir: &Path,
+    date: &str,
+    tracked_ips: &BTreeSet<String>,
+) -> Vec<JourneyEntry> {
+    if tracked_ips.is_empty() {
+        return Vec::new();
+    }
+
     let honeypot_dir = data_dir.join("honeypot");
     let mut entries = Vec::new();
 
@@ -668,7 +912,7 @@ fn scan_honeypot_sessions(data_dir: &Path, date: &str, ip: &str) -> Vec<JourneyE
                 Some(p) => p,
                 None => continue,
             };
-            if peer_ip != ip {
+            if !tracked_ips.contains(peer_ip) {
                 continue;
             }
 
@@ -710,14 +954,128 @@ fn scan_honeypot_sessions(data_dir: &Path, date: &str, ip: &str) -> Vec<JourneyE
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn extract_ip_entities(
+fn extract_ip_entities(entities: &[innerwarden_core::entities::EntityRef]) -> Vec<String> {
+    extract_entity_values(entities, EntityType::Ip)
+}
+
+fn extract_entity_values(
     entities: &[innerwarden_core::entities::EntityRef],
+    entity_type: EntityType,
 ) -> Vec<String> {
     entities
         .iter()
-        .filter(|e| e.r#type == EntityType::Ip)
+        .filter(|e| e.r#type == entity_type)
         .map(|e| e.value.clone())
         .collect()
+}
+
+fn incident_detector(incident_id: &str) -> String {
+    incident_id
+        .split(':')
+        .next()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn incident_matches_filters(
+    incident: &innerwarden_core::incident::Incident,
+    filters: &InvestigationFilters,
+) -> bool {
+    if let Some(min) = filters.severity_min {
+        let sev = severity_order(&format!("{:?}", incident.severity).to_lowercase());
+        if sev < min {
+            return false;
+        }
+    }
+    if let Some(detector) = &filters.detector {
+        if incident_detector(&incident.incident_id) != *detector {
+            return false;
+        }
+    }
+    true
+}
+
+fn event_matches_filters(
+    event: &innerwarden_core::event::Event,
+    filters: &InvestigationFilters,
+) -> bool {
+    if let Some(min) = filters.severity_min {
+        let sev = severity_order(&format!("{:?}", event.severity).to_lowercase());
+        if sev < min {
+            return false;
+        }
+    }
+    true
+}
+
+fn incident_group_values(
+    incident: &innerwarden_core::incident::Incident,
+    group_by: PivotKind,
+) -> Vec<String> {
+    match group_by {
+        PivotKind::Ip => extract_entity_values(&incident.entities, EntityType::Ip),
+        PivotKind::User => extract_entity_values(&incident.entities, EntityType::User),
+        PivotKind::Detector => vec![incident_detector(&incident.incident_id)],
+    }
+}
+
+fn event_group_values(event: &innerwarden_core::event::Event, group_by: PivotKind) -> Vec<String> {
+    match group_by {
+        PivotKind::Ip => extract_entity_values(&event.entities, EntityType::Ip),
+        PivotKind::User => extract_entity_values(&event.entities, EntityType::User),
+        PivotKind::Detector => Vec::new(),
+    }
+}
+
+fn incident_matches_subject(
+    incident: &innerwarden_core::incident::Incident,
+    subject_type: PivotKind,
+    subject: &str,
+) -> bool {
+    match subject_type {
+        PivotKind::Ip => extract_entity_values(&incident.entities, EntityType::Ip)
+            .iter()
+            .any(|ip| ip == subject),
+        PivotKind::User => extract_entity_values(&incident.entities, EntityType::User)
+            .iter()
+            .any(|user| user == subject),
+        PivotKind::Detector => incident_detector(&incident.incident_id) == subject,
+    }
+}
+
+fn has_intersection(values: &[String], set: &BTreeSet<String>) -> bool {
+    values.iter().any(|v| set.contains(v))
+}
+
+fn determine_outcome_for_ips(
+    decisions: &[DecisionEntry],
+    ips: &BTreeSet<String>,
+    has_incident: bool,
+) -> String {
+    let mut has_monitoring = false;
+    let mut has_honeypot = false;
+    let mut has_active = has_incident;
+
+    for ip in ips {
+        match determine_outcome(decisions, ip, has_incident).as_str() {
+            "blocked" => return "blocked".to_string(),
+            "honeypot" => has_honeypot = true,
+            "monitoring" => has_monitoring = true,
+            "active" => has_active = true,
+            _ => {}
+        }
+    }
+
+    if has_honeypot {
+        return "honeypot".to_string();
+    }
+    if has_monitoring {
+        return "monitoring".to_string();
+    }
+    if has_active {
+        return "active".to_string();
+    }
+    "unknown".to_string()
 }
 
 fn severity_order(s: &str) -> u8 {
@@ -895,6 +1253,52 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
     .kpi-value { font-size: 1.05rem; font-weight: 700; margin-top: 2px; line-height: 1; }
 
+    .filters {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+      margin-bottom: 12px;
+    }
+    .filters .full { grid-column: 1 / -1; }
+    .filters input, .filters select, .filters button {
+      width: 100%;
+      background: rgba(9, 19, 30, 0.9);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 0.72rem;
+      padding: 6px 8px;
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .filters button {
+      cursor: pointer;
+      background: rgba(86, 200, 255, 0.14);
+      border-color: rgba(86, 200, 255, 0.28);
+      color: var(--accent);
+      font-family: "Space Grotesk", sans-serif;
+      font-weight: 700;
+    }
+
+    .pivot-tabs {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
+      margin: 4px 0 8px;
+    }
+    .pivot-tab {
+      text-align: center;
+      border: 1px solid var(--line);
+      background: rgba(9, 19, 30, 0.8);
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 6px 0;
+      font-size: 0.68rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .pivot-tab.active {
+      color: var(--accent);
+      border-color: rgba(86, 200, 255, 0.35);
+      background: rgba(86, 200, 255, 0.12);
+    }
+
     /* Section header */
     .section-title {
       font-size: 0.65rem; letter-spacing: 0.07em; color: var(--muted);
@@ -1059,8 +1463,28 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <div class="kpi-card"><div class="kpi-label">Attk.</div><div class="kpi-value" id="kpi-attackers">0</div></div>
       </div>
 
-      <!-- Attacker list -->
-      <div class="section-title">Attackers</div>
+      <div class="filters">
+        <input id="flt-date" type="date" class="full" />
+        <select id="flt-severity">
+          <option value="">severity: any</option>
+          <option value="critical">severity: critical+</option>
+          <option value="high">severity: high+</option>
+          <option value="medium">severity: medium+</option>
+          <option value="low">severity: low+</option>
+          <option value="info">severity: info+</option>
+        </select>
+        <input id="flt-detector" type="text" placeholder="detector (ex: ssh_bruteforce)" />
+        <button id="flt-apply" class="full" type="button">Apply Filters</button>
+      </div>
+
+      <div class="pivot-tabs">
+        <button type="button" class="pivot-tab active" data-pivot="ip">IP</button>
+        <button type="button" class="pivot-tab" data-pivot="user">User</button>
+        <button type="button" class="pivot-tab" data-pivot="detector">Detector</button>
+      </div>
+
+      <!-- Entity list -->
+      <div class="section-title" id="entityTitle">Attackers (IP)</div>
       <div id="attackerList"><div class="empty">Loading…</div></div>
 
       <!-- Top detectors -->
@@ -1075,7 +1499,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
         </svg>
-        <p>Select an attacker on the left<br>to view their full journey timeline.</p>
+        <p>Select an item on the left<br>to view its investigation timeline.</p>
       </div>
     </main>
 
@@ -1215,34 +1639,77 @@ const INDEX_HTML: &str = r#"<!doctype html>
     if (ic) ic.textContent = hidden ? '▼' : '▶';
   }
 
-  // ── Load journey for selected IP ───────────────────────────────────────
-  let selectedIp = null;
+  // ── Investigation state ────────────────────────────────────────────────
+  const state = {
+    pivot: 'ip',
+    selected: { type: 'ip', value: null },
+    filters: { date: '', severity_min: '', detector: '' },
+  };
 
-  async function loadJourney(ip) {
-    selectedIp = ip;
+  const pivotTitle = (pivot) => ({
+    ip: 'Attackers (IP)',
+    user: 'Users (Pivot)',
+    detector: 'Detectors (Pivot)',
+  }[pivot] || 'Entities');
+
+  function buildQuery(params) {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v === null || v === undefined) return;
+      const val = String(v).trim();
+      if (!val) return;
+      q.set(k, val);
+    });
+    return q.toString();
+  }
+
+  function syncFiltersFromUi() {
+    state.filters.date = document.getElementById('flt-date').value || '';
+    state.filters.severity_min = document.getElementById('flt-severity').value || '';
+    state.filters.detector = (document.getElementById('flt-detector').value || '').trim();
+  }
+
+  function updatePivotUi() {
+    document.querySelectorAll('.pivot-tab').forEach((tab) => {
+      tab.classList.toggle('active', tab.dataset.pivot === state.pivot);
+    });
+    document.getElementById('entityTitle').textContent = pivotTitle(state.pivot);
+  }
+
+  async function loadJourney(subjectType, subjectValue) {
+    state.selected = { type: subjectType, value: subjectValue };
     document.querySelectorAll('.attacker-card').forEach(c => c.classList.remove('active'));
-    const card = document.querySelector('.attacker-card[data-ip="' + CSS.escape(ip) + '"]');
+    const card = document.querySelector(
+      '.attacker-card[data-subject-type="' + CSS.escape(subjectType) + '"][data-subject-value="' + CSS.escape(subjectValue) + '"]'
+    );
     if (card) card.classList.add('active');
 
     const panel = document.getElementById('rightPanel');
-    panel.innerHTML = '<div class="loading">Loading journey for ' + esc(ip) + '…</div>';
+    panel.innerHTML = '<div class="loading">Loading journey for ' + esc(subjectValue) + '…</div>';
 
     try {
-      const j = await loadJson('/api/journey?ip=' + encodeURIComponent(ip));
+      const qs = buildQuery({
+        subject_type: subjectType,
+        subject: subjectValue,
+        date: state.filters.date,
+        severity_min: state.filters.severity_min,
+        detector: state.filters.detector,
+      });
+      const j = await loadJson('/api/journey?' + qs);
       const first = j.first_seen ? fmtDateTime(j.first_seen) : '—';
       const last  = j.last_seen  ? fmtDateTime(j.last_seen)  : '—';
 
       let html = `
         <div class="journey-header">
-          <span class="journey-ip">${esc(ip)}</span>
+          <span class="journey-ip">${esc(j.subject || subjectValue)}</span>
           <span class="${outcomeCls(j.outcome)}">${outcomeLabel(j.outcome)}</span>
           <span class="journey-time">${esc(first)} → ${esc(last)}</span>
         </div>
-        <div class="journey-subtitle">${j.entries.length} timeline entries · click any row to expand</div>
+        <div class="journey-subtitle">${esc((j.subject_type || subjectType).toUpperCase())} journey · ${j.entries.length} timeline entries · click any row to expand</div>
         <div class="timeline">`;
 
       if (j.entries.length === 0) {
-        html += '<div class="empty">No entries found for this IP on the selected date.</div>';
+        html += '<div class="empty">No entries found for this selection on the chosen filters.</div>';
       } else {
         j.entries.forEach((e, i) => { html += renderEntry(e, i); });
       }
@@ -1254,43 +1721,68 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
   }
 
-  // ── Attacker card ──────────────────────────────────────────────────────
-  function renderCard(a) {
-    const active = selectedIp === a.ip ? ' active' : '';
+  function renderCard(item) {
+    const value = item.value;
+    const active = state.selected.type === state.pivot && state.selected.value === value ? ' active' : '';
+    const detectors = (item.detectors || []).map(esc).join(', ') || '—';
+    const outcome = item.outcome || 'unknown';
+
     return `
-      <div class="attacker-card${active}" data-ip="${esc(a.ip)}" onclick="loadJourney('${esc(a.ip)}')">
+      <div class="attacker-card${active}"
+           data-subject-type="${esc(state.pivot)}"
+           data-subject-value="${esc(value)}"
+           onclick="loadJourney('${esc(state.pivot)}','${esc(value)}')">
         <div class="card-row">
-          <span class="card-ip">${esc(a.ip)}</span>
-          <span class="${outcomeCls(a.outcome)}">${outcomeLabel(a.outcome)}</span>
+          <span class="card-ip">${esc(value)}</span>
+          <span class="${outcomeCls(outcome)}">${outcomeLabel(outcome)}</span>
         </div>
-        <div class="card-detectors">${a.detectors.map(esc).join(', ') || '—'}</div>
+        <div class="card-detectors">${detectors}</div>
         <div class="card-meta">
-          <span class="${sevCls(a.max_severity)}">${esc((a.max_severity || 'unknown').toUpperCase())}</span>
-          <span class="card-counts">${a.incident_count} inc · ${a.event_count} ev</span>
+          <span class="${sevCls(item.max_severity)}">${esc((item.max_severity || 'unknown').toUpperCase())}</span>
+          <span class="card-counts">${item.incident_count} inc · ${item.event_count} ev</span>
         </div>
-        <div class="card-time">${esc(fmtTime(a.first_seen))} → ${esc(fmtTime(a.last_seen))}</div>
+        <div class="card-time">${esc(fmtTime(item.first_seen))} → ${esc(fmtTime(item.last_seen))}</div>
       </div>`;
   }
 
-  // ── Main refresh loop (attackers list only) ────────────────────────────
-  async function refreshLeft() {
+  async function refreshLeft(forceRefreshJourney = false) {
     try {
-      const [ov, entities] = await Promise.all([
-        loadJson('/api/overview'),
-        loadJson('/api/entities'),
+      syncFiltersFromUi();
+
+      const overviewQs = buildQuery({ date: state.filters.date });
+      const entityQs = buildQuery({
+        date: state.filters.date,
+        severity_min: state.filters.severity_min,
+        detector: state.filters.detector,
+        group_by: state.pivot,
+      });
+
+      const [ov, entityData] = await Promise.all([
+        loadJson('/api/overview' + (overviewQs ? '?' + overviewQs : '')),
+        state.pivot === 'ip'
+          ? loadJson('/api/entities?' + entityQs).then((r) => ({
+              items: (r.attackers || []).map((a) => ({
+                ...a,
+                value: a.ip,
+                group_by: 'ip',
+              })),
+            }))
+          : loadJson('/api/pivots?' + entityQs),
       ]);
+
+      const items = entityData.items || [];
 
       document.getElementById('kpi-date').textContent      = ov.date;
       document.getElementById('kpi-events').textContent    = ov.events_count;
       document.getElementById('kpi-incidents').textContent = ov.incidents_count;
       document.getElementById('kpi-decisions').textContent = ov.decisions_count;
-      document.getElementById('kpi-attackers').textContent = entities.attackers.length;
+      document.getElementById('kpi-attackers').textContent = items.length;
 
       const list = document.getElementById('attackerList');
-      if (entities.attackers.length === 0) {
-        list.innerHTML = '<div class="empty">No attackers detected today.</div>';
+      if (items.length === 0) {
+        list.innerHTML = '<div class="empty">No records for the selected filters.</div>';
       } else {
-        list.innerHTML = entities.attackers.map(renderCard).join('');
+        list.innerHTML = items.map((item) => renderCard(item)).join('');
       }
 
       if (ov.top_detectors && ov.top_detectors.length) {
@@ -1301,6 +1793,22 @@ const INDEX_HTML: &str = r#"<!doctype html>
         document.getElementById('topDetectors').innerHTML = '<div class="empty">No detectors fired.</div>';
       }
 
+      if (state.selected.value) {
+        const stillExists = items.some((it) => it.value === state.selected.value);
+        if (!stillExists) {
+          state.selected = { type: state.pivot, value: null };
+          document.getElementById('rightPanel').innerHTML = `
+            <div class="right-placeholder">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+              </svg>
+              <p>Current selection no longer matches filters.<br>Select another item to continue.</p>
+            </div>`;
+        } else if (forceRefreshJourney) {
+          await loadJourney(state.selected.type, state.selected.value);
+        }
+      }
+
       document.getElementById('refreshStatus').textContent = new Date().toLocaleTimeString();
     } catch (e) {
       document.getElementById('refreshStatus').textContent = 'err: ' + e.message;
@@ -1308,8 +1816,30 @@ const INDEX_HTML: &str = r#"<!doctype html>
   }
 
   // Boot
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('flt-date').value = today;
+  updatePivotUi();
+
+  document.getElementById('flt-apply').addEventListener('click', () => {
+    refreshLeft(true);
+  });
+  document.querySelectorAll('.pivot-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const pivot = tab.dataset.pivot || 'ip';
+      state.pivot = pivot;
+      state.selected = { type: pivot, value: null };
+      updatePivotUi();
+      refreshLeft(false);
+    });
+  });
+  document.getElementById('flt-detector').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') refreshLeft(true);
+  });
+  document.getElementById('flt-severity').addEventListener('change', () => refreshLeft(true));
+  document.getElementById('flt-date').addEventListener('change', () => refreshLeft(true));
+
   refreshLeft();
-  setInterval(refreshLeft, 5000);
+  setInterval(() => refreshLeft(false), 5000);
 </script>
 </body>
 </html>
@@ -1521,7 +2051,8 @@ mod tests {
         )
         .unwrap();
 
-        let attackers = build_attackers(dir.path(), date);
+        let filters = InvestigationFilters::from_query(None, None);
+        let attackers = build_attackers(dir.path(), date, &filters, 50);
         assert_eq!(attackers.len(), 1, "should aggregate to a single IP");
         assert_eq!(attackers[0].ip, "203.0.113.10");
         assert_eq!(attackers[0].incident_count, 2);
@@ -1591,14 +2122,121 @@ mod tests {
         )
         .unwrap();
 
-        let journey = build_journey(dir.path(), date, ip);
-        assert_eq!(journey.entries.len(), 3, "should have event + incident + decision");
+        let filters = InvestigationFilters::from_query(None, None);
+        let journey = build_journey(dir.path(), date, PivotKind::Ip, ip, &filters);
+        assert_eq!(
+            journey.entries.len(),
+            3,
+            "should have event + incident + decision"
+        );
         let kinds: Vec<&str> = journey.entries.iter().map(|e| e.kind.as_str()).collect();
         assert!(kinds.contains(&"event"), "missing event entry");
         assert!(kinds.contains(&"incident"), "missing incident entry");
         assert!(kinds.contains(&"decision"), "missing decision entry");
+        assert_eq!(journey.subject_type, "ip");
+        assert_eq!(journey.subject, ip);
         assert!(journey.first_seen.is_some());
         assert!(journey.last_seen.is_some());
+    }
+
+    #[test]
+    fn pivots_group_by_user() {
+        let dir = TempDir::new().unwrap();
+        let date = "2026-03-13";
+
+        let inc1 = Incident {
+            ts: Utc::now(),
+            host: "h".to_string(),
+            incident_id: "ssh_bruteforce:203.0.113.10:abc".to_string(),
+            severity: Severity::High,
+            title: "t1".to_string(),
+            summary: "s1".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("203.0.113.10"), EntityRef::user("root")],
+        };
+        let inc2 = Incident {
+            ts: Utc::now(),
+            host: "h".to_string(),
+            incident_id: "sudo_abuse:deploy:def".to_string(),
+            severity: Severity::Critical,
+            title: "t2".to_string(),
+            summary: "s2".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("198.51.100.9"), EntityRef::user("deploy")],
+        };
+        std::fs::write(
+            dated_path(dir.path(), "incidents", date),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&inc1).unwrap(),
+                serde_json::to_string(&inc2).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let filters = InvestigationFilters::from_query(None, None);
+        let pivots = build_pivots(dir.path(), date, PivotKind::User, &filters, 50);
+        assert_eq!(pivots.len(), 2);
+        assert_eq!(pivots[0].group_by, "user");
+        assert!(pivots.iter().any(|p| p.value == "root"));
+        assert!(pivots.iter().any(|p| p.value == "deploy"));
+    }
+
+    #[test]
+    fn journey_user_pivot_includes_related_decision() {
+        let dir = TempDir::new().unwrap();
+        let date = "2026-03-13";
+
+        let incident = Incident {
+            ts: Utc::now(),
+            host: "h".to_string(),
+            incident_id: "ssh_bruteforce:203.0.113.10:x".to_string(),
+            severity: Severity::Critical,
+            title: "Brute Force".to_string(),
+            summary: "9 failures".to_string(),
+            evidence: serde_json::json!({}),
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![EntityRef::ip("203.0.113.10"), EntityRef::user("root")],
+        };
+        let decision = DecisionEntry {
+            ts: Utc::now(),
+            incident_id: "ssh_bruteforce:203.0.113.10:x".to_string(),
+            host: "h".to_string(),
+            ai_provider: "mock".to_string(),
+            action_type: "block_ip".to_string(),
+            target_ip: Some("203.0.113.10".to_string()),
+            skill_id: Some("block-ip-ufw".to_string()),
+            confidence: 0.95,
+            auto_executed: true,
+            dry_run: false,
+            reason: "brute force detected".to_string(),
+            estimated_threat: "critical".to_string(),
+            execution_result: "ok".to_string(),
+        };
+
+        std::fs::write(
+            dated_path(dir.path(), "incidents", date),
+            format!("{}\n", serde_json::to_string(&incident).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            dated_path(dir.path(), "decisions", date),
+            format!("{}\n", serde_json::to_string(&decision).unwrap()),
+        )
+        .unwrap();
+
+        let filters = InvestigationFilters::from_query(None, None);
+        let journey = build_journey(dir.path(), date, PivotKind::User, "root", &filters);
+        assert_eq!(journey.subject_type, "user");
+        assert_eq!(journey.subject, "root");
+        assert!(journey.entries.iter().any(|e| e.kind == "incident"));
+        assert!(journey.entries.iter().any(|e| e.kind == "decision"));
+        assert_eq!(journey.outcome, "blocked");
     }
 
     #[test]
