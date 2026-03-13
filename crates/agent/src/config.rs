@@ -14,6 +14,10 @@ pub struct AgentConfig {
     pub narrative: NarrativeConfig,
     #[serde(default)]
     pub webhook: WebhookConfig,
+    #[serde(default)]
+    pub ai: AiConfig,
+    #[serde(default)]
+    pub responder: ResponderConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +98,107 @@ impl WebhookConfig {
 }
 
 // ---------------------------------------------------------------------------
+// AI provider
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AiConfig {
+    /// Enable AI-powered real-time incident analysis
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// AI provider to use: "openai" | "anthropic" (coming soon) | "ollama" (coming soon)
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+
+    /// API key for the provider. Prefer env var OPENAI_API_KEY / ANTHROPIC_API_KEY.
+    #[serde(default)]
+    pub api_key: String,
+
+    /// Model identifier (provider-specific, e.g. "gpt-4o-mini")
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+
+    /// Number of recent events sent as context to the AI
+    #[serde(default = "default_context_events")]
+    pub context_events: usize,
+
+    /// Minimum AI confidence (0.0–1.0) required to auto-execute a decision
+    #[serde(default = "default_confidence_threshold")]
+    pub confidence_threshold: f32,
+
+    /// Poll interval for the fast incident-check loop (seconds)
+    #[serde(default = "default_incident_poll_secs")]
+    pub incident_poll_secs: u64,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_ai_provider(),
+            api_key: String::new(),
+            model: default_ai_model(),
+            context_events: default_context_events(),
+            confidence_threshold: default_confidence_threshold(),
+            incident_poll_secs: default_incident_poll_secs(),
+        }
+    }
+}
+
+impl AiConfig {
+    /// Resolve the API key: config field takes precedence, then env var.
+    pub fn resolved_api_key(&self) -> String {
+        if !self.api_key.is_empty() {
+            return self.api_key.clone();
+        }
+        // Try provider-specific env vars
+        let env_var = match self.provider.as_str() {
+            "openai" => "OPENAI_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            _ => "AI_API_KEY",
+        };
+        std::env::var(env_var).unwrap_or_default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Responder
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ResponderConfig {
+    /// Enable skill execution on AI decisions
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Dry-run mode: log decisions but don't execute any system commands.
+    /// Start with true for safety; set false when ready to auto-respond.
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+
+    /// Firewall backend for IP blocking: "ufw" | "iptables" | "nftables"
+    #[serde(default = "default_block_backend")]
+    pub block_backend: String,
+
+    /// Whitelist of skill IDs the agent is allowed to execute automatically.
+    /// Example: ["block-ip-ufw", "monitor-ip"]
+    #[serde(default = "default_allowed_skills")]
+    pub allowed_skills: Vec<String>,
+}
+
+impl Default for ResponderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dry_run: true,
+            block_backend: default_block_backend(),
+            allowed_skills: default_allowed_skills(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
@@ -127,6 +232,34 @@ fn default_min_severity() -> String {
 
 fn default_timeout_secs() -> u64 {
     10
+}
+
+fn default_ai_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_ai_model() -> String {
+    "gpt-4o-mini".to_string()
+}
+
+fn default_context_events() -> usize {
+    20
+}
+
+fn default_confidence_threshold() -> f32 {
+    0.8
+}
+
+fn default_incident_poll_secs() -> u64 {
+    2
+}
+
+fn default_block_backend() -> String {
+    "ufw".to_string()
+}
+
+fn default_allowed_skills() -> Vec<String> {
+    vec!["block-ip-ufw".to_string(), "monitor-ip".to_string()]
 }
 
 // ---------------------------------------------------------------------------
