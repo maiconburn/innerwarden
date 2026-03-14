@@ -64,6 +64,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Dashboard local read-only (`--dashboard`) com visão operacional de eventos/incidentes/decisões/telemetria (sem endpoints de ação) + autenticação HTTP Basic obrigatória
 - ✅ Dashboard D2 — UX de investigação estilo Clarity: split-pane com investigação read-only em múltiplas etapas: D2.1 (jornada por IP com `/api/entities` + `/api/journey`), D2.2 (filtros + pivôs `ip|user|detector` com `/api/pivots`), D2.3 (cluster-first com `/api/clusters` + export de snapshot JSON/Markdown via `/api/export`) e D2.4 (investigação guiada com hints narrativos, atalhos de pivô, comparação temporal por data/janela e deep-link inicial por query string)
 - ✅ Dashboard header com logo SVG de alto contraste (mesmo logo, melhor legibilidade visual no topo)
+- ✅ **Dashboard D3** — ações operacionais guardadas: operador pode bloquear IPs (`block-ip-*`) e suspender usuários (`suspend-user-sudo`) diretamente da timeline da investigação, com campo de razão obrigatório, modal de confirmação com badge de modo (DRY RUN / LIVE), toast de feedback e auditoria completa em `decisions-YYYY-MM-DD.jsonl` (ai_provider: `dashboard:operator`). Ações desabilitadas por padrão; requerem `responder.enabled = true` no agent.toml. Suporte a dry-run transparente (simula a ação sem executar comandos do sistema). Endpoints: `POST /api/action/block-ip`, `POST /api/action/suspend-user`, `GET /api/action/config`.
 
 ---
 
@@ -602,7 +603,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 149 testes (48 sensor + 101 agent) — todos devem passar
+make test   # 153 testes (48 sensor + 105 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -697,7 +698,8 @@ Documentação pública do repositório:
 - Fase D2.2 (concluída): filtros e pivôs avançados (severidade/detector/entidade) + drill-down por pivô (`ip|user|detector`)
 - Fase D2.3 (concluída): correlação cluster-first + export de snapshot read-only (JSON/Markdown)
 - Fase D2.4 (concluída): UX de investigação guiada (hints analíticos, pivot shortcuts na jornada, comparação entre datas e janela temporal configurável)
-- Fase D3 (próxima): ações operacionais guardadas no dashboard (intenção explícita + trilha auditável)
+- Fase D3 (concluída): ações operacionais guardadas no dashboard (Block IP + Suspend User com modal de confirmação, razão obrigatória, dry-run transparente e trilha auditável em `decisions-*.jsonl`)
+- Fase D4 (próxima): redesign visual do dashboard para combinar com o site innerwarden.com (dark navy, acento teal-green, tipografia editorial)
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)

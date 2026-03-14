@@ -143,17 +143,24 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if cli.dashboard {
-        let auth = dashboard::DashboardAuth::from_env()?;
-        dashboard::serve(cli.data_dir.clone(), cli.dashboard_bind.clone(), auth).await?;
-        return Ok(());
-    }
-
-    // Load config (optional — all fields have sensible defaults)
+    // Load config (optional — all fields have sensible defaults).
+    // Done before dashboard check so action config can be wired in.
     let cfg = match &cli.config {
         Some(path) => config::load(path)?,
         None => config::AgentConfig::default(),
     };
+
+    if cli.dashboard {
+        let auth = dashboard::DashboardAuth::from_env()?;
+        let action_cfg = dashboard::DashboardActionConfig {
+            enabled: cfg.responder.enabled,
+            dry_run: cfg.responder.dry_run,
+            block_backend: cfg.responder.block_backend.clone(),
+            allowed_skills: cfg.responder.allowed_skills.clone(),
+        };
+        dashboard::serve(cli.data_dir.clone(), cli.dashboard_bind.clone(), auth, action_cfg).await?;
+        return Ok(());
+    }
 
     info!(
         data_dir = %cli.data_dir.display(),

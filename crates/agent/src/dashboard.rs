@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use argon2::password_hash::{PasswordHashString, SaltString};
@@ -9,7 +10,7 @@ use axum::extract::{Query, State};
 use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -21,15 +22,42 @@ use tracing::{info, warn};
 use crate::correlation::build_clusters;
 use crate::decisions::DecisionEntry;
 use crate::telemetry::TelemetrySnapshot;
-use innerwarden_core::entities::EntityType;
+use innerwarden_core::entities::{EntityRef, EntityType};
 
 // ---------------------------------------------------------------------------
 // Shared state / auth
 // ---------------------------------------------------------------------------
 
+/// Configuration for dashboard-initiated actions (D3).
+/// Mirrors `ResponderConfig` but is owned by the dashboard independently.
+#[derive(Debug, Clone)]
+pub struct DashboardActionConfig {
+    /// Show action buttons in the UI. When false, actions are hidden entirely.
+    pub enabled: bool,
+    /// Dry-run mode: log intent but do not execute system commands.
+    pub dry_run: bool,
+    /// Firewall backend for IP blocking: "ufw" | "iptables" | "nftables".
+    pub block_backend: String,
+    /// Skills the operator is allowed to invoke from the dashboard.
+    pub allowed_skills: Vec<String>,
+}
+
+impl Default for DashboardActionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dry_run: true,
+            block_backend: "ufw".to_string(),
+            allowed_skills: vec!["block-ip-ufw".to_string()],
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DashboardState {
     data_dir: PathBuf,
+    /// D3: operator-initiated action configuration.
+    action_cfg: Arc<DashboardActionConfig>,
 }
 
 #[derive(Clone)]
@@ -71,6 +99,41 @@ impl DashboardAuth {
             Err(_) => false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// D3 — action request / response structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct BlockIpRequest {
+    /// Target IP address to block.
+    ip: String,
+    /// Operator-supplied reason (mandatory — becomes the audit trail entry).
+    reason: String,
+    /// Optional incident ID to associate this action with.
+    incident_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SuspendUserRequest {
+    /// Linux username to suspend from sudo.
+    user: String,
+    /// Operator-supplied reason (mandatory).
+    reason: String,
+    /// How long to suspend (seconds). Defaults to 3600 (1 hour).
+    duration_secs: Option<u64>,
+    /// Optional incident ID to associate this action with.
+    incident_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ActionResponse {
+    success: bool,
+    dry_run: bool,
+    message: String,
+    /// Echoes back the skill ID that was invoked (or would have been).
+    skill_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -387,8 +450,16 @@ impl IpAccumulator {
 // Server entry point
 // ---------------------------------------------------------------------------
 
-pub async fn serve(data_dir: PathBuf, bind: String, auth: DashboardAuth) -> Result<()> {
-    let state = DashboardState { data_dir };
+pub async fn serve(
+    data_dir: PathBuf,
+    bind: String,
+    auth: DashboardAuth,
+    action_cfg: DashboardActionConfig,
+) -> Result<()> {
+    let state = DashboardState {
+        data_dir,
+        action_cfg: Arc::new(action_cfg),
+    };
     let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
 
     let app = Router::new()
@@ -401,6 +472,10 @@ pub async fn serve(data_dir: PathBuf, bind: String, auth: DashboardAuth) -> Resu
         .route("/api/clusters", get(api_clusters))
         .route("/api/journey", get(api_journey))
         .route("/api/export", get(api_export))
+        // D3 — operator-initiated actions (POST, require auth, respect dry_run)
+        .route("/api/action/block-ip", post(api_action_block_ip))
+        .route("/api/action/suspend-user", post(api_action_suspend_user))
+        .route("/api/action/config", get(api_action_config))
         .layer(auth_layer)
         .with_state(state);
 
@@ -735,6 +810,369 @@ async fn api_export(
         )
             .into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// D3 — action handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/action/config — exposes the current action mode to the UI (read-only).
+async fn api_action_config(
+    State(state): State<DashboardState>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "enabled": state.action_cfg.enabled,
+        "dry_run": state.action_cfg.dry_run,
+        "block_backend": state.action_cfg.block_backend,
+        "allowed_skills": state.action_cfg.allowed_skills,
+    }))
+}
+
+/// POST /api/action/block-ip — operator-initiated IP block with mandatory reason.
+async fn api_action_block_ip(
+    State(state): State<DashboardState>,
+    Json(body): Json<BlockIpRequest>,
+) -> Json<ActionResponse> {
+    if !state.action_cfg.enabled {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "dashboard actions are disabled — set responder.enabled = true in agent.toml"
+                .to_string(),
+            skill_id: String::new(),
+        });
+    }
+
+    let ip = body.ip.trim().to_string();
+    if ip.is_empty() {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "ip is required".to_string(),
+            skill_id: String::new(),
+        });
+    }
+    if body.reason.trim().is_empty() {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "reason is required".to_string(),
+            skill_id: String::new(),
+        });
+    }
+
+    // Select the right skill based on configured backend.
+    let skill_id = format!("block-ip-{}", state.action_cfg.block_backend);
+    if !state
+        .action_cfg
+        .allowed_skills
+        .iter()
+        .any(|s| s == &skill_id)
+    {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: format!("skill '{skill_id}' is not in allowed_skills"),
+            skill_id,
+        });
+    }
+
+    let result = execute_block_ip(
+        &state.data_dir,
+        &state.action_cfg,
+        &ip,
+        &body.reason,
+        body.incident_id.as_deref(),
+    )
+    .await;
+
+    match result {
+        Ok((success, message)) => Json(ActionResponse {
+            success,
+            dry_run: state.action_cfg.dry_run,
+            message,
+            skill_id,
+        }),
+        Err(e) => Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: format!("internal error: {e}"),
+            skill_id,
+        }),
+    }
+}
+
+/// POST /api/action/suspend-user — operator-initiated sudo suspension with mandatory reason.
+async fn api_action_suspend_user(
+    State(state): State<DashboardState>,
+    Json(body): Json<SuspendUserRequest>,
+) -> Json<ActionResponse> {
+    let skill_id = "suspend-user-sudo".to_string();
+
+    if !state.action_cfg.enabled {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "dashboard actions are disabled — set responder.enabled = true in agent.toml"
+                .to_string(),
+            skill_id,
+        });
+    }
+
+    let user = body.user.trim().to_string();
+    if user.is_empty() {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "user is required".to_string(),
+            skill_id,
+        });
+    }
+    if body.reason.trim().is_empty() {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "reason is required".to_string(),
+            skill_id,
+        });
+    }
+    if !state
+        .action_cfg
+        .allowed_skills
+        .iter()
+        .any(|s| s == &skill_id)
+    {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: format!("skill '{skill_id}' is not in allowed_skills"),
+            skill_id,
+        });
+    }
+
+    let result = execute_suspend_user(
+        &state.data_dir,
+        &state.action_cfg,
+        &user,
+        &body.reason,
+        body.duration_secs.unwrap_or(3600),
+        body.incident_id.as_deref(),
+    )
+    .await;
+
+    match result {
+        Ok((success, message)) => Json(ActionResponse {
+            success,
+            dry_run: state.action_cfg.dry_run,
+            message,
+            skill_id,
+        }),
+        Err(e) => Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: format!("internal error: {e}"),
+            skill_id,
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D3 — execution helpers
+// ---------------------------------------------------------------------------
+
+/// Execute a block-ip skill and write the decision to the audit trail.
+async fn execute_block_ip(
+    data_dir: &Path,
+    cfg: &DashboardActionConfig,
+    ip: &str,
+    reason: &str,
+    incident_id: Option<&str>,
+) -> anyhow::Result<(bool, String)> {
+    use crate::skills::{
+        builtin::{BlockIpIptables, BlockIpNftables, BlockIpUfw},
+        HoneypotRuntimeConfig, ResponseSkill, SkillContext,
+    };
+
+    let skill_id = format!("block-ip-{}", cfg.block_backend);
+    let iid = incident_id.unwrap_or("unknown").to_string();
+    let inc = make_synthetic_incident(&iid, ip, reason);
+
+    let ctx = SkillContext {
+        incident: inc,
+        target_ip: Some(ip.to_string()),
+        target_user: None,
+        duration_secs: None,
+        host: hostname(),
+        data_dir: data_dir.to_path_buf(),
+        honeypot: HoneypotRuntimeConfig::default(),
+    };
+
+    let skill: Box<dyn ResponseSkill> = match cfg.block_backend.as_str() {
+        "iptables" => Box::new(BlockIpIptables),
+        "nftables" => Box::new(BlockIpNftables),
+        _ => Box::new(BlockIpUfw),
+    };
+    let result = skill.execute(&ctx, cfg.dry_run).await;
+    let (success, message) = (result.success, result.message);
+
+    let result_str = if success {
+        if cfg.dry_run { "ok (dry_run)".to_string() } else { "ok".to_string() }
+    } else {
+        format!("failed: {message}")
+    };
+
+    let entry = DecisionEntry {
+        ts: Utc::now(),
+        incident_id: incident_id.unwrap_or("dashboard:manual").to_string(),
+        host: hostname(),
+        ai_provider: "dashboard:operator".to_string(),
+        action_type: "block_ip".to_string(),
+        target_ip: Some(ip.to_string()),
+        skill_id: Some(skill_id.clone()),
+        confidence: 1.0,
+        auto_executed: true,
+        dry_run: cfg.dry_run,
+        reason: reason.to_string(),
+        estimated_threat: "manual".to_string(),
+        execution_result: result_str,
+    };
+
+    append_decision_entry(data_dir, &entry)?;
+    info!(
+        ip = %ip,
+        dry_run = cfg.dry_run,
+        skill_id = %skill_id,
+        success,
+        "dashboard action: block-ip"
+    );
+    Ok((success, message))
+}
+
+/// Execute a suspend-user skill and write the decision to the audit trail.
+async fn execute_suspend_user(
+    data_dir: &Path,
+    cfg: &DashboardActionConfig,
+    user: &str,
+    reason: &str,
+    duration_secs: u64,
+    incident_id: Option<&str>,
+) -> anyhow::Result<(bool, String)> {
+    use crate::skills::{
+        builtin::SuspendUserSudo, HoneypotRuntimeConfig, ResponseSkill, SkillContext,
+    };
+    use innerwarden_core::entities::EntityRef;
+    use innerwarden_core::event::Severity;
+    use innerwarden_core::incident::Incident;
+
+    let iid = incident_id.unwrap_or("unknown").to_string();
+    let inc = Incident {
+        ts: Utc::now(),
+        host: hostname(),
+        incident_id: format!("dashboard:manual:{iid}"),
+        severity: Severity::High,
+        title: "Dashboard Manual Action".to_string(),
+        summary: reason.to_string(),
+        evidence: serde_json::json!({}),
+        recommended_checks: vec![],
+        tags: vec!["dashboard".to_string(), "manual".to_string()],
+        entities: vec![EntityRef::user(user)],
+    };
+
+    let ctx = SkillContext {
+        incident: inc,
+        target_ip: None,
+        target_user: Some(user.to_string()),
+        duration_secs: Some(duration_secs),
+        host: hostname(),
+        data_dir: data_dir.to_path_buf(),
+        honeypot: HoneypotRuntimeConfig::default(),
+    };
+
+    let skill = SuspendUserSudo;
+    let result = skill.execute(&ctx, cfg.dry_run).await;
+    let (success, message) = (result.success, result.message);
+
+    let result_str = if success {
+        if cfg.dry_run { "ok (dry_run)".to_string() } else { "ok".to_string() }
+    } else {
+        format!("failed: {message}")
+    };
+
+    let entry = DecisionEntry {
+        ts: Utc::now(),
+        incident_id: incident_id.unwrap_or("dashboard:manual").to_string(),
+        host: hostname(),
+        ai_provider: "dashboard:operator".to_string(),
+        action_type: "suspend_user_sudo".to_string(),
+        target_ip: None,
+        skill_id: Some("suspend-user-sudo".to_string()),
+        confidence: 1.0,
+        auto_executed: true,
+        dry_run: cfg.dry_run,
+        reason: reason.to_string(),
+        estimated_threat: "manual".to_string(),
+        execution_result: result_str,
+    };
+
+    append_decision_entry(data_dir, &entry)?;
+    info!(
+        user = %user,
+        dry_run = cfg.dry_run,
+        duration_secs,
+        success,
+        "dashboard action: suspend-user"
+    );
+    Ok((success, message))
+}
+
+/// Build a minimal synthetic incident for skill execution context.
+fn make_synthetic_incident(
+    incident_id_hint: &str,
+    ip: &str,
+    reason: &str,
+) -> innerwarden_core::incident::Incident {
+    use innerwarden_core::event::Severity;
+    innerwarden_core::incident::Incident {
+        ts: Utc::now(),
+        host: hostname(),
+        incident_id: format!("dashboard:manual:{incident_id_hint}"),
+        severity: Severity::High,
+        title: "Dashboard Manual Action".to_string(),
+        summary: reason.to_string(),
+        evidence: serde_json::json!({}),
+        recommended_checks: vec![],
+        tags: vec!["dashboard".to_string(), "manual".to_string()],
+        entities: vec![EntityRef::ip(ip)],
+    }
+}
+
+/// Append a single `DecisionEntry` to today's decisions JSONL file.
+fn append_decision_entry(data_dir: &Path, entry: &DecisionEntry) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let path = data_dir.join(format!("decisions-{today}.jsonl"));
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    let line = serde_json::to_string(entry).context("serialize decision")?;
+    writeln!(f, "{line}").context("write decision")?;
+    f.flush().context("flush decision")
+}
+
+/// Returns the machine hostname (best-effort).
+fn hostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| {
+            std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2203,6 +2641,83 @@ const INDEX_HTML: &str = r##"<!doctype html>
       .kpi-value { font-size: 1rem; }
       .pivot-tab { font-size: 0.64rem; }
     }
+
+    /* ── D3 — action buttons ─────────────────────────────────────── */
+    .journey-btn.action-block {
+      color: var(--danger); border-color: rgba(255,107,107,0.35);
+      background: rgba(255,107,107,0.10);
+    }
+    .journey-btn.action-block:hover { background: rgba(255,107,107,0.18); }
+    .journey-btn.action-suspend {
+      color: var(--warn); border-color: rgba(255,184,77,0.35);
+      background: rgba(255,184,77,0.10);
+    }
+    .journey-btn.action-suspend:hover { background: rgba(255,184,77,0.18); }
+
+    /* ── D3 — modal overlay ──────────────────────────────────────── */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: rgba(7,18,24,0.82); backdrop-filter: blur(3px);
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: var(--bg1); border: 1px solid var(--line2);
+      border-radius: 10px; padding: 22px 24px;
+      width: 400px; max-width: 92vw;
+    }
+    .modal-title { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+    .modal-subtitle { font-size: 0.75rem; color: var(--muted); margin-bottom: 16px; line-height: 1.4; }
+    .modal-field { margin-bottom: 12px; }
+    .modal-label {
+      font-size: 0.7rem; color: var(--muted); letter-spacing: 0.04em;
+      text-transform: uppercase; display: block; margin-bottom: 4px;
+    }
+    .modal-textarea, .modal-input {
+      width: 100%; background: rgba(9,19,30,0.9); color: var(--text);
+      border: 1px solid var(--line2); border-radius: 6px; padding: 8px 10px;
+      font-size: 0.82rem; font-family: "Space Grotesk", sans-serif; resize: vertical;
+    }
+    .modal-textarea { min-height: 72px; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .btn-cancel {
+      background: transparent; border: 1px solid var(--line2); color: var(--muted);
+      border-radius: 6px; padding: 7px 16px; font-size: 0.8rem; cursor: pointer;
+    }
+    .btn-cancel:hover { color: var(--text); }
+    .btn-confirm {
+      background: rgba(58,194,126,0.15); border: 1px solid rgba(58,194,126,0.38);
+      color: var(--ok); border-radius: 6px; padding: 7px 16px;
+      font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    }
+    .btn-confirm:hover { background: rgba(58,194,126,0.24); }
+    .btn-confirm.danger {
+      background: rgba(255,107,107,0.13); border-color: rgba(255,107,107,0.35);
+      color: var(--danger);
+    }
+    .btn-confirm.danger:hover { background: rgba(255,107,107,0.22); }
+    .btn-confirm:disabled { opacity: 0.45; cursor: default; }
+    .dry-run-badge {
+      display: inline-block; font-size: 0.6rem; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase; border-radius: 4px;
+      padding: 2px 6px; margin-left: 6px; vertical-align: middle;
+    }
+    .dry-run-badge.on  { background: rgba(255,184,77,0.18);  color: var(--warn);   border: 1px solid rgba(255,184,77,0.3); }
+    .dry-run-badge.off { background: rgba(255,107,107,0.18); color: var(--danger); border: 1px solid rgba(255,107,107,0.3); }
+
+    /* ── D3 — toast ──────────────────────────────────────────────── */
+    .toast {
+      position: fixed; top: 16px; right: 16px; z-index: 200;
+      background: var(--bg1); border: 1px solid var(--line2);
+      border-radius: 8px; padding: 10px 16px; min-width: 240px; max-width: 340px;
+      font-size: 0.82rem; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      opacity: 0; transform: translateY(-8px);
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      pointer-events: none; line-height: 1.4;
+    }
+    .toast.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    .toast.ok  { border-left: 3px solid var(--ok);    color: var(--text); }
+    .toast.err { border-left: 3px solid var(--danger); color: var(--text); }
   </style>
 </head>
 <body>
@@ -2237,7 +2752,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       </span>
       Inner Warden
     </div>
-    <div class="app-badge">read-only · no actions</div>
+    <div class="app-badge" id="modeBadge">read-only</div>
     <span id="refreshStatus"></span>
   </header>
 
@@ -2308,6 +2823,31 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </main>
 
   </div>
+
+  <!-- D3 — action modal -->
+  <div class="modal-overlay" id="actionModal" onclick="handleModalBg(event)">
+    <div class="modal-box" onclick="event.stopPropagation()">
+      <div class="modal-title" id="modalTitle">Action</div>
+      <div class="modal-subtitle" id="modalSubtitle"></div>
+      <div class="modal-field">
+        <label class="modal-label" for="modalReason">Reason <span style="color:var(--danger)">*</span></label>
+        <textarea class="modal-textarea" id="modalReason" rows="3"
+          placeholder="Describe why you are taking this action — recorded in the audit trail…"></textarea>
+      </div>
+      <div class="modal-field" id="modalDurationField" style="display:none">
+        <label class="modal-label" for="modalDuration">Duration (seconds)</label>
+        <input class="modal-input" type="number" id="modalDuration" value="3600" min="60" max="86400" />
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-cancel" onclick="closeActionModal()">Cancel</button>
+        <button type="button" class="btn-confirm danger" id="modalConfirm" onclick="submitAction()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- D3 — toast notification -->
+  <div class="toast" id="toast"></div>
+
 </div>
 
 <script>
@@ -2460,6 +3000,117 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (ic) ic.textContent = hidden ? '▼' : '▶';
   }
 
+  // ── D3 — action state ─────────────────────────────────────────────────
+  let actionCfg = null;
+  let pendingAction = null; // { type: 'block_ip'|'suspend_user', ip, user }
+
+  async function loadActionConfig() {
+    try {
+      actionCfg = await loadJson('/api/action/config');
+      const badge = document.getElementById('modeBadge');
+      if (actionCfg.enabled) {
+        badge.textContent = actionCfg.dry_run ? 'actions: dry-run' : 'actions: LIVE';
+        badge.style.color = actionCfg.dry_run ? 'var(--warn)' : 'var(--danger)';
+        badge.style.borderColor = actionCfg.dry_run
+          ? 'rgba(255,184,77,0.4)' : 'rgba(255,107,107,0.4)';
+      }
+    } catch (_) {
+      actionCfg = null;
+    }
+  }
+
+  function showActionModal(type, ip, user) {
+    if (!actionCfg || !actionCfg.enabled) return;
+    pendingAction = { type, ip, user };
+    const modal = document.getElementById('actionModal');
+    const drLabel = actionCfg.dry_run
+      ? '<span class="dry-run-badge on">DRY RUN</span>'
+      : '<span class="dry-run-badge off">LIVE</span>';
+
+    if (type === 'block_ip') {
+      document.getElementById('modalTitle').innerHTML =
+        'Block IP: <span style="font-family:\'IBM Plex Mono\',monospace">' + esc(ip) + '</span>' + drLabel;
+      document.getElementById('modalSubtitle').textContent =
+        'Executes ' + esc(actionCfg.block_backend) + ' deny rule. Logged to the audit trail.';
+      document.getElementById('modalDurationField').style.display = 'none';
+      document.getElementById('modalConfirm').textContent = actionCfg.dry_run ? 'Simulate Block' : 'Block IP';
+    } else {
+      document.getElementById('modalTitle').innerHTML =
+        'Suspend sudo: <span style="font-family:\'IBM Plex Mono\',monospace">' + esc(user) + '</span>' + drLabel;
+      document.getElementById('modalSubtitle').textContent =
+        'Temporarily revokes sudo access for the specified duration. Logged to the audit trail.';
+      document.getElementById('modalDurationField').style.display = 'block';
+      document.getElementById('modalConfirm').textContent = actionCfg.dry_run ? 'Simulate Suspend' : 'Suspend User';
+    }
+
+    document.getElementById('modalReason').value = '';
+    document.getElementById('modalReason').style.borderColor = '';
+    modal.classList.add('open');
+    setTimeout(() => document.getElementById('modalReason').focus(), 60);
+  }
+
+  function closeActionModal() {
+    document.getElementById('actionModal').classList.remove('open');
+    pendingAction = null;
+  }
+
+  function handleModalBg(ev) {
+    if (ev.target === document.getElementById('actionModal')) closeActionModal();
+  }
+
+  async function submitAction() {
+    if (!pendingAction) return;
+    const reason = document.getElementById('modalReason').value.trim();
+    if (!reason) {
+      document.getElementById('modalReason').style.borderColor = 'var(--danger)';
+      document.getElementById('modalReason').focus();
+      return;
+    }
+    document.getElementById('modalReason').style.borderColor = '';
+    const confirmBtn = document.getElementById('modalConfirm');
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Working…';
+    try {
+      let url, body;
+      if (pendingAction.type === 'block_ip') {
+        url = '/api/action/block-ip';
+        body = JSON.stringify({ ip: pendingAction.ip, reason });
+      } else {
+        const duration_secs = parseInt(
+          document.getElementById('modalDuration').value || '3600', 10
+        );
+        url = '/api/action/suspend-user';
+        body = JSON.stringify({ user: pendingAction.user, reason, duration_secs });
+      }
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        cache: 'no-store',
+      });
+      const data = await resp.json();
+      closeActionModal();
+      if (data.success) {
+        showToast((data.dry_run ? '[DRY RUN] ' : '') + data.message, 'ok');
+        await refreshLeft(state.selected.value !== null);
+      } else {
+        showToast('Error: ' + data.message, 'err');
+      }
+    } catch (e) {
+      showToast('Request failed: ' + e.message, 'err');
+    } finally {
+      confirmBtn.disabled = false;
+    }
+  }
+
+  function showToast(msg, type) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'toast ' + (type || 'ok') + ' visible';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => toast.classList.remove('visible'), 4500);
+  }
+
   // ── Investigation state ────────────────────────────────────────────────
   const state = {
     pivot: 'ip',
@@ -2610,6 +3261,19 @@ const INDEX_HTML: &str = r##"<!doctype html>
           ).join('')}</div>`
         : '';
 
+      // Build action buttons if D3 actions are enabled for this subject type.
+      let actionBtns = '';
+      if (actionCfg && actionCfg.enabled && subjectType === 'ip') {
+        if (j.outcome !== 'blocked') {
+          actionBtns += `<button type="button" class="journey-btn action-block"
+            onclick="showActionModal('block_ip','${esc(subjectValue)}',null)">⊘ Block IP</button>`;
+        }
+      }
+      if (actionCfg && actionCfg.enabled && subjectType === 'user') {
+        actionBtns += `<button type="button" class="journey-btn action-suspend"
+          onclick="showActionModal('suspend_user',null,'${esc(subjectValue)}')">⏸ Suspend sudo</button>`;
+      }
+
       let html = `
         <div class="journey-header">
           <span class="journey-ip">${esc(j.subject || subjectValue)}</span>
@@ -2620,6 +3284,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
         <div class="journey-actions">
           <button type="button" class="journey-btn" onclick="downloadSnapshot('json')">Export JSON</button>
           <button type="button" class="journey-btn" onclick="downloadSnapshot('md')">Export Markdown</button>
+          ${actionBtns}
         </div>
         <div class="guided-grid">
           <section class="guided-card">
@@ -2856,6 +3521,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
   document.getElementById('flt-detector').value = state.filters.detector || '';
   document.getElementById('flt-window').value = state.filters.window_seconds || '';
   updatePivotUi();
+  loadActionConfig();
+
+  // Close modal on Escape key
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeActionModal();
+  });
 
   document.getElementById('flt-apply').addEventListener('click', () => {
     refreshLeft(true);
@@ -3552,5 +4223,84 @@ mod tests {
 
         // No decisions, no incident → unknown.
         assert_eq!(determine_outcome(&[], "1.2.3.4", false), "unknown");
+    }
+
+    // ── D3 tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn action_config_disabled_by_default() {
+        let cfg = DashboardActionConfig::default();
+        assert!(!cfg.enabled, "actions must be disabled by default for safety");
+        assert!(cfg.dry_run, "dry_run must be true by default");
+    }
+
+    #[test]
+    fn append_decision_entry_writes_jsonl() {
+        let dir = TempDir::new().unwrap();
+        let entry = DecisionEntry {
+            ts: Utc::now(),
+            incident_id: "dashboard:manual:test".to_string(),
+            host: "testhost".to_string(),
+            ai_provider: "dashboard:operator".to_string(),
+            action_type: "block_ip".to_string(),
+            target_ip: Some("1.2.3.4".to_string()),
+            skill_id: Some("block-ip-ufw".to_string()),
+            confidence: 1.0,
+            auto_executed: true,
+            dry_run: true,
+            reason: "manual block for testing".to_string(),
+            estimated_threat: "manual".to_string(),
+            execution_result: "ok (dry_run)".to_string(),
+        };
+
+        append_decision_entry(dir.path(), &entry).unwrap();
+
+        // File must exist and contain exactly one valid JSON line.
+        let date = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let path = dir.path().join(format!("decisions-{date}.jsonl"));
+        assert!(path.exists(), "decisions JSONL must be created");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed: DecisionEntry = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed.ai_provider, "dashboard:operator");
+        assert_eq!(parsed.action_type, "block_ip");
+        assert_eq!(parsed.target_ip.as_deref(), Some("1.2.3.4"));
+
+        // Appending a second entry should produce two lines.
+        append_decision_entry(dir.path(), &entry).unwrap();
+        let contents2 = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents2.lines().count(), 2);
+    }
+
+    #[test]
+    fn make_synthetic_incident_populates_ip_entity() {
+        let inc = make_synthetic_incident("test-id", "203.0.113.1", "brute force test");
+        assert!(inc.incident_id.contains("dashboard:manual"));
+        assert!(inc.incident_id.contains("test-id"));
+        assert_eq!(inc.entities.len(), 1);
+        assert_eq!(inc.entities[0].value, "203.0.113.1");
+        assert!(inc.tags.contains(&"dashboard".to_string()));
+        assert!(inc.tags.contains(&"manual".to_string()));
+    }
+
+    #[test]
+    fn action_cfg_block_skill_selection() {
+        // Verify the skill_id format follows convention (used in allowlist check).
+        let backends = [("ufw", "block-ip-ufw"), ("iptables", "block-ip-iptables"), ("nftables", "block-ip-nftables")];
+        for (backend, expected_id) in backends {
+            let cfg = DashboardActionConfig {
+                enabled: true,
+                dry_run: true,
+                block_backend: backend.to_string(),
+                allowed_skills: vec![expected_id.to_string()],
+            };
+            let skill_id = format!("block-ip-{}", cfg.block_backend);
+            assert_eq!(skill_id, expected_id);
+            assert!(cfg.allowed_skills.contains(&skill_id));
+        }
     }
 }
