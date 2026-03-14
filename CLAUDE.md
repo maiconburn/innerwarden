@@ -67,6 +67,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Dashboard header com logo SVG de alto contraste (mesmo logo, melhor legibilidade visual no topo)
 - ✅ Dashboard D4 — redesign visual site-matched (paleta navy `#040814`, acento `#78e5ff`, danger `#f43f5e`, radial gradients ambient, border-radius moderno, inputs/cards mais escuros) + mobile UX completo (collapsar/expandir painel via toggle button, touch targets, toast e modal full-width, layout responsivo melhorado)
 - ✅ **Dashboard D3** — ações operacionais guardadas: operador pode bloquear IPs (`block-ip-*`) e suspender usuários (`suspend-user-sudo`) diretamente da timeline da investigação, com campo de razão obrigatório, modal de confirmação com badge de modo (DRY RUN / LIVE), toast de feedback e auditoria completa em `decisions-YYYY-MM-DD.jsonl` (ai_provider: `dashboard:operator`). Ações desabilitadas por padrão; requerem `responder.enabled = true` no agent.toml. Suporte a dry-run transparente (simula a ação sem executar comandos do sistema). Endpoints: `POST /api/action/block-ip`, `POST /api/action/suspend-user`, `GET /api/action/config`.
+- ✅ **Dashboard D5** — attacker path viewer: `JourneyResponse` agora inclui `verdict` (attack assessment com entry_vector, access_status, privilege_status, containment_status, honeypot_status, confidence) e `chapters` (fases lógicas derivadas automaticamente: reconnaissance, initial_access_attempt, access_success, privilege_abuse, response, containment, honeypot_interaction). UI exibe verdict card antes da timeline, chapter rail navegável clicável e evidence cards com metadados humanos + Raw JSON secundário (toggle). `window._journeyData` armazena dados da jornada para scroll-to-chapter.
 
 ---
 
@@ -266,7 +267,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 154 testes (48 sensor + 106 agent)
+make test             # 157 testes (48 sensor + 109 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -606,7 +607,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 154 testes (48 sensor + 106 agent) — todos devem passar
+make test   # 157 testes (48 sensor + 109 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -704,8 +705,8 @@ Documentação pública do repositório:
 - Fase D3 (concluída): ações operacionais guardadas no dashboard (Block IP + Suspend User com modal de confirmação, razão obrigatória, dry-run transparente e trilha auditável em `decisions-*.jsonl`)
 - Fase D4 (concluída): redesign visual do dashboard para combinar com o site innerwarden.com (paleta navy, radial gradients, border-radius moderno, mobile UX completo com painel colapsável, touch targets e layout fluído)
 - Robustez produção (concluída): 3 bugs críticos corrigidos pós-first-report: (1) `--report` agora usa janela de 6h real com campo `ts` + `action_type` corretos abrangendo 2 dias; (2) blocklist inserida mesmo em dry_run + pré-carregada do `decisions-*.jsonl` ao iniciar (evita bloquear o mesmo IP repetidamente); (3) narrativa diária throttlada a no mínimo 5min entre escritas (evita rewrite a cada tick de 30s); `scripts/ops-check.sh` + `make ops-check` adicionados para inspeção rápida
-- Fase D5 (próxima): dashboard "attacker path viewer" — reconstrução story-first do caminho do atacante (chapters/fases derivadas, verdict card, compactação de bursts/sessões e evidência humana antes de JSON bruto), mantendo o layout alinhado ao visual do site innerwarden.com
-- Fase D6 (planejada): notificações push em tempo real via Server-Sent Events (SSE) para alertar operadores de novos incidentes sem refresh manual
+- Fase D5 (concluída): dashboard "attacker path viewer" — verdict card (entry_vector, access/privilege/containment/honeypot status, confidence), chapter rail navegável (reconnaissance → containment → honeypot), evidence cards com metadados humanos + Raw JSON secondary toggle; backend `derive_verdict()` + `derive_chapters()` adicionados ao `JourneyResponse`
+- Fase D6 (próxima): notificações push em tempo real via Server-Sent Events (SSE) para alertar operadores de novos incidentes sem refresh manual
 - Fase 8.1 (concluída): honeypot rebuild foundation (`listener` mínimo, gated por config)
 - Fase 8.2 (concluída): honeypot real bounded (multi-serviço, redirecionamento seletivo opcional, isolamento e forensics JSON/JSONL)
 - Fase 8.3 (concluída): hardening de isolamento + profundidade forense (session lock, retenção e transcript)

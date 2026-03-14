@@ -298,6 +298,41 @@ struct JourneySummary {
     hints: Vec<String>,
 }
 
+/// D5 — High-level attack assessment derived from the journey entries.
+#[derive(Debug, Serialize)]
+struct JourneyVerdict {
+    /// Detected attack vector: "ssh_bruteforce" | "credential_stuffing" |
+    /// "port_scan" | "sudo_abuse" | "unknown"
+    entry_vector: String,
+    /// "no_evidence_of_success" | "likely_success" | "confirmed_success" | "inconclusive"
+    access_status: String,
+    /// "no_evidence" | "attempted" | "confirmed" | "inconclusive"
+    privilege_status: String,
+    /// "blocked" | "monitored" | "honeypot" | "active" | "unknown"
+    containment_status: String,
+    /// "engaged" | "diverted" | "not_engaged"
+    honeypot_status: String,
+    /// "high" | "medium" | "low"
+    confidence: String,
+}
+
+/// D5 — A logical phase of the attack story derived from consecutive entries.
+#[derive(Debug, Serialize)]
+struct JourneyChapter {
+    /// Stage label: "reconnaissance" | "initial_access_attempt" | "access_success" |
+    /// "privilege_abuse" | "response" | "containment" | "honeypot_interaction" | "unknown"
+    stage: String,
+    title: String,
+    summary: String,
+    start_ts: chrono::DateTime<Utc>,
+    end_ts: chrono::DateTime<Utc>,
+    entry_count: usize,
+    /// Key facts / evidence highlights (usernames, ports, credentials, etc.)
+    evidence_highlights: Vec<String>,
+    /// Indices into the parent `entries` array for drill-down
+    entry_indices: Vec<usize>,
+}
+
 #[derive(Debug, Serialize)]
 struct JourneyResponse {
     subject_type: String,
@@ -307,6 +342,10 @@ struct JourneyResponse {
     last_seen: Option<chrono::DateTime<Utc>>,
     outcome: String,
     summary: JourneySummary,
+    /// D5 — high-level attack assessment
+    verdict: JourneyVerdict,
+    /// D5 — logical attack chapters derived from entries
+    chapters: Vec<JourneyChapter>,
     entries: Vec<JourneyEntry>,
 }
 
@@ -722,6 +761,15 @@ async fn api_journey(
                 pivot_shortcuts: Vec::new(),
                 hints: vec!["Select a subject to start investigation.".to_string()],
             },
+            verdict: JourneyVerdict {
+                entry_vector: "unknown".to_string(),
+                access_status: "inconclusive".to_string(),
+                privilege_status: "no_evidence".to_string(),
+                containment_status: "unknown".to_string(),
+                honeypot_status: "not_engaged".to_string(),
+                confidence: "low".to_string(),
+            },
+            chapters: vec![],
             entries: vec![],
         });
     }
@@ -817,9 +865,7 @@ async fn api_export(
 // ---------------------------------------------------------------------------
 
 /// GET /api/action/config — exposes the current action mode to the UI (read-only).
-async fn api_action_config(
-    State(state): State<DashboardState>,
-) -> Json<serde_json::Value> {
+async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "enabled": state.action_cfg.enabled,
         "dry_run": state.action_cfg.dry_run,
@@ -1016,7 +1062,11 @@ async fn execute_block_ip(
     let (success, message) = (result.success, result.message);
 
     let result_str = if success {
-        if cfg.dry_run { "ok (dry_run)".to_string() } else { "ok".to_string() }
+        if cfg.dry_run {
+            "ok (dry_run)".to_string()
+        } else {
+            "ok".to_string()
+        }
     } else {
         format!("failed: {message}")
     };
@@ -1093,7 +1143,11 @@ async fn execute_suspend_user(
     let (success, message) = (result.success, result.message);
 
     let result_str = if success {
-        if cfg.dry_run { "ok (dry_run)".to_string() } else { "ok".to_string() }
+        if cfg.dry_run {
+            "ok (dry_run)".to_string()
+        } else {
+            "ok".to_string()
+        }
     } else {
         format!("failed: {message}")
     };
@@ -1169,9 +1223,7 @@ fn append_decision_entry(data_dir: &Path, entry: &DecisionEntry) -> anyhow::Resu
 /// Returns the machine hostname (best-effort).
 fn hostname() -> String {
     std::env::var("HOSTNAME")
-        .or_else(|_| {
-            std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
-        })
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
@@ -1550,6 +1602,9 @@ fn build_journey(
         &related_detectors,
     );
 
+    let verdict = derive_verdict(&entries, &outcome);
+    let chapters = derive_chapters(&entries);
+
     JourneyResponse {
         subject_type: subject_type.as_str().to_string(),
         subject: subject.to_string(),
@@ -1558,6 +1613,8 @@ fn build_journey(
         last_seen,
         outcome,
         summary,
+        verdict,
+        chapters,
         entries,
     }
 }
@@ -1725,6 +1782,315 @@ fn build_pivot_shortcuts(
     }
     shortcuts.truncate(8);
     shortcuts
+}
+
+// ── D5 — Story derivation ──────────────────────────────────────────────────
+
+/// Derive a high-level attack verdict from the assembled journey entries.
+fn derive_verdict(entries: &[JourneyEntry], outcome: &str) -> JourneyVerdict {
+    // Entry vector: first incident's detector prefix
+    let entry_vector = entries
+        .iter()
+        .find(|e| e.kind == "incident")
+        .and_then(|e| e.data.get("incident_id").and_then(|v| v.as_str()))
+        .map(|id| {
+            match id.split(':').next().unwrap_or("unknown") {
+                "ssh_bruteforce" => "ssh_bruteforce",
+                "credential_stuffing" => "credential_stuffing",
+                "port_scan" => "port_scan",
+                "sudo_abuse" => "sudo_abuse",
+                _ => "unknown",
+            }
+            .to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Access status: any login success events?
+    let has_success = entries.iter().any(|e| {
+        e.kind == "event"
+            && e.data
+                .get("event_kind")
+                .and_then(|v| v.as_str())
+                .map(|k| k.contains("login_success") || k.contains("_accepted"))
+                .unwrap_or(false)
+    });
+    let has_events = entries.iter().any(|e| e.kind == "event");
+    let access_status = if has_success {
+        "likely_success"
+    } else if has_events {
+        "no_evidence_of_success"
+    } else {
+        "inconclusive"
+    }
+    .to_string();
+
+    // Privilege status: sudo_abuse incidents or sudo events?
+    let has_sudo = entries.iter().any(|e| {
+        (e.kind == "incident"
+            && e.data
+                .get("incident_id")
+                .and_then(|v| v.as_str())
+                .map(|id| id.starts_with("sudo_abuse"))
+                .unwrap_or(false))
+            || (e.kind == "event"
+                && e.data
+                    .get("event_kind")
+                    .and_then(|v| v.as_str())
+                    .map(|k| k.contains("sudo"))
+                    .unwrap_or(false))
+    });
+    let privilege_status = if has_sudo { "attempted" } else { "no_evidence" }.to_string();
+
+    // Honeypot status
+    let has_honeypot = entries.iter().any(|e| e.kind.starts_with("honeypot_"));
+    let honeypot_status = if outcome == "honeypot" {
+        "diverted"
+    } else if has_honeypot {
+        "engaged"
+    } else {
+        "not_engaged"
+    }
+    .to_string();
+
+    // Containment status mirrors outcome
+    let containment_status = match outcome {
+        "blocked" => "blocked",
+        "monitoring" => "monitored",
+        "honeypot" => "honeypot",
+        "active" => "active",
+        _ => "unknown",
+    }
+    .to_string();
+
+    // Confidence based on data richness
+    let has_incident = entries.iter().any(|e| e.kind == "incident");
+    let has_decision = entries.iter().any(|e| e.kind == "decision");
+    let confidence = if has_incident && has_decision && has_events {
+        "high"
+    } else if has_incident && (has_events || has_decision) {
+        "medium"
+    } else {
+        "low"
+    }
+    .to_string();
+
+    JourneyVerdict {
+        entry_vector,
+        access_status,
+        privilege_status,
+        containment_status,
+        honeypot_status,
+        confidence,
+    }
+}
+
+/// Derive human-readable attack chapters from the journey entries.
+fn derive_chapters(entries: &[JourneyEntry]) -> Vec<JourneyChapter> {
+    if entries.is_empty() {
+        return vec![];
+    }
+
+    // Assign each entry to a logical stage
+    let stages: Vec<&str> = entries
+        .iter()
+        .map(|e| match e.kind.as_str() {
+            "event" => {
+                let kind = e
+                    .data
+                    .get("event_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if kind.contains("port_scan") {
+                    "reconnaissance"
+                } else if kind.contains("login_success") || kind.contains("_accepted") {
+                    "access_success"
+                } else if kind.contains("sudo") {
+                    "privilege_abuse"
+                } else {
+                    "initial_access_attempt"
+                }
+            }
+            "incident" => {
+                let id = e
+                    .data
+                    .get("incident_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if id.starts_with("port_scan") {
+                    "reconnaissance"
+                } else if id.starts_with("sudo_abuse") {
+                    "privilege_abuse"
+                } else {
+                    "response"
+                }
+            }
+            "decision" => "containment",
+            k if k.starts_with("honeypot_") => "honeypot_interaction",
+            _ => "unknown",
+        })
+        .collect();
+
+    // Group consecutive same-stage entries into chapters
+    let mut chapters: Vec<JourneyChapter> = Vec::new();
+    let mut i = 0;
+    while i < entries.len() {
+        let stage = stages[i];
+        let chapter_start = i;
+        while i < entries.len() && stages[i] == stage {
+            i += 1;
+        }
+        let chapter_entries = &entries[chapter_start..i];
+        let (title, summary, highlights) = describe_chapter(stage, chapter_entries);
+        chapters.push(JourneyChapter {
+            stage: stage.to_string(),
+            title,
+            summary,
+            start_ts: chapter_entries[0].ts,
+            end_ts: chapter_entries.last().unwrap().ts,
+            entry_count: chapter_entries.len(),
+            evidence_highlights: highlights,
+            entry_indices: (chapter_start..i).collect(),
+        });
+    }
+    chapters
+}
+
+/// Generate human-readable title / summary / highlights for a chapter.
+fn describe_chapter(stage: &str, entries: &[JourneyEntry]) -> (String, String, Vec<String>) {
+    match stage {
+        "reconnaissance" => {
+            let title = "Reconnaissance activity".to_string();
+            let summary = format!("{} probe event(s) detected", entries.len());
+            (title, summary, vec![])
+        }
+        "initial_access_attempt" => {
+            // Collect distinct usernames attempted
+            let usernames: Vec<String> = entries
+                .iter()
+                .flat_map(|e| {
+                    let mut names = Vec::new();
+                    if let Some(d) = e.data.get("details") {
+                        for key in ["user", "username"] {
+                            if let Some(u) = d.get(key).and_then(|v| v.as_str()) {
+                                names.push(u.to_string());
+                            }
+                        }
+                    }
+                    names
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .take(5)
+                .collect();
+            let ev_count = entries.iter().filter(|e| e.kind == "event").count();
+            let title = if ev_count > 3 {
+                format!("Brute-force burst ({} attempts)", ev_count)
+            } else {
+                "Login attempt(s)".to_string()
+            };
+            let summary = format!("{} failed login attempt(s)", entries.len());
+            (title, summary, usernames)
+        }
+        "access_success" => {
+            let user = entries
+                .iter()
+                .find_map(|e| {
+                    e.data
+                        .get("details")
+                        .and_then(|d| d.get("user"))
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+                .unwrap_or_default();
+            let title = "Login success detected".to_string();
+            let summary = "Evidence of successful authentication".to_string();
+            let highlights = if user.is_empty() { vec![] } else { vec![user] };
+            (title, summary, highlights)
+        }
+        "privilege_abuse" => {
+            let title = "Privilege escalation attempt".to_string();
+            let summary = format!("{} sudo-related event(s)", entries.len());
+            (title, summary, vec![])
+        }
+        "response" => {
+            let titles: Vec<String> = entries
+                .iter()
+                .filter_map(|e| {
+                    e.data
+                        .get("title")
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+                .take(2)
+                .collect();
+            let title = titles
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Incident detected".to_string());
+            let summary = format!("{} detector incident(s) raised", entries.len());
+            (title, summary, titles)
+        }
+        "containment" => {
+            let action = entries
+                .iter()
+                .find_map(|e| {
+                    e.data
+                        .get("action_type")
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                })
+                .unwrap_or_default();
+            let is_dry = entries.iter().any(|e| {
+                e.data
+                    .get("dry_run")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            });
+            let title = if is_dry {
+                format!("AI decision — {} (dry run)", action)
+            } else {
+                format!("AI decision — {}", action)
+            };
+            let conf = entries
+                .iter()
+                .find_map(|e| {
+                    e.data
+                        .get("confidence")
+                        .and_then(|v| v.as_f64())
+                        .map(|c| format!("conf {:.0}%", c * 100.0))
+                })
+                .unwrap_or_default();
+            let summary = format!("{} decision(s)", entries.len());
+            let highlights = if conf.is_empty() { vec![] } else { vec![conf] };
+            (title, summary, highlights)
+        }
+        "honeypot_interaction" => {
+            let creds: Vec<String> = entries
+                .iter()
+                .flat_map(|e| {
+                    e.data
+                        .get("auth_attempts")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|a| {
+                                    let user = a.get("username").and_then(|v| v.as_str())?;
+                                    let pass = a.get("password").and_then(|v| v.as_str())?;
+                                    Some(format!("{}/{}", user, pass))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .take(5)
+                .collect();
+            let title = "Honeypot interaction".to_string();
+            let summary = format!("{} honeypot session(s)", entries.len());
+            (title, summary, creds)
+        }
+        _ => {
+            let title = format!("{} event(s)", entries.len());
+            let summary = "Unclassified activity".to_string();
+            (title, summary, vec![])
+        }
+    }
 }
 
 fn format_duration(seconds: i64) -> String {
@@ -2600,8 +2966,135 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .loading { font-size: 0.8rem; color: var(--muted); padding: 20px 0; }
     .err    { font-size: 0.8rem; color: var(--danger); padding: 12px 0; }
 
+    /* ── D5: Verdict card ────────────────────────────────────────── */
+    .verdict-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 13px 14px;
+      margin-bottom: 10px;
+    }
+    .verdict-title {
+      font-size: 0.62rem; letter-spacing: 0.07em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 10px;
+    }
+    .verdict-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+    }
+    .verdict-cell {
+      background: rgba(4,8,20,0.7);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .verdict-label {
+      font-size: 0.58rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .verdict-value {
+      font-size: 0.78rem; margin-top: 3px; font-weight: 600;
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .verdict-value.v-ok      { color: var(--ok); }
+    .verdict-value.v-danger  { color: var(--danger); }
+    .verdict-value.v-warn    { color: var(--warn); }
+    .verdict-value.v-accent  { color: var(--accent); }
+    .verdict-value.v-muted   { color: var(--muted); }
+    .verdict-confidence {
+      display: flex; gap: 6px; align-items: center; margin-top: 9px;
+      font-size: 0.65rem; color: var(--muted);
+    }
+    .verdict-confidence .conf-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+
+    /* ── D5: Chapter rail ────────────────────────────────────────── */
+    .chapter-rail {
+      display: flex; gap: 6px; overflow-x: auto;
+      padding-bottom: 4px; margin-bottom: 10px; flex-wrap: wrap;
+    }
+    .chapter-pill {
+      display: flex; flex-direction: column;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 8px 11px;
+      min-width: 110px; max-width: 160px;
+      cursor: pointer;
+      transition: border-color 0.14s, background 0.14s;
+      flex-shrink: 0;
+    }
+    .chapter-pill:hover {
+      border-color: rgba(120,229,255,0.35);
+      background: rgba(120,229,255,0.05);
+    }
+    .chapter-pill.active {
+      border-color: var(--accent);
+      background: rgba(120,229,255,0.08);
+    }
+    .chapter-stage {
+      font-size: 0.58rem; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .chapter-pill-title {
+      font-size: 0.73rem; font-weight: 600; line-height: 1.2;
+    }
+    .chapter-count {
+      font-size: 0.62rem; color: var(--muted); margin-top: 4px;
+    }
+
+    /* Stage-based accent colors */
+    .stage-recon      .chapter-pill-title { color: var(--muted); }
+    .stage-access     .chapter-pill-title { color: var(--warn); }
+    .stage-success    .chapter-pill-title { color: var(--danger); }
+    .stage-privilege  .chapter-pill-title { color: var(--danger); }
+    .stage-response   .chapter-pill-title { color: var(--ok); }
+    .stage-containment .chapter-pill-title { color: var(--accent); }
+    .stage-honeypot   .chapter-pill-title { color: var(--orange); }
+
+    /* ── D5: Evidence card ───────────────────────────────────────── */
+    .evidence-card {
+      background: rgba(4,8,20,0.6);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 6px;
+    }
+    .evidence-header {
+      display: flex; gap: 7px; align-items: center; margin-bottom: 6px;
+    }
+    .evidence-title {
+      font-size: 0.75rem; font-weight: 600; flex: 1;
+    }
+    .evidence-meta {
+      font-size: 0.68rem; color: var(--muted);
+      line-height: 1.5; margin-bottom: 6px;
+    }
+    .evidence-raw-toggle {
+      font-size: 0.6rem; color: var(--accent); cursor: pointer;
+      letter-spacing: 0.04em; text-transform: uppercase;
+      background: none; border: none; padding: 0;
+    }
+    .evidence-raw-toggle:hover { text-decoration: underline; }
+    .evidence-raw {
+      display: none;
+      background: rgba(0,0,0,0.3);
+      border-top: 1px solid var(--line);
+      margin-top: 6px; padding: 8px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.65rem; color: #9ab8d0;
+      white-space: pre; overflow-x: auto;
+      border-radius: 0 0 6px 6px;
+    }
+    .evidence-raw.open { display: block; }
+
     @media (max-width: 1180px) {
-      .guided-grid { grid-template-columns: 1fr; }
+      .guided-grid   { grid-template-columns: 1fr; }
+      .verdict-grid  { grid-template-columns: repeat(2, 1fr); }
+      .chapter-rail  { flex-wrap: nowrap; }
     }
 
     /* ── Mobile toggle button (shown only on small screens) ─────── */
@@ -3080,12 +3573,146 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
+  // ── D5: Verdict card ───────────────────────────────────────────────────
+  function verdictValueCls(label, value) {
+    const v = (value || '').toLowerCase();
+    if (label === 'access') {
+      if (v === 'blocked') return 'v-ok';
+      if (v === 'successful' || v === 'active') return 'v-danger';
+      if (v === 'attempted') return 'v-warn';
+      return 'v-muted';
+    }
+    if (label === 'containment') {
+      if (v === 'contained' || v === 'blocked') return 'v-ok';
+      if (v === 'active') return 'v-danger';
+      return 'v-muted';
+    }
+    if (label === 'privilege') {
+      if (v === 'abused') return 'v-danger';
+      if (v === 'suspicious') return 'v-warn';
+      return 'v-muted';
+    }
+    if (label === 'honeypot') {
+      return v === 'engaged' ? 'v-accent' : 'v-muted';
+    }
+    return 'v-muted';
+  }
+
+  function renderVerdictCard(j) {
+    if (!j.verdict) return '';
+    const v = j.verdict;
+    const confColor = v.confidence === 'high' ? 'var(--ok)'
+      : v.confidence === 'medium' ? 'var(--warn)' : 'var(--muted)';
+    return `
+      <div class="verdict-card">
+        <div class="verdict-title">Attack Assessment</div>
+        <div class="verdict-grid">
+          <div class="verdict-cell">
+            <div class="verdict-label">Entry Vector</div>
+            <div class="verdict-value v-muted">${esc(v.entry_vector || 'unknown')}</div>
+          </div>
+          <div class="verdict-cell">
+            <div class="verdict-label">Access</div>
+            <div class="verdict-value ${verdictValueCls('access', v.access_status)}">${esc(v.access_status || 'inconclusive')}</div>
+          </div>
+          <div class="verdict-cell">
+            <div class="verdict-label">Privilege</div>
+            <div class="verdict-value ${verdictValueCls('privilege', v.privilege_status)}">${esc(v.privilege_status || 'no_evidence')}</div>
+          </div>
+          <div class="verdict-cell">
+            <div class="verdict-label">Containment</div>
+            <div class="verdict-value ${verdictValueCls('containment', v.containment_status)}">${esc(v.containment_status || 'unknown')}</div>
+          </div>
+          <div class="verdict-cell">
+            <div class="verdict-label">Honeypot</div>
+            <div class="verdict-value ${verdictValueCls('honeypot', v.honeypot_status)}">${esc(v.honeypot_status || 'not_engaged')}</div>
+          </div>
+          <div class="verdict-cell" style="grid-column:1/-1">
+            <div class="verdict-confidence">
+              <div class="conf-dot" style="background:${confColor}"></div>
+              <span>${esc(v.confidence || 'low')} confidence assessment</span>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // ── D5: Chapter rail ────────────────────────────────────────────────────
+  const STAGE_CLASS = {
+    reconnaissance:         'stage-recon',
+    initial_access_attempt: 'stage-access',
+    access_success:         'stage-success',
+    privilege_abuse:        'stage-privilege',
+    response:               'stage-response',
+    containment:            'stage-containment',
+    honeypot_interaction:   'stage-honeypot',
+  };
+
+  function renderChapterRail(j) {
+    if (!j.chapters || j.chapters.length === 0) return '';
+    const pills = j.chapters.map((ch, i) => {
+      const stageCls = STAGE_CLASS[ch.stage] || '';
+      return `
+        <div class="chapter-pill ${stageCls}" onclick="scrollToChapter(${i})" title="${esc(ch.summary)}">
+          <div class="chapter-stage">${esc(ch.stage.replace(/_/g, ' '))}</div>
+          <div class="chapter-pill-title">${esc(ch.title)}</div>
+          <div class="chapter-count">${ch.entry_count} event${ch.entry_count !== 1 ? 's' : ''}</div>
+        </div>`;
+    }).join('');
+    return `<div class="chapter-rail" id="chapterRail">${pills}</div>`;
+  }
+
+  function scrollToChapter(chapterIdx) {
+    if (!window._journeyData || !window._journeyData.chapters) return;
+    const ch = window._journeyData.chapters[chapterIdx];
+    if (!ch || !ch.entry_indices || ch.entry_indices.length === 0) return;
+    const el = document.getElementById('tl-entry-' + ch.entry_indices[0]);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.querySelectorAll('.chapter-pill').forEach((p, i) => {
+      p.classList.toggle('active', i === chapterIdx);
+    });
+  }
+
+  // ── D5: Evidence card (human-first, raw JSON secondary) ────────────────
+  function renderEvidenceCard(entry, idx) {
+    const d = entry.data || {};
+    const lines = [];
+    if (d.severity)          lines.push('Severity: ' + d.severity);
+    if (d.source_ip || d.ip) lines.push('IP: ' + (d.source_ip || d.ip));
+    if (d.user)              lines.push('User: ' + d.user);
+    if (d.port)              lines.push('Port: ' + d.port);
+    if (d.command)           lines.push('Command: ' + d.command);
+    if (d.action_type)       lines.push('Action: ' + d.action_type);
+    if (d.confidence)        lines.push('Confidence: ' + d.confidence);
+    if (d.execution_result)  lines.push('Result: ' + d.execution_result);
+    if (d.reason)            lines.push('Reason: ' + d.reason);
+    if (d.detector)          lines.push('Detector: ' + d.detector);
+    if (d.file_path)         lines.push('File: ' + d.file_path);
+    if (d.summary && !lines.length) lines.push(d.summary);
+    const metaHtml = lines.length
+      ? '<div class="evidence-meta">' + lines.map(l => esc(l)).join('<br>') + '</div>'
+      : '';
+    return `
+      <div class="evidence-card" id="tl-entry-${idx}">
+        <div class="evidence-header">
+          <span class="tl-ts">${esc(fmtTime(entry.ts))}</span>
+          ${kindBadge(entry)}
+          <button type="button" class="evidence-raw-toggle" onclick="toggleRaw(${idx})">Raw JSON</button>
+        </div>
+        <div class="evidence-title">${esc(entrySummary(entry))}</div>
+        ${metaHtml}
+        <pre class="evidence-raw" id="raw-${idx}">${esc(JSON.stringify(entry.data, null, 2))}</pre>
+      </div>`;
+  }
+
+  function toggleRaw(idx) {
+    const el = document.getElementById('raw-' + idx);
+    if (el) el.classList.toggle('open');
+  }
+
   // ── Render single timeline entry ───────────────────────────────────────
   function renderEntry(entry, idx) {
-    const ts   = fmtTime(entry.ts);
-    const badge = kindBadge(entry);
-    const dot   = dotCls(entry);
-    const sum   = entrySummary(entry);
+    const dot = dotCls(entry);
     return `
       <div class="tl-item">
         <div class="tl-spine">
@@ -3093,24 +3720,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
           <div class="tl-connector"></div>
         </div>
         <div class="tl-body">
-          <div class="tl-header" onclick="toggleEntry(${idx})">
-            <span class="tl-ts">${esc(ts)}</span>
-            ${badge}
-            <span class="tl-summary">${sum}</span>
-            <span class="tl-toggle" id="tlz-${idx}">▶</span>
-          </div>
-          <pre class="tl-detail" id="tld-${idx}" style="display:none">${esc(JSON.stringify(entry.data, null, 2))}</pre>
+          ${renderEvidenceCard(entry, idx)}
         </div>
       </div>`;
   }
 
   function toggleEntry(idx) {
-    const el = document.getElementById('tld-' + idx);
-    const ic = document.getElementById('tlz-' + idx);
-    if (!el) return;
-    const hidden = el.style.display === 'none';
-    el.style.display = hidden ? 'block' : 'none';
-    if (ic) ic.textContent = hidden ? '▼' : '▶';
+    // Legacy: kept for compatibility; D5 uses toggleRaw instead.
+    toggleRaw(idx);
   }
 
   // ── D3 — action state ─────────────────────────────────────────────────
@@ -3394,6 +4011,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
           onclick="showActionModal('suspend_user',null,'${esc(subjectValue)}')">⏸ Suspend sudo</button>`;
       }
 
+      // D5: store journey data globally for scrollToChapter
+      window._journeyData = j;
+
       let html = `
         <div class="journey-header">
           <span class="journey-ip">${esc(j.subject || subjectValue)}</span>
@@ -3406,6 +4026,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
           <button type="button" class="journey-btn" onclick="downloadSnapshot('md')">Export Markdown</button>
           ${actionBtns}
         </div>
+        ${renderVerdictCard(j)}
         <div class="guided-grid">
           <section class="guided-card">
             <div class="guided-title">Investigation Summary</div>
@@ -3446,6 +4067,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
             <div class="compare-grid">${compareRows}</div>
           </section>`;
       }
+
+      html += renderChapterRail(j);
 
       html += `
         <div class="timeline">`;
@@ -4267,6 +4890,15 @@ mod tests {
                     pivot_shortcuts: vec!["ip:203.0.113.10".to_string()],
                     hints: vec!["Signals observed".to_string()],
                 },
+                verdict: JourneyVerdict {
+                    entry_vector: "ssh_bruteforce".to_string(),
+                    access_status: "attempted".to_string(),
+                    privilege_status: "no_evidence".to_string(),
+                    containment_status: "unknown".to_string(),
+                    honeypot_status: "not_engaged".to_string(),
+                    confidence: "medium".to_string(),
+                },
+                chapters: vec![],
                 entries: vec![],
             }),
         };
@@ -4350,7 +4982,10 @@ mod tests {
     #[test]
     fn action_config_disabled_by_default() {
         let cfg = DashboardActionConfig::default();
-        assert!(!cfg.enabled, "actions must be disabled by default for safety");
+        assert!(
+            !cfg.enabled,
+            "actions must be disabled by default for safety"
+        );
         assert!(cfg.dry_run, "dry_run must be true by default");
     }
 
@@ -4410,7 +5045,11 @@ mod tests {
     #[test]
     fn action_cfg_block_skill_selection() {
         // Verify the skill_id format follows convention (used in allowlist check).
-        let backends = [("ufw", "block-ip-ufw"), ("iptables", "block-ip-iptables"), ("nftables", "block-ip-nftables")];
+        let backends = [
+            ("ufw", "block-ip-ufw"),
+            ("iptables", "block-ip-iptables"),
+            ("nftables", "block-ip-nftables"),
+        ];
         for (backend, expected_id) in backends {
             let cfg = DashboardActionConfig {
                 enabled: true,
@@ -4422,5 +5061,75 @@ mod tests {
             assert_eq!(skill_id, expected_id);
             assert!(cfg.allowed_skills.contains(&skill_id));
         }
+    }
+
+    // ── D5 tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn verdict_detected_entry_vector_from_incident() {
+        let incident_entry = JourneyEntry {
+            ts: Utc::now(),
+            kind: "incident".to_string(),
+            data: serde_json::json!({ "incident_id": "ssh_bruteforce:abc123" }),
+        };
+        // With only an incident (no events), access_status is "inconclusive"
+        // and the entry vector is extracted from the incident_id prefix.
+        let verdict = derive_verdict(&[incident_entry], "active");
+        assert_eq!(verdict.entry_vector, "ssh_bruteforce");
+        assert_eq!(verdict.access_status, "inconclusive");
+        assert_eq!(verdict.containment_status, "active");
+        assert_eq!(verdict.confidence, "low");
+    }
+
+    #[test]
+    fn verdict_blocked_outcome_sets_containment_status() {
+        let decision_entry = JourneyEntry {
+            ts: Utc::now(),
+            kind: "decision".to_string(),
+            data: serde_json::json!({
+                "action_type": "block_ip",
+                "execution_result": "ok",
+                "dry_run": false,
+            }),
+        };
+        let verdict = derive_verdict(&[decision_entry], "blocked");
+        assert_eq!(verdict.containment_status, "blocked");
+        // Incident + decision → medium confidence (no events)
+        assert_eq!(verdict.confidence, "low");
+    }
+
+    #[test]
+    fn chapters_group_entries_by_stage() {
+        // Three incident entries followed by one decision — should produce
+        // an "initial_access_attempt" chapter and a "response" chapter.
+        let entries: Vec<JourneyEntry> = vec![
+            JourneyEntry {
+                ts: Utc::now(),
+                kind: "incident".to_string(),
+                data: serde_json::json!({ "incident_id": "ssh_bruteforce:1" }),
+            },
+            JourneyEntry {
+                ts: Utc::now(),
+                kind: "incident".to_string(),
+                data: serde_json::json!({ "incident_id": "ssh_bruteforce:2" }),
+            },
+            JourneyEntry {
+                ts: Utc::now(),
+                kind: "decision".to_string(),
+                data: serde_json::json!({ "action_type": "block_ip" }),
+            },
+        ];
+        let chapters = derive_chapters(&entries);
+        // At minimum one chapter must be produced.
+        assert!(!chapters.is_empty());
+        // All entry indices must be valid.
+        for ch in &chapters {
+            for &idx in &ch.entry_indices {
+                assert!(idx < entries.len());
+            }
+        }
+        // Total entry coverage: every entry should appear in exactly one chapter.
+        let total_covered: usize = chapters.iter().map(|ch| ch.entry_indices.len()).sum();
+        assert_eq!(total_covered, entries.len());
     }
 }

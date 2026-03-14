@@ -584,7 +584,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
         // ── Events ──────────────────────────────────────────────────────────
         let path = data_dir.join(format!("events-{date}.jsonl"));
         if let Ok(f) = File::open(&path) {
-            for line in BufReader::new(f).lines().flatten() {
+            for line in BufReader::new(f).lines().map_while(Result::ok) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -610,7 +610,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
         // ── Incidents ────────────────────────────────────────────────────────
         let path = data_dir.join(format!("incidents-{date}.jsonl"));
         if let Ok(f) = File::open(&path) {
-            for line in BufReader::new(f).lines().flatten() {
+            for line in BufReader::new(f).lines().map_while(Result::ok) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -644,7 +644,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
         // ── Decisions ────────────────────────────────────────────────────────
         let path = data_dir.join(format!("decisions-{date}.jsonl"));
         if let Ok(f) = File::open(&path) {
-            for line in BufReader::new(f).lines().flatten() {
+            for line in BufReader::new(f).lines().map_while(Result::ok) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -677,7 +677,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
     // ── Telemetry latest (today only, most recent snapshot) ─────────────────
     let telem_path = data_dir.join(format!("telemetry-{analyzed_date}.jsonl"));
     if let Ok(f) = File::open(&telem_path) {
-        for line in BufReader::new(f).lines().flatten() {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;

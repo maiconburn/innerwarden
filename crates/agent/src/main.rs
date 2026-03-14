@@ -103,9 +103,7 @@ fn decision_cooldown_key(action: &str, detector: &str, entity_kind: &str, entity
     format!("{action}:{detector}:{entity_kind}:{entity}")
 }
 
-fn decision_cooldown_candidates(
-    incident: &innerwarden_core::incident::Incident,
-) -> Vec<String> {
+fn decision_cooldown_candidates(incident: &innerwarden_core::incident::Incident) -> Vec<String> {
     let detector = incident_detector(&incident.incident_id);
     let mut keys = Vec::new();
 
@@ -155,9 +153,7 @@ fn decision_cooldown_key_for_decision(
         ai::AiAction::BlockIp { ip, .. } => {
             Some(decision_cooldown_key("block_ip", detector, "ip", ip))
         }
-        ai::AiAction::Monitor { ip } => {
-            Some(decision_cooldown_key("monitor", detector, "ip", ip))
-        }
+        ai::AiAction::Monitor { ip } => Some(decision_cooldown_key("monitor", detector, "ip", ip)),
         ai::AiAction::Honeypot { ip } => {
             Some(decision_cooldown_key("honeypot", detector, "ip", ip))
         }
@@ -174,9 +170,10 @@ fn decision_cooldown_key_for_decision(
 fn decision_cooldown_key_from_entry(entry: &decisions::DecisionEntry) -> Option<String> {
     let detector = incident_detector(&entry.incident_id);
     match entry.action_type.as_str() {
-        "block_ip" | "monitor" | "honeypot" => entry.target_ip.as_ref().map(|ip| {
-            decision_cooldown_key(&entry.action_type, detector, "ip", ip)
-        }),
+        "block_ip" | "monitor" | "honeypot" => entry
+            .target_ip
+            .as_ref()
+            .map(|ip| decision_cooldown_key(&entry.action_type, detector, "ip", ip)),
         _ => None,
     }
 }
@@ -193,7 +190,10 @@ fn recent_decision_dates() -> Vec<String> {
 fn load_startup_decision_state(
     data_dir: &Path,
     preload_blocklist_from_system: bool,
-) -> (skills::Blocklist, HashMap<String, chrono::DateTime<chrono::Utc>>) {
+) -> (
+    skills::Blocklist,
+    HashMap<String, chrono::DateTime<chrono::Utc>>,
+) {
     let mut blocklist = skills::Blocklist::default();
     let mut cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
 
@@ -317,7 +317,13 @@ async fn main() -> Result<()> {
             block_backend: cfg.responder.block_backend.clone(),
             allowed_skills: cfg.responder.allowed_skills.clone(),
         };
-        dashboard::serve(cli.data_dir.clone(), cli.dashboard_bind.clone(), auth, action_cfg).await?;
+        dashboard::serve(
+            cli.data_dir.clone(),
+            cli.dashboard_bind.clone(),
+            auth,
+            action_cfg,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -365,8 +371,7 @@ async fn main() -> Result<()> {
     // Pre-populate blocklist + decision cooldowns from recent (today + yesterday)
     // decision files so that IPs we already decided to block are skipped after a
     // restart, even in dry-run mode.
-    let (decisions_bl, startup_cooldowns) =
-        load_startup_decision_state(&cli.data_dir, false);
+    let (decisions_bl, startup_cooldowns) = load_startup_decision_state(&cli.data_dir, false);
 
     let startup_blocklist = {
         let mut bl = if cfg.responder.enabled && !cfg.responder.dry_run {
@@ -697,7 +702,7 @@ async fn process_incidents(
             state
                 .decision_cooldowns
                 .get(k)
-                .map_or(false, |ts| *ts > cooldown_cutoff)
+                .is_some_and(|ts| *ts > cooldown_cutoff)
         });
         if in_cooldown {
             info!(
@@ -1272,14 +1277,14 @@ async fn process_narrative_tick(
     // Additionally, always write after 30 minutes regardless of event count, so
     // the summary doesn't become stale if a handful of events trickle in slowly.
     const NARRATIVE_MIN_INTERVAL_SECS: u64 = 300; // 5 minutes
-    const NARRATIVE_MAX_STALE_SECS: u64 = 1800;   // 30 minutes
+    const NARRATIVE_MAX_STALE_SECS: u64 = 1800; // 30 minutes
     if cfg.narrative.enabled && events_count > 0 {
         let elapsed = state
             .last_narrative_at
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(u64::MAX); // None → never written → always write
-        let should_write = elapsed >= NARRATIVE_MIN_INTERVAL_SECS
-            || elapsed >= NARRATIVE_MAX_STALE_SECS;
+        let should_write =
+            elapsed >= NARRATIVE_MIN_INTERVAL_SECS || elapsed >= NARRATIVE_MAX_STALE_SECS;
         if should_write {
             let incidents_path = data_dir.join(format!("incidents-{today}.jsonl"));
             // Always read from offset 0 — summary covers the full day, not just new entries
@@ -1288,14 +1293,13 @@ async fn process_narrative_tick(
                     .inspect_err(|_| {
                         state.telemetry.observe_error("narrative_reader");
                     })?;
-            let all_incidents =
-                reader::read_new_entries::<innerwarden_core::incident::Incident>(
-                    &incidents_path,
-                    0,
-                )
-                .inspect_err(|_| {
-                    state.telemetry.observe_error("narrative_reader");
-                })?;
+            let all_incidents = reader::read_new_entries::<innerwarden_core::incident::Incident>(
+                &incidents_path,
+                0,
+            )
+            .inspect_err(|_| {
+                state.telemetry.observe_error("narrative_reader");
+            })?;
 
             let host = all_events
                 .entries
