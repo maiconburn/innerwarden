@@ -1,7 +1,7 @@
 [Unit]
 Description=Inner Warden - Sensor (host observability)
 After=network.target syslog.target
-Documentation=https://github.com/maiconesteves/innerwarden
+Documentation=https://github.com/maiconburn/innerwarden
 
 [Service]
 Type=simple

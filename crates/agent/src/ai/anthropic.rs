@@ -12,7 +12,7 @@ use super::{AiDecision, AiProvider, DecisionContext};
 /// 3. Parse the JSON response into AiDecision
 ///
 /// See openai.rs for a reference implementation.
-/// Open a PR at: https://github.com/maiconesteves/innerwarden
+/// Open a PR at: https://github.com/maiconburn/innerwarden
 pub struct AnthropicProvider;
 
 #[async_trait]
@@ -25,7 +25,7 @@ impl AiProvider for AnthropicProvider {
         info!(
             provider = "anthropic",
             "🚧 Anthropic provider is not yet implemented. \
-             Contributions welcome: https://github.com/maiconesteves/innerwarden \
+             Contributions welcome: https://github.com/maiconburn/innerwarden \
              — falling back to ignore."
         );
         Ok(AiDecision::ignore("Anthropic provider not yet implemented"))

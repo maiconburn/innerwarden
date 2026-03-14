@@ -15,7 +15,7 @@ use super::{AiDecision, AiProvider, DecisionContext};
 /// 3. Parse the streaming or non-streaming JSON response
 ///
 /// See openai.rs for a reference implementation.
-/// Open a PR at: https://github.com/maiconesteves/innerwarden
+/// Open a PR at: https://github.com/maiconburn/innerwarden
 pub struct OllamaProvider;
 
 #[async_trait]
@@ -28,7 +28,7 @@ impl AiProvider for OllamaProvider {
         info!(
             provider = "ollama",
             "🚧 Ollama provider is not yet implemented. \
-             Contributions welcome: https://github.com/maiconesteves/innerwarden \
+             Contributions welcome: https://github.com/maiconburn/innerwarden \
              — falling back to ignore."
         );
         Ok(AiDecision::ignore("Ollama provider not yet implemented"))

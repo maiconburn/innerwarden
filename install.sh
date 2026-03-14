@@ -374,7 +374,7 @@ install_from_stdin "${SENSOR_UNIT}" 644 root root <<'EOF'
 [Unit]
 Description=Inner Warden - Sensor (host observability)
 After=network.target syslog.target
-Documentation=https://github.com/maiconesteves/innerwarden
+Documentation=https://github.com/maiconburn/innerwarden
 
 [Service]
 Type=simple
@@ -408,7 +408,7 @@ Description=Inner Warden - Agent (AI analysis and audit)
 After=network-online.target innerwarden-sensor.service
 Wants=network-online.target
 Requires=innerwarden-sensor.service
-Documentation=https://github.com/maiconesteves/innerwarden
+Documentation=https://github.com/maiconburn/innerwarden
 
 [Service]
 Type=simple

@@ -114,7 +114,7 @@ pub struct SkillInfo {
 
 /// Implement this trait to add a new AI provider to Inner Warden.
 ///
-/// Open-source contributions welcome: https://github.com/maiconesteves/innerwarden
+/// Open-source contributions welcome: https://github.com/maiconburn/innerwarden
 #[async_trait]
 pub trait AiProvider: Send + Sync {
     /// Short identifier shown in logs, e.g. "openai", "anthropic".

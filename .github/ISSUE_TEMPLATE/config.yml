@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security policy
-    url: https://github.com/maiconesteves/innerwarden/blob/main/SECURITY.md
+    url: https://github.com/maiconburn/innerwarden/blob/main/SECURITY.md
     about: Please review the security reporting guidance before posting security-sensitive issues.

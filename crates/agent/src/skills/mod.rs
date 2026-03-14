@@ -222,7 +222,7 @@ pub struct SkillResult {
 ///
 /// 1. Create a struct that implements `ResponseSkill`.
 /// 2. Register it in `SkillRegistry::default_builtin()`.
-/// 3. Open a PR at https://github.com/maiconesteves/innerwarden
+/// 3. Open a PR at https://github.com/maiconburn/innerwarden
 ///
 /// All built-in skills follow the same pattern as `BlockIpUfw`.
 pub trait ResponseSkill: Send + Sync {

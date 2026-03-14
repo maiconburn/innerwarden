@@ -504,7 +504,7 @@ Premium│ honeypot            │ ✅ hardening 8.7 (containment `process|names
 Para adicionar uma skill da comunidade:
 1. Criar struct que implemente `ResponseSkill` trait em `skills/builtin/`
 2. Registrar em `SkillRegistry::default_builtin()`
-3. Abrir PR em https://github.com/maiconesteves/innerwarden
+3. Abrir PR em https://github.com/maiconburn/innerwarden
 
 O trait `ResponseSkill` exige: `id()`, `name()`, `description()`, `tier()`, `applicable_to()`, `execute()`.
 
