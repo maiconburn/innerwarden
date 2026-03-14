@@ -1,0 +1,38 @@
+[Unit]
+Description=Inner Warden - Agent (AI-assisted response)
+After=network-online.target innerwarden-sensor.service
+Wants=network-online.target
+Documentation=https://github.com/maiconburn/innerwarden
+
+[Service]
+Type=simple
+User=innerwarden
+Group=innerwarden
+SupplementaryGroups=systemd-journal
+ExecStart=/usr/local/bin/innerwarden-agent --data-dir /var/lib/innerwarden --config /etc/innerwarden/agent.toml
+Restart=on-failure
+RestartSec=5
+
+# Environment — API keys and dashboard credentials
+EnvironmentFile=-/etc/innerwarden/agent.env
+
+# Give it time to flush state and audit trail on shutdown
+TimeoutStopSec=15
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+# Logging — journald captures stdout/stderr automatically
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=innerwarden-agent
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/innerwarden
+ReadOnlyPaths=/etc/innerwarden
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

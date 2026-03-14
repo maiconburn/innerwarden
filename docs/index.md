@@ -15,23 +15,28 @@
 - `docs/assets/screenshots/` — public dashboard preview images
 - `scripts/capture_dashboard_previews.sh` — regeneration helper for dashboard preview assets
 
-## Phase Docs
+## Active Roadmap
 
-- [docs/phase-7-temporal-correlation.md](phase-7-temporal-correlation.md)
-- [docs/phase-7-operational-telemetry.md](phase-7-operational-telemetry.md)
-- [docs/phase-7-honeypot-demo.md](phase-7-honeypot-demo.md)
-- [docs/phase-8-honeypot-rebuild-foundation.md](phase-8-honeypot-rebuild-foundation.md)
-- [docs/phase-8-honeypot-real-rebuild.md](phase-8-honeypot-real-rebuild.md)
-- [docs/phase-8-honeypot-hardening.md](phase-8-honeypot-hardening.md)
-- [docs/phase-8-honeypot-sandbox-runtime.md](phase-8-honeypot-sandbox-runtime.md)
-- [docs/phase-8-honeypot-advanced-containment.md](phase-8-honeypot-advanced-containment.md)
-- [docs/phase-8-honeypot-runtime-jail-trusted-handoff.md](phase-8-honeypot-runtime-jail-trusted-handoff.md)
-- [docs/phase-8-honeypot-runtime-profile-attested-handoff.md](phase-8-honeypot-runtime-profile-attested-handoff.md)
+- [docs/phase-d5-attacker-path-viewer.md](phase-d5-attacker-path-viewer.md) — planned: dashboard story-first attacker path
 
-## Maintainer-Oriented Docs Kept In Repo For Now
+## Phase Docs (Completed — Archived)
 
-These remain useful during active development, but should be reviewed before the repository becomes fully public-facing:
+All completed phase docs have been moved to `docs/archive/` for reference:
 
-- [CLAUDE.md](../CLAUDE.md)
-- [SPEC.md](../SPEC.md) — historical design draft preserved for context
+- `docs/archive/phase-7-temporal-correlation.md`
+- `docs/archive/phase-7-operational-telemetry.md`
+- `docs/archive/phase-7-honeypot-demo.md`
+- `docs/archive/phase-7-rollout-hardening.md`
+- `docs/archive/phase-8-honeypot-rebuild-foundation.md`
+- `docs/archive/phase-8-honeypot-real-rebuild.md`
+- `docs/archive/phase-8-honeypot-hardening.md`
+- `docs/archive/phase-8-honeypot-sandbox-runtime.md`
+- `docs/archive/phase-8-honeypot-advanced-containment.md`
+- `docs/archive/phase-8-honeypot-runtime-jail-trusted-handoff.md`
+- `docs/archive/phase-8-honeypot-runtime-profile-attested-handoff.md`
+- `docs/archive/phase-8-honeypot-medium-interaction.md`
+
+## Maintainer-Oriented Docs
+
+- [CLAUDE.md](../CLAUDE.md) — operational reference for maintainers
 - [docs/public-readiness-checklist.md](public-readiness-checklist.md)

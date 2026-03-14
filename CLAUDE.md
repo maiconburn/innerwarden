@@ -33,6 +33,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Config TOML com defaults sensatos — `--config` é opcional
 - ✅ **Algorithm gate** — pré-filtra incidentes sem custo de API (severity, IP privado, já bloqueado)
 - ✅ Deduplicação intra-tick por IP: evita chamadas AI duplicadas no mesmo tick de 2s
+- ✅ **Decision cooldown** (1h) — suprime chamadas AI repetidas para o mesmo scope `action:detector:entity` dentro de uma janela de 1h; pré-carregado de `decisions-*.jsonl` (hoje + ontem) na inicialização
 - ✅ **Multi-provider AI** — OpenAI real (MVP), Anthropic/Ollama como stubs extensíveis
 - ✅ Análise AI em tempo real de incidentes High/Critical
 - ✅ AI seleciona a melhor ação com confidence score (0.0–1.0)
@@ -49,7 +50,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ Blocklist em memória persistida entre ticks: inserção sempre feita (inclusive dry_run) + pré-carregamento de `decisions-*.jsonl` do dia na inicialização (evita bloquear o mesmo IP mesmo após restart em dry_run)
 - ✅ **Audit trail** append-only: `decisions-YYYY-MM-DD.jsonl`
 - ✅ Webhook HTTP POST com filtragem por severidade mínima (dispara no tick rápido — em tempo real)
-- ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md` com throttle mínimo de 5min entre escritas (evita reescrita em cada tick)
+- ✅ Narrativa diária em Markdown: `summary-YYYY-MM-DD.md` com throttle mínimo de 5min entre escritas (evita reescrita em cada tick); instante da última escrita recuperado via mtime do arquivo ao reiniciar
 - ✅ Dois loops independentes no mesmo `tokio::select!`: rápido (incidentes + webhook + AI, 2s) + lento (narrativa, 30s)
 - ✅ Cursor persistido após cada tick — fail-open em ambos os loops (crash nunca derruba o agent)
 - ✅ `reqwest::Client` reutilizado entre chamadas AI (connection pool real, sem overhead de TLS por chamada)
@@ -265,7 +266,7 @@ scripts/
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 149 testes (48 sensor + 101 agent)
+make test             # 154 testes (48 sensor + 106 agent)
 make build            # debug build de ambos
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -605,7 +606,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 153 testes (48 sensor + 105 agent) — todos devem passar
+make test   # 154 testes (48 sensor + 106 agent) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -714,7 +715,7 @@ Documentação pública do repositório:
 - Fase 8.7 (concluída): perfis de jail mais restritivos + receiver attestation no handoff externo
 - Fase 8.8 (concluída): interação média realista — SSH via `russh` (key exchange + captura de credenciais) + HTTP com login page fake (captura de formulário)
 - Fase 6 (deferida): providers AI adicionais (Anthropic/Ollama)
-- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-d5-attacker-path-viewer.md`, `docs/public-readiness-checklist.md`, `docs/phase-7-temporal-correlation.md`, `docs/phase-7-operational-telemetry.md`, `docs/phase-7-honeypot-demo.md`, `docs/phase-8-honeypot-rebuild-foundation.md`, `docs/phase-8-honeypot-real-rebuild.md`, `docs/phase-8-honeypot-hardening.md`, `docs/phase-8-honeypot-sandbox-runtime.md`, `docs/phase-8-honeypot-advanced-containment.md`, `docs/phase-8-honeypot-runtime-jail-trusted-handoff.md`, `docs/phase-8-honeypot-runtime-profile-attested-handoff.md` e `docs/phase-8-honeypot-medium-interaction.md`
+- Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/phase-d5-attacker-path-viewer.md`, `docs/public-readiness-checklist.md`; fases concluídas arquivadas em `docs/archive/`
 
 ---
 

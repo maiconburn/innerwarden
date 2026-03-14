@@ -94,7 +94,6 @@ struct AgentState {
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
-const NARRATIVE_MIN_INTERVAL_SECS: u64 = 300;
 
 fn incident_detector(incident_id: &str) -> &str {
     incident_id.split(':').next().unwrap_or("unknown")
@@ -363,33 +362,21 @@ async fn main() -> Result<()> {
     }
 
     // Build shared agent state
-    // Pre-populate blocklist from today's decisions file so that IPs we already
-    // decided to block are skipped after a restart, even in dry-run mode.
+    // Pre-populate blocklist + decision cooldowns from recent (today + yesterday)
+    // decision files so that IPs we already decided to block are skipped after a
+    // restart, even in dry-run mode.
+    let (decisions_bl, startup_cooldowns) =
+        load_startup_decision_state(&cli.data_dir, false);
+
     let startup_blocklist = {
         let mut bl = if cfg.responder.enabled && !cfg.responder.dry_run {
             skills::Blocklist::load_from_ufw().await
         } else {
             skills::Blocklist::default()
         };
-        let today = chrono::Local::now()
-            .date_naive()
-            .format("%Y-%m-%d")
-            .to_string();
-        let decisions_path = cli.data_dir.join(format!("decisions-{today}.jsonl"));
-        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(entry) = serde_json::from_str::<decisions::DecisionEntry>(line) {
-                    if entry.action_type == "block_ip" {
-                        if let Some(ip) = entry.target_ip {
-                            bl.insert(ip);
-                        }
-                    }
-                }
-            }
+        // Merge IPs from recent decision files
+        for ip in decisions_bl.as_vec() {
+            bl.insert(ip);
         }
         bl
     };
@@ -397,6 +384,7 @@ async fn main() -> Result<()> {
     let mut state = AgentState {
         skill_registry: skills::SkillRegistry::default_builtin(),
         blocklist: startup_blocklist,
+        decision_cooldowns: startup_cooldowns,
         correlator: correlation::TemporalCorrelator::new(cfg.correlation.window_seconds, 4096),
         telemetry: telemetry::TelemetryState::default(),
         telemetry_writer: if cfg.telemetry.enabled {
@@ -426,7 +414,7 @@ async fn main() -> Result<()> {
         } else {
             None
         },
-        last_narrative_at: None,
+        last_narrative_at: load_last_narrative_instant(&cli.data_dir),
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -697,6 +685,29 @@ async fn process_incidents(
             handled += 1;
             continue;
         }
+
+        // Decision cooldown — suppress repeated AI decisions for the same
+        // action:detector:entity scope within a 1-hour window.  This prevents
+        // redundant API calls when the same attacker triggers multiple
+        // incidents in rapid succession.
+        let cooldown_cutoff =
+            chrono::Utc::now() - chrono::Duration::seconds(DECISION_COOLDOWN_SECS);
+        let candidates = decision_cooldown_candidates(incident);
+        let in_cooldown = candidates.iter().any(|k| {
+            state
+                .decision_cooldowns
+                .get(k)
+                .map_or(false, |ts| *ts > cooldown_cutoff)
+        });
+        if in_cooldown {
+            info!(
+                incident_id = %incident.incident_id,
+                "AI gate: skipping (decision cooldown active)"
+            );
+            handled += 1;
+            continue;
+        }
+
         state.telemetry.observe_gate_pass();
 
         // ai_provider is Some when ai_enabled — safe to unwrap
@@ -780,6 +791,12 @@ async fn process_incidents(
         // this is only a per-tick deduplication guard.
         if let ai::AiAction::BlockIp { ip, .. } = &decision.action {
             blocked_set.insert(ip.clone());
+        }
+
+        // Record decision cooldown so the same action:detector:entity scope is not
+        // re-evaluated by AI within the cooldown window (default 1h).
+        if let Some(key) = decision_cooldown_key_for_decision(incident, &decision) {
+            state.decision_cooldowns.insert(key, chrono::Utc::now());
         }
 
         info!(
@@ -1474,6 +1491,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            decision_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -1573,6 +1591,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            decision_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -1647,6 +1666,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            decision_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -1733,6 +1753,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            decision_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -1796,6 +1817,7 @@ mod tests {
         let mut state = AgentState {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
+            decision_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -1813,5 +1835,90 @@ mod tests {
         assert!(content.contains("honeypot.demo_decoy_hit"));
         assert!(content.contains("DEMO/SIMULATION/DECOY"));
         assert!(content.contains(attacker_ip));
+    }
+
+    // ------------------------------------------------------------------
+    // Decision cooldown: second incident from same IP/detector is suppressed
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn decision_cooldown_suppresses_repeat() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let attacker_ip = "1.2.3.4";
+
+        // Plant TWO identical brute-force incidents from the same IP
+        let incidents_path = dir.path().join(format!("incidents-{today}.jsonl"));
+        let mut f = std::fs::File::create(&incidents_path).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        writeln!(f, "{}", incident_line(attacker_ip)).unwrap();
+        drop(f);
+
+        let cfg = config::AgentConfig {
+            ai: config::AiConfig {
+                enabled: true,
+                confidence_threshold: 0.8,
+                context_events: 5,
+                ..config::AiConfig::default()
+            },
+            responder: config::ResponderConfig {
+                enabled: true,
+                dry_run: true,
+                block_backend: "ufw".to_string(),
+                allowed_skills: vec!["block-ip-ufw".to_string()],
+            },
+            ..config::AgentConfig::default()
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mock = Arc::new(CountingMockAiProvider {
+            decision: ai::AiDecision {
+                action: ai::AiAction::BlockIp {
+                    ip: attacker_ip.to_string(),
+                    skill_id: "block-ip-ufw".to_string(),
+                },
+                confidence: 0.97,
+                auto_execute: true,
+                reason: "brute force".to_string(),
+                alternatives: vec![],
+                estimated_threat: "high".to_string(),
+            },
+            calls: calls.clone(),
+        });
+
+        let mut state = AgentState {
+            skill_registry: skills::SkillRegistry::default_builtin(),
+            blocklist: skills::Blocklist::default(),
+            decision_cooldowns: HashMap::new(),
+            correlator: correlation::TemporalCorrelator::new(300, 4096),
+            telemetry: telemetry::TelemetryState::default(),
+            telemetry_writer: None,
+            ai_provider: Some(mock as Arc<dyn ai::AiProvider>),
+            decision_writer: Some(decisions::DecisionWriter::new(dir.path()).unwrap()),
+            last_narrative_at: None,
+        };
+
+        let mut cursor = reader::AgentCursor::default();
+        let handled = process_incidents(dir.path(), &mut cursor, &cfg, &mut state).await;
+
+        // Both incidents are "handled" (counted), but the AI should be called
+        // only ONCE — the second incident is suppressed by the decision
+        // cooldown that was recorded after the first decision.
+        assert_eq!(handled, 2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "AI should be called once — second incident suppressed by cooldown"
+        );
+
+        // Verify the cooldown entry was recorded
+        assert!(
+            !state.decision_cooldowns.is_empty(),
+            "decision cooldown should be recorded"
+        );
     }
 }
