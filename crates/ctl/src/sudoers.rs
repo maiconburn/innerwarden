@@ -30,6 +30,7 @@ impl SudoersDropIn {
         PathBuf::from(format!("/etc/sudoers.d/{}", self.name))
     }
 
+    #[allow(dead_code)]
     pub fn is_installed(&self) -> bool {
         self.path().exists()
     }
