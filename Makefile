@@ -56,20 +56,67 @@ build-linux:
 
 # ─── Deploy ──────────────────────────────────────────────────────────────────
 
-# Override on the command line: make deploy HOST=user@myserver
+# Override on the command line: make update HOST=user@myserver
 HOST ?= user@your-server
 
+# ── Full update pipeline: test → build → deploy → restart → verify ────────────
+# Usage: make update HOST=ubuntu@1.2.3.4
+#
+# Steps:
+#   1. make test      — all 157 tests must pass (fails fast if any break)
+#   2. make build-linux — cross-compile release binaries for arm64 Linux
+#   3. Stop agent + sensor gracefully (sensor last so no events are lost)
+#   4. SCP both binaries to /tmp, install to /usr/local/bin atomically
+#   5. Restart sensor → agent (sensor first so agent finds fresh data)
+#   6. Wait 3s, show status of both services + tail last 20 log lines
+.PHONY: update
+update: test build-linux
+	@echo "══════════════════════════════════════════════════"
+	@echo "  Deploying to $(HOST)"
+	@echo "══════════════════════════════════════════════════"
+	@echo "→ Stopping services..."
+	ssh $(HOST) "sudo systemctl stop innerwarden-agent  2>/dev/null || true"
+	ssh $(HOST) "sudo systemctl stop innerwarden-sensor 2>/dev/null || true"
+	@echo "→ Uploading binaries..."
+	scp $(RELEASE_DIR)/innerwarden-sensor $(HOST):/tmp/innerwarden-sensor
+	scp $(RELEASE_DIR)/innerwarden-agent  $(HOST):/tmp/innerwarden-agent
+	@echo "→ Installing binaries..."
+	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-sensor /usr/local/bin/innerwarden-sensor"
+	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-agent  /usr/local/bin/innerwarden-agent"
+	@echo "→ Restarting services..."
+	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start innerwarden-sensor"
+	ssh $(HOST) "sudo systemctl start innerwarden-agent 2>/dev/null || true"
+	@echo "→ Waiting for services to settle..."
+	@sleep 3
+	@echo "══════════════════════════════════════════════════"
+	@echo "  Status"
+	@echo "══════════════════════════════════════════════════"
+	ssh $(HOST) "sudo systemctl status innerwarden-sensor innerwarden-agent --no-pager -l"
+	@echo "══════════════════════════════════════════════════"
+	@echo "  Recent logs (sensor)"
+	@echo "══════════════════════════════════════════════════"
+	ssh $(HOST) "sudo journalctl -u innerwarden-sensor -n 20 --no-pager"
+	@echo "══════════════════════════════════════════════════"
+	@echo "  Recent logs (agent)"
+	@echo "══════════════════════════════════════════════════"
+	ssh $(HOST) "sudo journalctl -u innerwarden-agent  -n 20 --no-pager"
+	@echo ""
+	@echo "✓ Update complete."
+
+# ── deploy: binaries only, no test run (faster, use when tests already passed) ─
 .PHONY: deploy
 deploy: build-linux
-	@echo "Deploying to $(HOST) ..."
+	@echo "Deploying to $(HOST) (no test run — use 'make update' for full pipeline)..."
+	ssh $(HOST) "sudo systemctl stop innerwarden-agent  2>/dev/null || true"
 	ssh $(HOST) "sudo systemctl stop innerwarden-sensor 2>/dev/null || true"
 	scp $(RELEASE_DIR)/innerwarden-sensor $(HOST):/tmp/innerwarden-sensor
 	scp $(RELEASE_DIR)/innerwarden-agent  $(HOST):/tmp/innerwarden-agent
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-sensor /usr/local/bin/innerwarden-sensor"
 	ssh $(HOST) "sudo install -o root -g root -m 755 /tmp/innerwarden-agent  /usr/local/bin/innerwarden-agent"
 	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl start innerwarden-sensor"
+	ssh $(HOST) "sudo systemctl start innerwarden-agent 2>/dev/null || true"
 	@echo "Deploy complete — checking status:"
-	ssh $(HOST) "sudo systemctl status innerwarden-sensor --no-pager"
+	ssh $(HOST) "sudo systemctl status innerwarden-sensor innerwarden-agent --no-pager"
 
 .PHONY: deploy-config
 deploy-config:
@@ -81,8 +128,10 @@ deploy-config:
 .PHONY: deploy-service
 deploy-service:
 	scp examples/systemd/innerwarden-sensor.service $(HOST):/tmp/innerwarden-sensor.service
+	scp examples/systemd/innerwarden-agent.service  $(HOST):/tmp/innerwarden-agent.service
 	ssh $(HOST) "sudo install -o root -g root -m 644 /tmp/innerwarden-sensor.service /etc/systemd/system/innerwarden-sensor.service"
-	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl enable innerwarden-sensor"
+	ssh $(HOST) "sudo install -o root -g root -m 644 /tmp/innerwarden-agent.service  /etc/systemd/system/innerwarden-agent.service"
+	ssh $(HOST) "sudo systemctl daemon-reload && sudo systemctl enable innerwarden-sensor innerwarden-agent"
 
 .PHONY: rollout-precheck
 rollout-precheck:
@@ -104,11 +153,19 @@ rollout-stop-agent:
 
 .PHONY: logs
 logs:
+	ssh $(HOST) "sudo journalctl -u innerwarden-sensor -u innerwarden-agent -f --no-pager"
+
+.PHONY: logs-sensor
+logs-sensor:
 	ssh $(HOST) "sudo journalctl -u innerwarden-sensor -f --no-pager"
+
+.PHONY: logs-agent
+logs-agent:
+	ssh $(HOST) "sudo journalctl -u innerwarden-agent -f --no-pager"
 
 .PHONY: status
 status:
-	ssh $(HOST) "sudo systemctl status innerwarden-sensor --no-pager"
+	ssh $(HOST) "sudo systemctl status innerwarden-sensor innerwarden-agent --no-pager"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
