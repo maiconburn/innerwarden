@@ -2378,6 +2378,50 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
     }
 
+    // AbuseIPDB enrichment — only when abuseipdb.enabled = true
+    {
+        let abuseipdb_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("abuseipdb"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if abuseipdb_enabled {
+            let key_in_config = agent_doc
+                .as_ref()
+                .and_then(|doc| doc.get("abuseipdb"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let key_in_env = std::env::var("ABUSEIPDB_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let key_in_file = resolve_key("ABUSEIPDB_API_KEY");
+            let resolved_key = key_in_config.or(key_in_env).or(key_in_file);
+
+            cfg.push(match &resolved_key {
+                None => Check::fail(
+                    "abuseipdb.enabled=true but ABUSEIPDB_API_KEY not set",
+                    "1. Register at https://www.abuseipdb.com/register (free)\n\
+                     2. Go to https://www.abuseipdb.com/account/api\n\
+                     3. Add to agent.toml:\n\
+                     \n   [abuseipdb]\n   api_key = \"<your-key>\"\n\
+                     \n   Or set env var: ABUSEIPDB_API_KEY=<your-key>",
+                ),
+                Some(k) if k.len() < 10 => Check::warn(
+                    "ABUSEIPDB_API_KEY is set but looks too short",
+                    "AbuseIPDB API keys are typically 80 characters.\n\
+                     Get a fresh key at https://www.abuseipdb.com/account/api",
+                ),
+                Some(_) => Check::ok(
+                    "ABUSEIPDB_API_KEY is set (free tier: 1,000 checks/day)",
+                ),
+            });
+        }
+    }
+
     run_section(cfg, &mut total_issues);
 
     // ── Telegram ──────────────────────────────────────────
@@ -2603,10 +2647,22 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 .to_string()
         };
 
+        let detector_enabled = |name: &str| -> bool {
+            sensor_doc
+                .as_ref()
+                .and_then(|doc| doc.get("detectors"))
+                .and_then(|c| c.get(name))
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+
         let falco_enabled = collector_enabled("falco_log");
         let suricata_enabled = collector_enabled("suricata_eve");
         let osquery_enabled = collector_enabled("osquery_log");
-        let any_integration = falco_enabled || suricata_enabled || osquery_enabled;
+        let nginx_error_enabled = collector_enabled("nginx_error");
+        let any_integration =
+            falco_enabled || suricata_enabled || osquery_enabled || nginx_error_enabled;
 
         if any_integration {
             println!("\nIntegrations");
@@ -2830,6 +2886,67 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 });
 
                 run_section(osq, &mut total_issues);
+            }
+
+            // ── nginx-error-monitor ────────────────────────
+            if nginx_error_enabled {
+                println!("  nginx-error-monitor");
+                let mut nginx_err = Vec::new();
+
+                // nginx binary
+                let nginx_bin = std::path::Path::new("/usr/sbin/nginx").exists()
+                    || std::path::Path::new("/usr/bin/nginx").exists()
+                    || std::path::Path::new("/usr/local/sbin/nginx").exists();
+                nginx_err.push(if nginx_bin {
+                    Check::ok("nginx binary found")
+                } else {
+                    Check::fail(
+                        "nginx binary not found",
+                        "sudo apt-get install nginx",
+                    )
+                });
+
+                // error log path
+                let err_log = collector_str(
+                    "nginx_error",
+                    "path",
+                    "/var/log/nginx/error.log",
+                );
+                let log_exists = std::path::Path::new(&err_log).exists();
+                nginx_err.push(if log_exists {
+                    Check::ok(format!("nginx error log exists ({})", err_log))
+                } else {
+                    Check::fail(
+                        format!("nginx error log not found ({})", err_log),
+                        "sudo systemctl start nginx  # log is created on first request or error",
+                    )
+                });
+
+                // readability — can the current user read it?
+                if log_exists {
+                    let readable = std::fs::File::open(&err_log).is_ok();
+                    nginx_err.push(if readable {
+                        Check::ok(format!("nginx error log is readable ({})", err_log))
+                    } else {
+                        Check::warn(
+                            format!("nginx error log is not readable by innerwarden user ({})", err_log),
+                            "sudo usermod -aG adm innerwarden  # or: sudo chmod 640 /var/log/nginx/error.log",
+                        )
+                    });
+                }
+
+                // web_scan detector enabled?
+                let web_scan_on = detector_enabled("web_scan");
+                nginx_err.push(if web_scan_on {
+                    Check::ok("web_scan detector is enabled")
+                } else {
+                    Check::warn(
+                        "web_scan detector is disabled — http.error events are collected but not triaged",
+                        "Add to sensor config:\n\n  [detectors.web_scan]\n  enabled = true\n  threshold = 15\n  window_seconds = 60",
+                    )
+                });
+
+                run_section(nginx_err, &mut total_issues);
             }
         }
     }
