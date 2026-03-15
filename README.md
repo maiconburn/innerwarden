@@ -79,7 +79,7 @@ Sources: auth.log, journald, Docker events, file integrity, nginx access log, sh
 
 **Agent** — reads incidents, applies an algorithm gate (skip low severity, private IPs, already-blocked), optionally calls AI for triage, and executes the chosen skill.
 
-Two Rust binaries. No external dependencies at runtime. ~50 MB RAM.
+Two Rust daemons (sensor and agent) plus a Rust CLI (`innerwarden-ctl`). No external dependencies at runtime. ~50 MB RAM.
 
 ---
 
