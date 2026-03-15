@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +44,14 @@ pub struct CollectorsConfig {
     pub suricata_eve: SuricataEveConfig,
     #[serde(default)]
     pub osquery_log: OsqueryLogConfig,
+    #[serde(default)]
+    pub macos_log: MacosLogConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MacosLogConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -147,3 +147,80 @@ jobs:
           draft: false
           # tags containing '-' (e.g. v1.0.0-rc.1) are marked as pre-release
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  build-release-macos:
+    name: Build and publish (macOS)
+    runs-on: macos-latest
+    needs: build-release
+
+    permissions:
+      contents: write   # needed to upload assets to existing release
+
+    steps:
+      # ── Source ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rust + macOS targets ───────────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      # ── Cache ──────────────────────────────────────────────────────────────
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # ── Tests ──────────────────────────────────────────────────────────────
+      - name: Run tests
+        run: cargo test --workspace
+
+      # ── Build x86_64-apple-darwin ──────────────────────────────────────────
+      - name: Build (x86_64-apple-darwin)
+        run: |
+          cargo build --release \
+            --target x86_64-apple-darwin \
+            -p innerwarden-sensor \
+            -p innerwarden-agent \
+            -p innerwarden-ctl
+
+      # ── Build aarch64-apple-darwin ─────────────────────────────────────────
+      # aarch64-apple-darwin cross-compilation from x86_64 macOS runner works
+      # with just --target because Xcode provides the required SDK.
+      - name: Build (aarch64-apple-darwin)
+        run: |
+          cargo build --release \
+            --target aarch64-apple-darwin \
+            -p innerwarden-sensor \
+            -p innerwarden-agent \
+            -p innerwarden-ctl
+
+      # ── Stage assets with SHA-256 sidecars ────────────────────────────────
+      - name: Stage release assets
+        run: |
+          mkdir -p dist
+
+          declare -A ARCH_TARGET=(
+            [x86_64]="x86_64-apple-darwin"
+            [aarch64]="aarch64-apple-darwin"
+          )
+
+          for arch in x86_64 aarch64; do
+            target="${ARCH_TARGET[$arch]}"
+            for binary in innerwarden-sensor innerwarden-agent innerwarden-ctl; do
+              src="target/$target/release/$binary"
+              dest="dist/${binary}-macos-${arch}"
+              cp "$src" "$dest"
+              shasum -a 256 "$dest" | awk '{print $1}' > "${dest}.sha256"
+            done
+          done
+
+          echo "=== macOS release assets ==="
+          ls -lh dist/
+
+      # ── Upload macOS assets to existing release ────────────────────────────
+      - name: Upload macOS assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

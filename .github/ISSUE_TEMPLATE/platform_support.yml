@@ -1,0 +1,49 @@
+name: Platform support request
+description: Request pre-built binaries for your platform
+title: "Platform support: [ARCH] on [OS]"
+labels: ["platform-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us expand InnerWarden's platform coverage!
+        Fill in the details below and we'll prioritise accordingly.
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Output of `uname -sm`
+      placeholder: "e.g. Linux aarch64, Darwin arm64, Windows x86_64"
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      description: Output of `uname -r` or OS version string
+      placeholder: "e.g. Ubuntu 22.04, macOS 14.3, Windows 11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: use_case
+    attributes:
+      label: Use case
+      options:
+        - Production server
+        - Home lab / self-hosted
+        - Cloud VM / VPS
+        - Container / Kubernetes
+        - Development / testing
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any relevant details (cloud provider, distro flavour, etc.)
+    validations:
+      required: false

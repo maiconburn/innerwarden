@@ -13,8 +13,8 @@ use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
     falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
-    nginx_access::NginxAccessCollector, osquery_log::OsqueryLogCollector,
-    suricata_eve::SuricataEveCollector,
+    macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
+    osquery_log::OsqueryLogCollector, suricata_eve::SuricataEveCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -357,6 +357,18 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = collector.run(tx_osquery, shared).await {
                 tracing::error!("osquery_log collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn macos_log collector
+    if cfg.collectors.macos_log.enabled {
+        let collector = MacosLogCollector::new(&cfg.agent.host_id);
+        info!("starting macos_log collector");
+        let tx_macos = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_macos).await {
+                tracing::error!("macos_log collector error: {e:#}");
             }
         });
     }

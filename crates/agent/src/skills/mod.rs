@@ -286,6 +286,7 @@ impl SkillRegistry {
                 Box::new(BlockIpUfw),
                 Box::new(BlockIpIptables),
                 Box::new(BlockIpNftables),
+                Box::new(BlockIpPf),
                 Box::new(MonitorIp),
                 Box::new(Honeypot),
                 Box::new(SuspendUserSudo),
@@ -397,6 +398,7 @@ mod tests {
         assert!(reg.get("block-ip-ufw").is_some());
         assert!(reg.get("block-ip-iptables").is_some());
         assert!(reg.get("block-ip-nftables").is_some());
+        assert!(reg.get("block-ip-pf").is_some());
         assert!(reg.get("monitor-ip").is_some());
         assert!(reg.get("honeypot").is_some());
         assert!(reg.get("suspend-user-sudo").is_some());
@@ -408,7 +410,7 @@ mod tests {
     fn registry_infos_are_serializable() {
         let reg = SkillRegistry::default_builtin();
         let infos = reg.infos();
-        assert_eq!(infos.len(), 7);
+        assert_eq!(infos.len(), 8);
         let json = serde_json::to_string(&infos).unwrap();
         assert!(json.contains("block-ip-ufw"));
     }

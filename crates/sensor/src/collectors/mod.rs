@@ -4,6 +4,7 @@ pub mod exec_audit;
 pub mod falco_log;
 pub mod integrity;
 pub mod journald;
+pub mod macos_log;
 pub mod nginx_access;
 pub mod osquery_log;
 pub mod suricata_eve;

@@ -35,9 +35,22 @@ for arg in "$@"; do
   esac
 done
 
+# Detect OS
+OS_TYPE="$(uname -s)"   # Linux | Darwin
+
 BIN_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/innerwarden"
-DATA_DIR="/var/lib/innerwarden"
+
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+  CONFIG_DIR="/usr/local/etc/innerwarden"
+  DATA_DIR="/usr/local/var/lib/innerwarden"
+  PLIST_DIR="/Library/LaunchDaemons"
+  SENSOR_PLIST="$PLIST_DIR/com.innerwarden.sensor.plist"
+  AGENT_PLIST="$PLIST_DIR/com.innerwarden.agent.plist"
+  LOG_DIR="/usr/local/var/log/innerwarden"
+else
+  CONFIG_DIR="/etc/innerwarden"
+  DATA_DIR="/var/lib/innerwarden"
+fi
 
 SENSOR_BIN="${BIN_DIR}/innerwarden-sensor"
 AGENT_BIN="${BIN_DIR}/innerwarden-agent"
@@ -87,12 +100,14 @@ prompt_yes_no() {
   [[ "${normalized}" == "true" ]]
 }
 
-if [[ "$(uname -s)" != "Linux" ]]; then
-  fail "this installer currently supports Linux hosts only"
+if [[ "$OS_TYPE" != "Linux" && "$OS_TYPE" != "Darwin" ]]; then
+  fail "this installer supports Linux and macOS (Darwin) hosts only"
 fi
 
-if ! command -v systemctl >/dev/null 2>&1; then
-  fail "systemctl not found; this installer requires systemd"
+if [[ "$OS_TYPE" != "Darwin" ]]; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    fail "systemctl not found; this installer requires systemd on Linux"
+  fi
 fi
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -188,18 +203,36 @@ detect_arch() {
   case "$(uname -m)" in
     x86_64)        echo "x86_64"  ;;
     aarch64|arm64) echo "aarch64" ;;
-    *) fail "unsupported architecture: $(uname -m) — use INNERWARDEN_BUILD_FROM_SOURCE=1 to build locally" ;;
+    *)
+      ISSUE_URL="https://github.com/maiconburn/innerwarden/issues/new?template=platform_support.yml&title=Platform+support+request:+$(uname -m)+on+$(uname -s)&labels=platform-support"
+      echo ""
+      echo "  Your platform ($(uname -m) on $(uname -s)) is not yet supported by pre-built binaries."
+      echo "  Please request support here (takes 30 seconds):"
+      echo "  $ISSUE_URL"
+      echo ""
+      echo "  To build from source instead: INNERWARDEN_BUILD_FROM_SOURCE=1 bash install.sh"
+      fail "unsupported architecture: $(uname -m)"
+      ;;
+  esac
+}
+
+# ── Detect OS platform prefix for asset names ─────────────────────────────────
+detect_platform() {
+  case "$OS_TYPE" in
+    Darwin) echo "macos" ;;
+    *)      echo "linux" ;;
   esac
 }
 
 # ── Download a binary from GitHub Releases and validate its SHA-256 ──────────
 download_asset() {
-  local binary="$1"   # e.g. innerwarden-sensor
-  local dest="$2"     # destination file path
-  local version="$3"  # e.g. v0.2.0
-  local arch="$4"     # x86_64 | aarch64
+  local binary="$1"    # e.g. innerwarden-sensor
+  local dest="$2"      # destination file path
+  local version="$3"   # e.g. v0.2.0
+  local arch="$4"      # x86_64 | aarch64
+  local platform="$5"  # linux | macos
 
-  local asset="${binary}-linux-${arch}"
+  local asset="${binary}-${platform}-${arch}"
   local base_url="https://github.com/${GITHUB_REPO}/releases/download/${version}"
 
   log "downloading ${asset}..."
@@ -208,7 +241,12 @@ download_asset() {
   if curl -fsSL "${base_url}/${asset}.sha256" | awk '{print $1}' > /tmp/iw-expected-sha256 2>/dev/null; then
     local expected actual
     expected="$(cat /tmp/iw-expected-sha256)"
-    actual="$(sha256sum "${dest}" | awk '{print $1}')"
+    # Use shasum on macOS, sha256sum on Linux
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "${dest}" | awk '{print $1}')"
+    else
+      actual="$(shasum -a 256 "${dest}" | awk '{print $1}')"
+    fi
     rm -f /tmp/iw-expected-sha256
     if [[ "${expected}" != "${actual}" ]]; then
       fail "SHA-256 mismatch for ${asset}:\n  expected: ${expected}\n  got:      ${actual}"
@@ -239,13 +277,15 @@ if [[ "${BUILD_FROM_SOURCE}" == "1" ]]; then
 else
   # ── Download pre-built binaries from GitHub Releases (~10 s) ────────────
   if ! command -v curl >/dev/null 2>&1; then
-    fail "curl is required to download binaries (apt install curl)"
+    fail "curl is required to download binaries (apt install curl / brew install curl)"
   fi
-  if ! command -v sha256sum >/dev/null 2>&1; then
-    fail "sha256sum is required for integrity checks (apt install coreutils)"
+  # Require sha256sum (Linux) or shasum (macOS)
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    fail "sha256sum or shasum is required for integrity checks"
   fi
 
   ARCH="$(detect_arch)"
+  PLATFORM="$(detect_platform)"
 
   # Resolve version: env override or latest from GitHub API
   if [[ -n "${INNERWARDEN_VERSION:-}" ]]; then
@@ -260,38 +300,63 @@ else
     [[ -n "${IW_VERSION}" ]] || fail "could not determine latest release version from GitHub API"
   fi
 
-  log "installing InnerWarden ${IW_VERSION} for linux/${ARCH}"
+  log "installing InnerWarden ${IW_VERSION} for ${PLATFORM}/${ARCH}"
 
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "${TMP_DIR}"' EXIT
 
-  download_asset "innerwarden-sensor" "${TMP_DIR}/innerwarden-sensor" "${IW_VERSION}" "${ARCH}"
-  download_asset "innerwarden-agent"  "${TMP_DIR}/innerwarden-agent"  "${IW_VERSION}" "${ARCH}"
-  download_asset "innerwarden-ctl"    "${TMP_DIR}/innerwarden-ctl"    "${IW_VERSION}" "${ARCH}"
+  download_asset "innerwarden-sensor" "${TMP_DIR}/innerwarden-sensor" "${IW_VERSION}" "${ARCH}" "${PLATFORM}"
+  download_asset "innerwarden-agent"  "${TMP_DIR}/innerwarden-agent"  "${IW_VERSION}" "${ARCH}" "${PLATFORM}"
+  download_asset "innerwarden-ctl"    "${TMP_DIR}/innerwarden-ctl"    "${IW_VERSION}" "${ARCH}" "${PLATFORM}"
 
   IW_SENSOR_BIN="${TMP_DIR}/innerwarden-sensor"
   IW_AGENT_BIN="${TMP_DIR}/innerwarden-agent"
   IW_CTL_BIN="${TMP_DIR}/innerwarden-ctl"
 fi
 
-NOLOGIN_BIN="$(command -v nologin || echo /usr/sbin/nologin)"
-if ! id "${IW_USER}" >/dev/null 2>&1; then
-  log "creating service user: ${IW_USER}"
-  run_root useradd -r -s "${NOLOGIN_BIN}" "${IW_USER}"
-fi
-
-for grp in adm systemd-journal docker audit; do
-  if getent group "${grp}" >/dev/null 2>&1; then
-    run_root usermod -aG "${grp}" "${IW_USER}"
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+  # macOS: create user via dscl if it doesn't exist
+  if ! id "${IW_USER}" >/dev/null 2>&1; then
+    log "creating service user: ${IW_USER}"
+    # Find an unused UID in the system range
+    NEXT_UID=300
+    while dscl . -list /Users UniqueID | awk '{print $2}' | grep -q "^${NEXT_UID}$"; do
+      NEXT_UID=$((NEXT_UID + 1))
+    done
+    run_root dscl . -create /Users/"${IW_USER}"
+    run_root dscl . -create /Users/"${IW_USER}" UserShell /usr/bin/false
+    run_root dscl . -create /Users/"${IW_USER}" RealName "Inner Warden"
+    run_root dscl . -create /Users/"${IW_USER}" UniqueID "${NEXT_UID}"
+    run_root dscl . -create /Users/"${IW_USER}" PrimaryGroupID 20
+    run_root dscl . -create /Users/"${IW_USER}" NFSHomeDirectory /var/empty
   fi
-done
+  run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}" "${LOG_DIR}"
+  run_root chown root:"staff" "${CONFIG_DIR}"
+  run_root chmod 750 "${CONFIG_DIR}"
+  run_root chown "${IW_USER}:staff" "${DATA_DIR}"
+  run_root chmod 750 "${DATA_DIR}"
+  run_root chown "${IW_USER}:staff" "${LOG_DIR}"
+  run_root chmod 750 "${LOG_DIR}"
+else
+  NOLOGIN_BIN="$(command -v nologin || echo /usr/sbin/nologin)"
+  if ! id "${IW_USER}" >/dev/null 2>&1; then
+    log "creating service user: ${IW_USER}"
+    run_root useradd -r -s "${NOLOGIN_BIN}" "${IW_USER}"
+  fi
 
-run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
-# Allow the service user to traverse/read config files without making them world-readable.
-run_root chown root:"${IW_USER}" "${CONFIG_DIR}"
-run_root chmod 750 "${CONFIG_DIR}"
-run_root chown "${IW_USER}:${IW_USER}" "${DATA_DIR}"
-run_root chmod 750 "${DATA_DIR}"
+  for grp in adm systemd-journal docker audit; do
+    if getent group "${grp}" >/dev/null 2>&1; then
+      run_root usermod -aG "${grp}" "${IW_USER}"
+    fi
+  done
+
+  run_root mkdir -p "${CONFIG_DIR}" "${DATA_DIR}"
+  # Allow the service user to traverse/read config files without making them world-readable.
+  run_root chown root:"${IW_USER}" "${CONFIG_DIR}"
+  run_root chmod 750 "${CONFIG_DIR}"
+  run_root chown "${IW_USER}:${IW_USER}" "${DATA_DIR}"
+  run_root chmod 750 "${DATA_DIR}"
+fi
 
 log "installing binaries to ${BIN_DIR}"
 run_root install -o root -g root -m 755 "${IW_SENSOR_BIN}" "${SENSOR_BIN}"
@@ -302,7 +367,49 @@ run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerward
 HOST_ID="$(hostname -f 2>/dev/null || hostname)"
 
 log "writing sensor config: ${SENSOR_CONFIG}"
-install_from_stdin "${SENSOR_CONFIG}" 640 root "${IW_USER}" <<EOF
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+  install_from_stdin "${SENSOR_CONFIG}" 640 root "${IW_USER}" <<EOF
+[agent]
+host_id = "${HOST_ID}"
+
+[output]
+data_dir = "${DATA_DIR}"
+write_events = true
+
+[collectors.auth_log]
+enabled = false
+
+[collectors.macos_log]
+enabled = true
+
+[collectors.journald]
+enabled = false
+
+[collectors.exec_audit]
+enabled = false
+path = "/var/log/audit/audit.log"
+include_tty = false
+
+[collectors.docker]
+enabled = false
+
+[collectors.integrity]
+enabled = true
+poll_seconds = 60
+paths = ["/etc/ssh/sshd_config", "/etc/sudoers"]
+
+[detectors.ssh_bruteforce]
+enabled = true
+threshold = 8
+window_seconds = 300
+
+[detectors.sudo_abuse]
+enabled = false
+threshold = 3
+window_seconds = 300
+EOF
+else
+  install_from_stdin "${SENSOR_CONFIG}" 640 root "${IW_USER}" <<EOF
 [agent]
 host_id = "${HOST_ID}"
 
@@ -341,6 +448,7 @@ enabled = false
 threshold = 3
 window_seconds = 300
 EOF
+fi
 
 if [[ "${ENABLE_EXEC_AUDIT}" == "true" ]]; then
   log "shell command audit enabled (include_tty=${ENABLE_EXEC_AUDIT_TTY})"
@@ -464,8 +572,58 @@ backup_if_exists "${AGENT_ENV}"
 run_root install -o root -g "${IW_USER}" -m 640 "${tmp_env}" "${AGENT_ENV}"
 rm -f "${tmp_env}"
 
-log "writing systemd unit: ${SENSOR_UNIT}"
-install_from_stdin "${SENSOR_UNIT}" 644 root root <<'EOF'
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+  log "writing launchd plist: ${SENSOR_PLIST}"
+  run_root mkdir -p "${PLIST_DIR}"
+  install_from_stdin "${SENSOR_PLIST}" 644 root root <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.innerwarden.sensor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/innerwarden-sensor</string>
+    <string>--config</string>
+    <string>${CONFIG_DIR}/config.toml</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${LOG_DIR}/sensor.log</string>
+  <key>StandardErrorPath</key><string>${LOG_DIR}/sensor.log</string>
+</dict>
+</plist>
+EOF
+
+  log "writing launchd plist: ${AGENT_PLIST}"
+  install_from_stdin "${AGENT_PLIST}" 644 root root <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.innerwarden.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/innerwarden-agent</string>
+    <string>--data-dir</string>
+    <string>${DATA_DIR}</string>
+    <string>--config</string>
+    <string>${CONFIG_DIR}/agent.toml</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENAI_API_KEY</key><string>${OPENAI_API_KEY}</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${LOG_DIR}/agent.log</string>
+  <key>StandardErrorPath</key><string>${LOG_DIR}/agent.log</string>
+</dict>
+</plist>
+EOF
+else
+  log "writing systemd unit: ${SENSOR_UNIT}"
+  install_from_stdin "${SENSOR_UNIT}" 644 root root <<'EOF'
 [Unit]
 Description=Inner Warden - Sensor (host observability)
 After=network.target syslog.target
@@ -496,8 +654,8 @@ ProtectHome=yes
 WantedBy=multi-user.target
 EOF
 
-log "writing systemd unit: ${AGENT_UNIT}"
-install_from_stdin "${AGENT_UNIT}" 644 root root <<'EOF'
+  log "writing systemd unit: ${AGENT_UNIT}"
+  install_from_stdin "${AGENT_UNIT}" 644 root root <<'EOF'
 [Unit]
 Description=Inner Warden - Agent (AI analysis and audit)
 After=network-online.target innerwarden-sensor.service
@@ -529,6 +687,7 @@ ProtectHome=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+fi
 
 # ── Integration installer ─────────────────────────────────────────────────────
 #
@@ -738,22 +897,42 @@ path = \"${OSQUERY_LOG_PATH}\"" \
   log "Integration setup complete. Run 'innerwarden doctor' to validate."
 }
 
-log "reloading systemd and starting services..."
-run_root systemctl daemon-reload
-run_root systemctl enable innerwarden-sensor innerwarden-agent >/dev/null
-run_root systemctl restart innerwarden-sensor
-run_root systemctl restart innerwarden-agent
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+  log "loading launchd services..."
+  # Unload first if already loaded (idempotent install)
+  run_root launchctl unload "${SENSOR_PLIST}" 2>/dev/null || true
+  run_root launchctl unload "${AGENT_PLIST}" 2>/dev/null || true
+  run_root launchctl load "${SENSOR_PLIST}"
+  run_root launchctl load "${AGENT_PLIST}"
 
-if ! run_root systemctl is-active --quiet innerwarden-sensor; then
-  fail "innerwarden-sensor failed to start. Check: sudo journalctl -u innerwarden-sensor -n 200"
-fi
+  # Give services a moment to start
+  sleep 2
 
-if ! run_root systemctl is-active --quiet innerwarden-agent; then
-  fail "innerwarden-agent failed to start. Check: sudo journalctl -u innerwarden-agent -n 200"
-fi
+  if ! run_root launchctl list com.innerwarden.sensor 2>/dev/null | grep -q '"PID"'; then
+    fail "innerwarden-sensor failed to start. Check: sudo tail -50 ${LOG_DIR}/sensor.log"
+  fi
 
-if [[ "${WITH_INTEGRATIONS}" -eq 1 ]]; then
-  install_integrations
+  if ! run_root launchctl list com.innerwarden.agent 2>/dev/null | grep -q '"PID"'; then
+    fail "innerwarden-agent failed to start. Check: sudo tail -50 ${LOG_DIR}/agent.log"
+  fi
+else
+  log "reloading systemd and starting services..."
+  run_root systemctl daemon-reload
+  run_root systemctl enable innerwarden-sensor innerwarden-agent >/dev/null
+  run_root systemctl restart innerwarden-sensor
+  run_root systemctl restart innerwarden-agent
+
+  if ! run_root systemctl is-active --quiet innerwarden-sensor; then
+    fail "innerwarden-sensor failed to start. Check: sudo journalctl -u innerwarden-sensor -n 200"
+  fi
+
+  if ! run_root systemctl is-active --quiet innerwarden-agent; then
+    fail "innerwarden-agent failed to start. Check: sudo journalctl -u innerwarden-agent -n 200"
+  fi
+
+  if [[ "${WITH_INTEGRATIONS}" -eq 1 ]]; then
+    install_integrations
+  fi
 fi
 
 log "installation complete."
@@ -765,18 +944,31 @@ echo "Useful commands:"
 echo "  innerwarden status                              — system overview"
 echo "  innerwarden doctor                              — diagnose any issues"
 echo "  innerwarden list                                — show available capabilities"
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+echo "  sudo launchctl list com.innerwarden.sensor"
+echo "  sudo launchctl list com.innerwarden.agent"
+echo "  sudo tail -f ${LOG_DIR}/sensor.log"
+echo "  sudo tail -f ${LOG_DIR}/agent.log"
+else
 echo "  sudo systemctl status innerwarden-sensor --no-pager"
 echo "  sudo systemctl status innerwarden-agent --no-pager"
 echo "  sudo journalctl -u innerwarden-sensor -f --no-pager"
 echo "  sudo journalctl -u innerwarden-agent -f --no-pager"
+fi
 echo "  ls -lah ${DATA_DIR}"
 echo
+if [[ "$OS_TYPE" != "Darwin" ]]; then
 echo "To add Falco + Suricata + osquery integration:"
 echo "  curl -fsSL .../install.sh | sudo bash -s -- --with-integrations"
 echo "  # or on an existing install:"
 echo "  sudo bash install.sh --with-integrations"
 echo
+fi
 echo "To move to dry-run execution validation later:"
 echo "  1) Edit ${AGENT_CONFIG}"
 echo "  2) Set [responder] enabled = true (keep dry_run = true)"
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+echo "  3) sudo launchctl kickstart -k system/com.innerwarden.agent"
+else
 echo "  3) sudo systemctl restart innerwarden-agent"
+fi

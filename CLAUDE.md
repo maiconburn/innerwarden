@@ -138,6 +138,7 @@ crates/
         exec_audit.rs        — tail /var/log/audit/audit.log (EXECVE + TTY opcional)
         docker.rs            — subprocess docker events --format '{{json .}}'
         nginx_access.rs      — tail nginx access log (Combined Log Format), emite http.request
+        macos_log.rs         — subprocess `log stream` (macOS); reusa parser SSH; emite sudo.command
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
         credential_stuffing.rs — spray de usuários distintos por IP
@@ -173,6 +174,7 @@ crates/
           block_ip_ufw.rs    — Open ✅
           block_ip_iptables.rs — Open ✅
           block_ip_nftables.rs — Open ✅
+          block_ip_pf.rs     — Open ✅ (macOS Packet Filter: pfctl -t innerwarden-blocked -T add <IP>)
           suspend_user_sudo.rs — Open ✅ (suspensão temporária de sudo com TTL + cleanup)
           monitor_ip.rs      — Premium ✅ (captura limitada via tcpdump + sidecar metadata)
           honeypot/
@@ -304,6 +306,9 @@ write_events = true
 [collectors.auth_log]
 enabled = true
 path = "/var/log/auth.log"
+
+[collectors.macos_log]
+enabled = false   # macOS only; usa `log stream`; substitui auth_log + journald no Darwin
 
 [collectors.journald]
 enabled = true
@@ -517,6 +522,7 @@ Tier   │ ID                  │ Módulo            │ Status
 Open   │ block-ip-ufw        │ ssh-protection    │ ✅ executável
 Open   │ block-ip-iptables   │ ssh-protection    │ ✅ executável
 Open   │ block-ip-nftables   │ ssh-protection    │ ✅ executável
+Open   │ block-ip-pf         │ ssh-protection    │ ✅ executável — bloqueia IP via pfctl (macOS Packet Filter)
 Open   │ suspend-user-sudo   │ sudo-protection   │ ✅ executável — nega sudo por TTL com cleanup automático
 Open   │ rate-limit-nginx    │ search-protection │ ✅ executável — deny nginx layer (HTTP 403) com TTL + cleanup automático
 Premium│ monitor-ip          │ threat-capture    │ ✅ executável — captura limitada (`tcpdump`) + metadata
@@ -709,12 +715,17 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **FalcoLogCollector:** ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes
 - **SuricataEveCollector:** ✅ implementado; `crates/sensor/src/collectors/suricata_eve.rs`; alert/dns/http/tls/anomaly; incident passthrough sev 1-2; módulo `suricata-integration/`; 10 testes
 - **OsqueryLogCollector:** ✅ implementado; `crates/sensor/src/collectors/osquery_log.rs`; severity por prefixo de query name (4 tiers); `removed` actions filtradas; IP privado filtrado; extrai IP (remote), path, user (decorations); summarys contextuais por query slug; módulo `osquery-integration/`; 9 testes
+- **block-ip-pf skill:** ✅ implementado; `crates/agent/src/skills/builtin/block_ip_pf.rs`; `pfctl -t innerwarden-blocked -T add <IP>`; Open tier; 3 testes
+- **macos_log collector:** ✅ implementado; `crates/sensor/src/collectors/macos_log.rs`; `log stream` subprocess; reusa parser SSH (`parse_sshd_message`); emite `sudo.command`; restart loop; 3 testes
+- **CI macOS builds:** ✅ job `build-release-macos` em `macos-latest`; `x86_64-apple-darwin` + `aarch64-apple-darwin`; assets `innerwarden-*-macos-{x86_64,aarch64}`; `needs: build-release`
+- **install.sh macOS:** ✅ detecta `Darwin`; paths `/usr/local/etc/innerwarden` + `/usr/local/var/lib/innerwarden`; launchd plists em `/Library/LaunchDaemons`; `macos_log` collector; asset naming `macos-{arch}`; unsupported arch imprime URL de issue pré-preenchida
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
 - **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
 - **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
 - **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
+- **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 
