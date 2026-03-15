@@ -5,7 +5,7 @@ A self-defending security agent for Linux and macOS servers.
 Three binaries (two daemons + a CLI). Installs in 10 seconds. Detects attacks and can respond automatically when response skills are enabled (non-dry-run mode).
 
 ```bash
-curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://innerwarden.com/install | sudo bash
 ```
 
 ---
@@ -148,7 +148,7 @@ Export your AI provider key first (or the installer will prompt for it):
 
 ```bash
 export OPENAI_API_KEY=sk-...
-curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://innerwarden.com/install | sudo bash
 ```
 
 What it does:
@@ -160,12 +160,12 @@ What it does:
 
 With integrations (Falco, Suricata, osquery):
 ```bash
-curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash -s -- --with-integrations
+curl -fsSL https://innerwarden.com/install | sudo bash -s -- --with-integrations
 ```
 
 Build from source:
 ```bash
-INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
+INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://innerwarden.com/install | sudo bash
 ```
 
 ### After install
