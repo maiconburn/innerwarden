@@ -12,12 +12,13 @@ Usage:
 
 Outputs:
     - Live results to stdout
-    - benchmark-report-<model>-<date>.md
-    - benchmark-report-<model>-<date>.json
+    - local/benchmark-reports/benchmark-report-<model>-<date>.md
+    - local/benchmark-reports/benchmark-report-<model>-<date>.json
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -438,7 +439,7 @@ def query_model(model: str, system: str, user: str) -> tuple[dict | None, float,
     """
     Send a chat request to Ollama. Returns (parsed_json, elapsed_seconds, raw_text).
     """
-    payload = json.dumps({
+    body: dict = {
         "model": model,
         "stream": False,
         "format": "json",
@@ -446,7 +447,13 @@ def query_model(model: str, system: str, user: str) -> tuple[dict | None, float,
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-    }).encode()
+    }
+    # qwen3 family uses extended thinking by default; disable it so the
+    # response goes into message.content (not message.thinking only).
+    if "qwen3" in model.lower():
+        body["think"] = False
+
+    payload = json.dumps(body).encode()
 
     req = urllib.request.Request(
         "http://localhost:11434/api/chat",
@@ -794,8 +801,10 @@ def main():
     runs = args.runs
     slug = model.replace(":", "-").replace("/", "-")
     date_str = datetime.now().strftime("%Y-%m-%d")
-    md_path = f"benchmark-report-{slug}-{date_str}.md"
-    json_path = f"benchmark-report-{slug}-{date_str}.json"
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "local", "benchmark-reports")
+    os.makedirs(out_dir, exist_ok=True)
+    md_path = os.path.join(out_dir, f"benchmark-report-{slug}-{date_str}.md")
+    json_path = os.path.join(out_dir, f"benchmark-report-{slug}-{date_str}.json")
 
     print(f"\n{'='*60}")
     print(f"  InnerWarden AI Model Benchmark")

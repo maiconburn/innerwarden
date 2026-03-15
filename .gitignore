@@ -19,5 +19,6 @@ docs/public-readiness-checklist.md
 # Operational data from server trials — never publish
 /reports/
 /reports-innerwarden/
-benchmark-report-*.json
-benchmark-report-*.md
+# local/ folder: README.md and .gitkeep are tracked; report files are not
+local/benchmark-reports/*.json
+local/benchmark-reports/*.md
