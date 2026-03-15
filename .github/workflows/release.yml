@@ -20,7 +20,7 @@ jobs:
     steps:
       # ── Source ────────────────────────────────────────────────────────────
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ── Rust + cross-compilation targets ──────────────────────────────────
       - name: Install Rust toolchain
@@ -158,7 +158,7 @@ jobs:
     steps:
       # ── Source ────────────────────────────────────────────────────────────
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ── Rust + macOS targets ───────────────────────────────────────────────
       - name: Install Rust toolchain
