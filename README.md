@@ -130,10 +130,14 @@ Detectors and skills are packaged into modules — enable what you need:
 | `osquery-integration` | Host state queries (osquery) | Enriched events |
 
 ```bash
-innerwarden enable ssh-protection
-innerwarden enable sudo-protection
+innerwarden enable block-ip
+innerwarden enable search-protection
 innerwarden enable shell-audit    # prompts for privacy consent
-innerwarden module install <url>  # community modules (SHA-256 verified)
+```
+
+```bash
+innerwarden module install <url>       # community modules (SHA-256 verified)
+innerwarden module enable /path/to/module
 ```
 
 ---
