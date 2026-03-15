@@ -1464,54 +1464,145 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
     let mut total_issues: u32 = 0;
 
+    let is_macos = std::env::consts::OS == "macos";
+
+    // OS-aware restart commands used throughout the hints
+    let restart_agent = if is_macos {
+        "sudo launchctl kickstart -k system/com.innerwarden.agent"
+    } else {
+        "sudo systemctl restart innerwarden-agent"
+    };
+
     // ── System ────────────────────────────────────────────
     println!("\nSystem");
     let mut sys = Vec::new();
 
-    // systemctl
-    let has_systemctl = std::path::Path::new("/usr/bin/systemctl").exists()
-        || std::path::Path::new("/bin/systemctl").exists();
-    sys.push(if has_systemctl {
-        Check::ok("systemctl found")
-    } else {
-        Check::fail("systemctl not found", "install systemd or check PATH")
-    });
+    if is_macos {
+        // launchctl
+        let has_launchctl = std::path::Path::new("/bin/launchctl").exists()
+            || std::path::Path::new("/usr/bin/launchctl").exists();
+        sys.push(if has_launchctl {
+            Check::ok("launchctl found (macOS service manager)")
+        } else {
+            Check::fail("launchctl not found", "unexpected on macOS — check your PATH")
+        });
 
-    // innerwarden user
-    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
-    let user_ok = passwd
-        .lines()
-        .any(|l| l.split(':').next() == Some("innerwarden"));
-    sys.push(if user_ok {
-        Check::ok("innerwarden system user exists")
-    } else {
-        Check::fail(
-            "innerwarden system user missing",
-            "sudo useradd -r -s /sbin/nologin innerwarden",
-        )
-    });
+        // innerwarden user
+        let user_ok = std::process::Command::new("id")
+            .arg("innerwarden")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        sys.push(if user_ok {
+            Check::ok("innerwarden system user exists")
+        } else {
+            Check::fail(
+                "innerwarden system user missing",
+                "run install.sh — it creates the user via dscl",
+            )
+        });
 
-    // /etc/sudoers.d/
-    sys.push(if std::path::Path::new("/etc/sudoers.d").is_dir() {
-        Check::ok("/etc/sudoers.d/ directory exists")
+        // /etc/sudoers.d/ (exists on macOS too)
+        sys.push(if std::path::Path::new("/etc/sudoers.d").is_dir() {
+            Check::ok("/etc/sudoers.d/ directory exists")
+        } else {
+            Check::warn(
+                "/etc/sudoers.d/ not found",
+                "sudo mkdir -p /etc/sudoers.d  (needed for suspend-user-sudo skill)",
+            )
+        });
+
+        // pfctl (needed for block-ip-pf)
+        let has_pfctl = std::path::Path::new("/sbin/pfctl").exists();
+        sys.push(if has_pfctl {
+            Check::ok("pfctl found (block-ip-pf skill available)")
+        } else {
+            Check::warn(
+                "pfctl not found",
+                "pfctl is built-in on macOS — unexpected. block-ip-pf skill will not work.",
+            )
+        });
+
+        // `log` binary (needed for macos_log collector)
+        let has_log_bin = std::path::Path::new("/usr/bin/log").exists();
+        sys.push(if has_log_bin {
+            Check::ok("`log` binary found (macos_log collector available)")
+        } else {
+            Check::fail(
+                "`log` binary not found at /usr/bin/log",
+                "unexpected on macOS — macos_log collector requires Apple Unified Logging",
+            )
+        });
     } else {
-        Check::fail("/etc/sudoers.d/ not found", "sudo mkdir -p /etc/sudoers.d")
-    });
+        // systemctl
+        let has_systemctl = std::path::Path::new("/usr/bin/systemctl").exists()
+            || std::path::Path::new("/bin/systemctl").exists();
+        sys.push(if has_systemctl {
+            Check::ok("systemctl found")
+        } else {
+            Check::fail("systemctl not found", "install systemd or check PATH")
+        });
+
+        // innerwarden user
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        let user_ok = passwd
+            .lines()
+            .any(|l| l.split(':').next() == Some("innerwarden"));
+        sys.push(if user_ok {
+            Check::ok("innerwarden system user exists")
+        } else {
+            Check::fail(
+                "innerwarden system user missing",
+                "sudo useradd -r -s /sbin/nologin innerwarden",
+            )
+        });
+
+        // /etc/sudoers.d/
+        sys.push(if std::path::Path::new("/etc/sudoers.d").is_dir() {
+            Check::ok("/etc/sudoers.d/ directory exists")
+        } else {
+            Check::fail("/etc/sudoers.d/ not found", "sudo mkdir -p /etc/sudoers.d")
+        });
+    }
 
     run_section(sys, &mut total_issues);
 
     // ── Services ──────────────────────────────────────────
     println!("\nServices");
     let mut svc = Vec::new();
-    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
-        svc.push(if systemd::is_service_active(unit) {
-            Check::ok(format!("{unit} is running"))
-        } else {
-            Check::warn(
-                format!("{unit} is not running"),
-                format!("sudo systemctl start {unit}"),
-            )
-        });
+    if is_macos {
+        for (label, plist) in &[
+            ("innerwarden-sensor", "com.innerwarden.sensor"),
+            ("innerwarden-agent", "com.innerwarden.agent"),
+        ] {
+            let running = std::process::Command::new("launchctl")
+                .args(["list", plist])
+                .output()
+                .map(|o| {
+                    o.status.success()
+                        && String::from_utf8_lossy(&o.stdout).contains("\"PID\"")
+                })
+                .unwrap_or(false);
+            svc.push(if running {
+                Check::ok(format!("{label} is running"))
+            } else {
+                Check::warn(
+                    format!("{label} is not running"),
+                    format!("sudo launchctl load /Library/LaunchDaemons/{plist}.plist"),
+                )
+            });
+        }
+    } else {
+        for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+            svc.push(if systemd::is_service_active(unit) {
+                Check::ok(format!("{unit} is running"))
+            } else {
+                Check::warn(
+                    format!("{unit} is not running"),
+                    format!("sudo systemctl start {unit}"),
+                )
+            });
+        }
     }
     run_section(svc, &mut total_issues);
 
@@ -1612,13 +1703,18 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                                 "1. Get a key at https://console.anthropic.com/settings/keys\n\
                                  2. Add it to {}:\n\
                                  \n   ANTHROPIC_API_KEY=sk-ant-...\n\
-                                 \n3. Restart: sudo systemctl restart innerwarden-agent",
+                                 \n3. Restart: {restart_agent}",
                                 env_file.display()
                             ),
                         ));
                     }
                     Some(k) => {
                         let looks_valid = k.starts_with("sk-ant-") && k.len() >= 20;
+                        let log_hint = if is_macos {
+                            format!("sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'")
+                        } else {
+                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'".to_string()
+                        };
                         cfg.push(if looks_valid {
                             Check::ok("ANTHROPIC_API_KEY is set and format looks correct")
                         } else {
@@ -1628,16 +1724,15 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                                     "Anthropic keys start with sk-ant- and are ~108 characters.\n\
                                      If the key was recently rotated or revoked, update it in {}:\n\
                                      \n  ANTHROPIC_API_KEY=sk-ant-...\n\
-                                     \nThen restart: sudo systemctl restart innerwarden-agent",
+                                     \nThen restart: {restart_agent}",
                                     env_file.display()
                                 ),
                             )
                         });
                         if looks_valid {
-                            cfg.push(Check::ok(
-                                "If AI stopped working, key may be revoked — check: \
-                                 journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'",
-                            ));
+                            cfg.push(Check::ok(format!(
+                                "If AI stopped working, key may be revoked — check: {log_hint}"
+                            )));
                         }
                     }
                 }
@@ -1658,15 +1753,19 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                                 "1. Get a key at https://platform.openai.com/api-keys\n\
                                  2. Add it to {}:\n\
                                  \n   OPENAI_API_KEY=sk-...\n\
-                                 \n3. Restart: sudo systemctl restart innerwarden-agent",
+                                 \n3. Restart: {restart_agent}",
                                 env_file.display()
                             ),
                         ));
                     }
                     Some(k) => {
                         // OpenAI keys: legacy sk-<51chars> or newer sk-proj-<...> / sk-svcacct-<...>
-                        let looks_valid =
-                            k.starts_with("sk-") && k.len() >= 20;
+                        let looks_valid = k.starts_with("sk-") && k.len() >= 20;
+                        let log_hint = if is_macos {
+                            format!("sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'")
+                        } else {
+                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'".to_string()
+                        };
                         cfg.push(if looks_valid {
                             Check::ok("OPENAI_API_KEY is set and format looks correct")
                         } else {
@@ -1676,16 +1775,15 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                                     "OpenAI keys start with sk- and are 50+ characters.\n\
                                      If the key was recently rotated or revoked, update it in {}:\n\
                                      \n  OPENAI_API_KEY=sk-...\n\
-                                     \nThen restart: sudo systemctl restart innerwarden-agent",
+                                     \nThen restart: {restart_agent}",
                                     env_file.display()
                                 ),
                             )
                         });
                         if looks_valid {
-                            cfg.push(Check::ok(
-                                "If AI stopped working, key may be revoked — check: \
-                                 journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'",
-                            ));
+                            cfg.push(Check::ok(format!(
+                                "If AI stopped working, key may be revoked — check: {log_hint}"
+                            )));
                         }
                     }
                 }
@@ -1938,15 +2036,25 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                let falco_active = systemd::is_service_active("falco")
-                    || systemd::is_service_active("falco-modern-bpf");
+                let falco_active = if is_macos {
+                    std::process::Command::new("launchctl")
+                        .args(["list", "com.falco"])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    systemd::is_service_active("falco")
+                        || systemd::is_service_active("falco-modern-bpf")
+                };
+                let falco_start_hint = if is_macos {
+                    "sudo launchctl load /Library/LaunchDaemons/com.falco.plist"
+                } else {
+                    "sudo systemctl start falco"
+                };
                 falco.push(if falco_active {
                     Check::ok("Falco service is running")
                 } else {
-                    Check::warn(
-                        "Falco service is not running",
-                        "sudo systemctl start falco",
-                    )
+                    Check::warn("Falco service is not running", falco_start_hint)
                 });
 
                 let falco_log =
@@ -1955,12 +2063,22 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     && std::fs::metadata(&falco_log)
                         .map(|m| m.len() == 0 || true)
                         .unwrap_or(false);
+                let falco_restart_hint = if is_macos {
+                    "sudo launchctl kickstart -k system/com.falco"
+                } else {
+                    "sudo mkdir -p /var/log/falco && sudo systemctl restart falco"
+                };
+                let falco_json_hint = if is_macos {
+                    "echo 'json_output: true' | sudo tee -a /etc/falco/falco.yaml && sudo launchctl kickstart -k system/com.falco"
+                } else {
+                    "echo 'json_output: true' | sudo tee -a /etc/falco/falco.yaml && sudo systemctl restart falco"
+                };
                 falco.push(if log_ok {
                     Check::ok(format!("Falco log file exists ({})", falco_log))
                 } else {
                     Check::fail(
                         format!("Falco log file not found or not readable ({})", falco_log),
-                        "sudo mkdir -p /var/log/falco && sudo systemctl restart falco",
+                        falco_restart_hint,
                     )
                 });
 
@@ -1972,7 +2090,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 } else {
                     Check::warn(
                         "Falco json_output not enabled — events will not be parseable",
-                        "echo 'json_output: true' | sudo tee -a /etc/falco/falco.yaml && sudo systemctl restart falco",
+                        falco_json_hint,
                     )
                 });
 
@@ -1994,14 +2112,29 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                let suri_active = systemd::is_service_active("suricata");
+                let suri_active = if is_macos {
+                    std::process::Command::new("launchctl")
+                        .args(["list", "com.suricata"])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    systemd::is_service_active("suricata")
+                };
+                let suri_start_hint = if is_macos {
+                    "sudo launchctl load /Library/LaunchDaemons/com.suricata.plist"
+                } else {
+                    "sudo systemctl start suricata"
+                };
+                let suri_restart_hint = if is_macos {
+                    "sudo launchctl kickstart -k system/com.suricata  # creates eve.json on first run"
+                } else {
+                    "sudo systemctl restart suricata  # creates eve.json on first run"
+                };
                 suri.push(if suri_active {
                     Check::ok("Suricata service is running")
                 } else {
-                    Check::warn(
-                        "Suricata service is not running",
-                        "sudo systemctl start suricata",
-                    )
+                    Check::warn("Suricata service is not running", suri_start_hint)
                 });
 
                 let eve_log =
@@ -2012,7 +2145,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 } else {
                     Check::fail(
                         format!("Suricata eve.json not found ({})", eve_log),
-                        "sudo systemctl restart suricata  # creates eve.json on first run",
+                        suri_restart_hint,
                     )
                 });
 
@@ -2036,7 +2169,11 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 } else {
                     Check::warn(
                         "Suricata ET rules not found",
-                        "sudo suricata-update && sudo systemctl restart suricata",
+                        if is_macos {
+                            "sudo suricata-update && sudo launchctl kickstart -k system/com.suricata"
+                        } else {
+                            "sudo suricata-update && sudo systemctl restart suricata"
+                        },
                     )
                 });
 
@@ -2059,14 +2196,24 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     )
                 });
 
-                let osq_active = systemd::is_service_active("osqueryd");
+                let osq_active = if is_macos {
+                    std::process::Command::new("launchctl")
+                        .args(["list", "com.facebook.osqueryd"])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    systemd::is_service_active("osqueryd")
+                };
+                let osq_start_hint = if is_macos {
+                    "sudo launchctl load /Library/LaunchDaemons/com.facebook.osqueryd.plist"
+                } else {
+                    "sudo systemctl start osqueryd"
+                };
                 osq.push(if osq_active {
                     Check::ok("osqueryd service is running")
                 } else {
-                    Check::warn(
-                        "osqueryd service is not running",
-                        "sudo systemctl start osqueryd",
-                    )
+                    Check::warn("osqueryd service is not running", osq_start_hint)
                 });
 
                 let results_log = collector_str(
