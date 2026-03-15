@@ -1550,24 +1550,148 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
         }
     }
 
-    // API key: check env var or agent.env file
+    // AI provider + API key — detect provider from agent config then validate the right key
     let env_file = cli
         .agent_config
         .parent()
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
-    let key_in_env = std::env::var("OPENAI_API_KEY").is_ok();
-    let key_in_file = std::fs::read_to_string(&env_file)
-        .map(|s| s.lines().any(|l| l.starts_with("OPENAI_API_KEY=")))
+
+    // Read agent.toml to find configured provider and whether AI is enabled
+    let agent_doc: Option<toml_edit::DocumentMut> = cli
+        .agent_config
+        .exists()
+        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+        .flatten()
+        .and_then(|s| s.parse().ok());
+
+    let ai_enabled = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("ai"))
+        .and_then(|ai| ai.get("enabled"))
+        .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    cfg.push(if key_in_env || key_in_file {
-        Check::ok("OPENAI_API_KEY is configured")
+
+    let provider = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("ai"))
+        .and_then(|ai| ai.get("provider"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai")
+        .to_string();
+
+    // Helper: resolve a key from env var or agent.env file
+    let resolve_key = |env_var: &str| -> Option<String> {
+        if let Ok(v) = std::env::var(env_var) {
+            if !v.trim().is_empty() {
+                return Some(v);
+            }
+        }
+        std::fs::read_to_string(&env_file)
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with(&format!("{env_var}=")))
+                    .and_then(|l| l.splitn(2, '=').nth(1))
+                    .filter(|v| !v.trim().is_empty())
+                    .map(|v| v.trim().to_string())
+            })
+    };
+
+    if !ai_enabled {
+        cfg.push(Check::ok("AI disabled — no API key required"));
     } else {
-        Check::warn(
-            "OPENAI_API_KEY not found in environment or agent.env",
-            format!("add OPENAI_API_KEY=sk-... to {}", env_file.display()),
-        )
-    });
+        match provider.as_str() {
+            "anthropic" => {
+                let key = resolve_key("ANTHROPIC_API_KEY");
+                match &key {
+                    None => {
+                        cfg.push(Check::fail(
+                            "ANTHROPIC_API_KEY not set (provider = \"anthropic\")",
+                            format!(
+                                "1. Get a key at https://console.anthropic.com/settings/keys\n\
+                                 2. Add it to {}:\n\
+                                 \n   ANTHROPIC_API_KEY=sk-ant-...\n\
+                                 \n3. Restart: sudo systemctl restart innerwarden-agent",
+                                env_file.display()
+                            ),
+                        ));
+                    }
+                    Some(k) => {
+                        let looks_valid = k.starts_with("sk-ant-") && k.len() >= 20;
+                        cfg.push(if looks_valid {
+                            Check::ok("ANTHROPIC_API_KEY is set and format looks correct")
+                        } else {
+                            Check::warn(
+                                "ANTHROPIC_API_KEY is set but format looks wrong",
+                                format!(
+                                    "Anthropic keys start with sk-ant- and are ~108 characters.\n\
+                                     If the key was recently rotated or revoked, update it in {}:\n\
+                                     \n  ANTHROPIC_API_KEY=sk-ant-...\n\
+                                     \nThen restart: sudo systemctl restart innerwarden-agent",
+                                    env_file.display()
+                                ),
+                            )
+                        });
+                        if looks_valid {
+                            cfg.push(Check::ok(
+                                "If AI stopped working, key may be revoked — check: \
+                                 journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'",
+                            ));
+                        }
+                    }
+                }
+            }
+            "ollama" => {
+                cfg.push(Check::ok(
+                    "Ollama provider — no API key required (runs locally)",
+                ));
+            }
+            _ => {
+                // Default: openai (also handles unknown providers gracefully)
+                let key = resolve_key("OPENAI_API_KEY");
+                match &key {
+                    None => {
+                        cfg.push(Check::fail(
+                            "OPENAI_API_KEY not set (provider = \"openai\")",
+                            format!(
+                                "1. Get a key at https://platform.openai.com/api-keys\n\
+                                 2. Add it to {}:\n\
+                                 \n   OPENAI_API_KEY=sk-...\n\
+                                 \n3. Restart: sudo systemctl restart innerwarden-agent",
+                                env_file.display()
+                            ),
+                        ));
+                    }
+                    Some(k) => {
+                        // OpenAI keys: legacy sk-<51chars> or newer sk-proj-<...> / sk-svcacct-<...>
+                        let looks_valid =
+                            k.starts_with("sk-") && k.len() >= 20;
+                        cfg.push(if looks_valid {
+                            Check::ok("OPENAI_API_KEY is set and format looks correct")
+                        } else {
+                            Check::warn(
+                                "OPENAI_API_KEY is set but format looks wrong",
+                                format!(
+                                    "OpenAI keys start with sk- and are 50+ characters.\n\
+                                     If the key was recently rotated or revoked, update it in {}:\n\
+                                     \n  OPENAI_API_KEY=sk-...\n\
+                                     \nThen restart: sudo systemctl restart innerwarden-agent",
+                                    env_file.display()
+                                ),
+                            )
+                        });
+                        if looks_valid {
+                            cfg.push(Check::ok(
+                                "If AI stopped working, key may be revoked — check: \
+                                 journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     run_section(cfg, &mut total_issues);
 
