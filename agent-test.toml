@@ -103,3 +103,10 @@ enabled = false             # set to true + fill bot_token/chat_id to get push a
 # bot_token = ""            # or env var TELEGRAM_BOT_TOKEN
 # chat_id = ""              # or env var TELEGRAM_CHAT_ID
 # min_severity = "high"
+
+[data]
+events_keep_days = 7
+incidents_keep_days = 30
+decisions_keep_days = 90
+telemetry_keep_days = 14
+reports_keep_days = 30

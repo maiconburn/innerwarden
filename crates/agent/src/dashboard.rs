@@ -25,6 +25,7 @@ use tracing::{info, warn};
 
 use crate::correlation::build_clusters;
 use crate::decisions::DecisionEntry;
+use crate::report::{self as report_mod, TrialReport};
 use crate::telemetry::TelemetrySnapshot;
 use innerwarden_core::entities::{EntityRef, EntityType};
 use innerwarden_core::event::Severity;
@@ -211,6 +212,12 @@ struct ExportQuery {
     group_by: Option<String>,
     limit: Option<usize>,
     window_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReportQuery {
+    /// Optional specific date (YYYY-MM-DD). Defaults to latest available.
+    date: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +544,8 @@ pub async fn serve(
         .route("/api/clusters", get(api_clusters))
         .route("/api/journey", get(api_journey))
         .route("/api/export", get(api_export))
+        .route("/api/report", get(api_report))
+        .route("/api/report/dates", get(api_report_dates))
         // D3 — operator-initiated actions (POST, require auth, respect dry_run)
         .route("/api/action/block-ip", post(api_action_block_ip))
         .route("/api/action/suspend-user", post(api_action_suspend_user))
@@ -1015,6 +1024,50 @@ async fn api_export(
         )
             .into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// D10 — Report API
+// ---------------------------------------------------------------------------
+
+/// GET /api/report[?date=YYYY-MM-DD]
+/// Returns a TrialReport JSON computed on-demand.
+/// `date` defaults to the most recent date with data.
+async fn api_report(
+    State(state): State<DashboardState>,
+    Query(query): Query<ReportQuery>,
+) -> Response {
+    let data_dir = state.data_dir.clone();
+    let date_str = query.date.clone();
+    let report: TrialReport = tokio::task::spawn_blocking(move || {
+        report_mod::compute_for_date(&data_dir, date_str.as_deref())
+    })
+    .await
+    .unwrap_or_else(|_| report_mod::compute_for_date(&state.data_dir, query.date.as_deref()));
+
+    match serde_json::to_string_pretty(&report) {
+        Ok(body) => (
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialize report",
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/report/dates
+/// Returns a JSON array of date strings (YYYY-MM-DD) for which data exists,
+/// most recent first. Used by the dashboard report date picker.
+async fn api_report_dates(State(state): State<DashboardState>) -> Json<Vec<String>> {
+    let data_dir = state.data_dir.clone();
+    let dates = tokio::task::spawn_blocking(move || report_mod::list_available_dates(&data_dir))
+        .await
+        .unwrap_or_default();
+    Json(dates)
 }
 
 // ---------------------------------------------------------------------------
@@ -3257,6 +3310,115 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     /* ── Mobile toggle button (shown only on small screens) ─────── */
+    /* D10 — main nav (Investigate / Report) */
+    .main-nav {
+      display: flex; gap: 4px; margin-left: 6px;
+    }
+    .main-nav-btn {
+      padding: 4px 14px; border-radius: 8px; font-size: 0.72rem;
+      font-weight: 600; letter-spacing: 0.01em; cursor: pointer;
+      border: 1px solid rgba(120,229,255,0.18);
+      background: transparent; color: var(--muted);
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .main-nav-btn.active {
+      background: rgba(120,229,255,0.12); color: var(--accent);
+      border-color: rgba(120,229,255,0.4);
+    }
+    .main-nav-btn:hover:not(.active) {
+      background: rgba(120,229,255,0.06); color: var(--fg);
+    }
+    /* D10 — report view */
+    .report-view {
+      flex: 1; overflow-y: auto; padding: 20px 24px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .report-toolbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .report-label { font-size: 0.72rem; color: var(--muted); }
+    .report-toolbar select {
+      background: var(--card); border: 1px solid var(--line); color: var(--fg);
+      border-radius: 8px; padding: 5px 10px; font-size: 0.75rem; cursor: pointer;
+    }
+    .report-refresh-btn {
+      padding: 5px 14px; background: rgba(120,229,255,0.1);
+      border: 1px solid rgba(120,229,255,0.3); color: var(--accent);
+      border-radius: 8px; font-size: 0.73rem; font-weight: 600; cursor: pointer;
+    }
+    .report-refresh-btn:hover { background: rgba(120,229,255,0.18); }
+    .report-status { font-size: 0.7rem; color: var(--muted); }
+    .report-content { display: flex; flex-direction: column; gap: 14px; }
+    .report-section {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 16px 20px;
+    }
+    .report-section-title {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--accent); margin-bottom: 12px;
+    }
+    .report-kpi-row {
+      display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
+    }
+    .report-kpi {
+      flex: 1 1 90px; background: var(--card-hover); border: 1px solid var(--line);
+      border-radius: 10px; padding: 10px 14px; text-align: center;
+    }
+    .report-kpi-label { font-size: 0.65rem; color: var(--muted); margin-bottom: 4px; }
+    .report-kpi-value { font-size: 1.25rem; font-weight: 700; color: var(--fg); }
+    .report-kpi-value.good { color: #4ade80; }
+    .report-kpi-value.warn { color: #fbbf24; }
+    .report-kpi-value.bad  { color: var(--danger); }
+    .report-trend-row {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+    }
+    .report-trend-cell {
+      background: var(--card-hover); border: 1px solid var(--line); border-radius: 8px;
+      padding: 8px 12px;
+    }
+    .report-trend-label { font-size: 0.62rem; color: var(--muted); }
+    .report-trend-nums { font-size: 0.82rem; margin-top: 3px; }
+    .report-trend-delta { font-size: 0.7rem; color: var(--muted); }
+    .report-trend-delta.up { color: var(--danger); }
+    .report-trend-delta.down { color: #4ade80; }
+    .report-anomaly {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;
+      border: 1px solid transparent;
+    }
+    .report-anomaly.critical { background: rgba(244,63,94,0.08); border-color: rgba(244,63,94,0.25); }
+    .report-anomaly.high     { background: rgba(251,146,60,0.08); border-color: rgba(251,146,60,0.25); }
+    .report-anomaly.medium   { background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.25); }
+    .report-anomaly.low,.report-anomaly.info { background: rgba(120,229,255,0.05); border-color: rgba(120,229,255,0.15); }
+    .report-anomaly-badge {
+      font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+      letter-spacing: 0.05em; text-transform: uppercase; flex-shrink: 0; margin-top: 1px;
+    }
+    .badge-critical { background: var(--danger); color: #fff; }
+    .badge-high     { background: #f97316; color: #fff; }
+    .badge-medium   { background: #fbbf24; color: #000; }
+    .badge-low,.badge-info { background: rgba(120,229,255,0.2); color: var(--accent); }
+    .report-anomaly-msg { font-size: 0.76rem; line-height: 1.45; }
+    .report-suggestion {
+      display: flex; align-items: flex-start; gap: 8px;
+      font-size: 0.75rem; padding: 6px 0; border-bottom: 1px solid var(--line);
+    }
+    .report-suggestion:last-child { border-bottom: none; }
+    .report-table {
+      width: 100%; border-collapse: collapse; font-size: 0.73rem;
+    }
+    .report-table th {
+      text-align: left; color: var(--muted); font-weight: 600;
+      padding: 4px 8px; border-bottom: 1px solid var(--line);
+    }
+    .report-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+    .report-table tr:last-child td { border-bottom: none; }
+    .health-ok   { color: #4ade80; font-weight: 700; }
+    .health-fail { color: var(--danger); font-weight: 700; }
+    @media (max-width: 600px) {
+      .report-trend-row { grid-template-columns: 1fr 1fr; }
+      .report-view { padding: 12px 14px; }
+    }
     .panel-toggle-btn {
       display: none;
     }
@@ -3523,12 +3685,16 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
     <div class="app-badge" id="modeBadge">read-only</div>
     <span id="refreshStatus"></span>
+    <div class="main-nav">
+      <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Investigate</button>
+      <button type="button" class="main-nav-btn" id="navReport" onclick="showView('report')">Report</button>
+    </div>
     <button type="button" class="panel-toggle-btn" id="panelToggleBtn" onclick="toggleLeftPanel()" aria-label="Toggle panel">
       <span id="panelToggleIcon">▲</span> List
     </button>
   </header>
 
-  <div class="app-body">
+  <div class="app-body" id="viewInvestigate">
 
     <!-- Left panel: KPIs + attacker list -->
     <aside class="left-panel">
@@ -3602,6 +3768,19 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   </div>
 
+  <!-- D10 — Report view -->
+  <div class="report-view" id="viewReport" style="display:none">
+    <div class="report-toolbar">
+      <label class="report-label">Date</label>
+      <select id="reportDateSelect" onchange="loadReport()"><option value="">latest</option></select>
+      <button type="button" class="report-refresh-btn" onclick="loadReport()">↻ Refresh</button>
+      <span id="reportStatus" class="report-status"></span>
+    </div>
+    <div id="reportContent" class="report-content">
+      <div class="empty" style="padding:40px;text-align:center">Loading report…</div>
+    </div>
+  </div>
+
   <!-- D3 — action modal -->
   <div class="modal-overlay" id="actionModal" onclick="handleModalBg(event)">
     <div class="modal-box" onclick="event.stopPropagation()">
@@ -3639,6 +3818,194 @@ const INDEX_HTML: &str = r##"<!doctype html>
     leftPanelOpen = !leftPanelOpen;
     panel.classList.toggle('collapsed', !leftPanelOpen);
     if (icon) icon.textContent = leftPanelOpen ? '▲' : '▼';
+  }
+
+  // ── D10 — View switcher ──────────────────────────────────────────────────
+  function showView(name) {
+    const investigate = document.getElementById('viewInvestigate');
+    const report = document.getElementById('viewReport');
+    const btnI = document.getElementById('navInvestigate');
+    const btnR = document.getElementById('navReport');
+    const toggleBtn = document.getElementById('panelToggleBtn');
+    if (name === 'report') {
+      investigate.style.display = 'none';
+      report.style.display = 'flex';
+      btnI.classList.remove('active');
+      btnR.classList.add('active');
+      if (toggleBtn) toggleBtn.style.display = 'none';
+      loadReport();
+    } else {
+      report.style.display = 'none';
+      investigate.style.display = 'flex';
+      btnI.classList.add('active');
+      btnR.classList.remove('active');
+      if (toggleBtn) toggleBtn.style.display = '';
+    }
+  }
+
+  // ── D10 — Report tab ────────────────────────────────────────────────────
+  async function loadReportDates() {
+    try {
+      const dates = await loadJson('/api/report/dates');
+      const sel = document.getElementById('reportDateSelect');
+      sel.innerHTML = '<option value="">latest</option>';
+      (dates || []).forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d; opt.textContent = d;
+        sel.appendChild(opt);
+      });
+    } catch (_) {}
+  }
+
+  async function loadReport() {
+    const status = document.getElementById('reportStatus');
+    const content = document.getElementById('reportContent');
+    const date = document.getElementById('reportDateSelect')?.value || '';
+    status.textContent = 'Loading…';
+    content.innerHTML = '<div class="empty" style="padding:40px;text-align:center">Loading…</div>';
+    try {
+      const url = '/api/report' + (date ? '?date=' + encodeURIComponent(date) : '');
+      const r = await loadJson(url);
+      status.textContent = 'Generated ' + new Date(r.generated_at).toLocaleTimeString();
+      content.innerHTML = renderReport(r);
+    } catch (e) {
+      status.textContent = 'error';
+      content.innerHTML = '<div class="empty" style="padding:40px;color:var(--danger)">Failed to load report: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function renderReport(r) {
+    const ds = r.detection_summary || {};
+    const ai = r.agent_ai_summary || {};
+    const rw = r.recent_window || {};
+    const tr = r.trend_summary || {};
+    const oh = r.operational_health || {};
+    const hints = r.anomaly_hints || [];
+    const suggestions = r.suggested_improvements || [];
+
+    const pct = (v) => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+    const deltaClass = (d) => d > 0 ? 'up' : (d < 0 ? 'down' : '');
+    const deltaSign = (d) => d > 0 ? '+' : '';
+    const confColor = (v) => v >= 0.85 ? 'good' : v >= 0.7 ? 'warn' : 'bad';
+    const healthVal = (v) => v ? '<span class="health-ok">✓ OK</span>' : '<span class="health-fail">✗ Fail</span>';
+
+    // KPI row
+    let html = `<div class="report-section">
+      <div class="report-section-title">Summary — ${esc(r.analyzed_date)}</div>
+      <div class="report-kpi-row">
+        <div class="report-kpi"><div class="report-kpi-label">Events</div><div class="report-kpi-value">${ds.total_events ?? 0}</div></div>
+        <div class="report-kpi"><div class="report-kpi-label">Incidents</div><div class="report-kpi-value">${ds.total_incidents ?? 0}</div></div>
+        <div class="report-kpi"><div class="report-kpi-label">Decisions</div><div class="report-kpi-value">${ai.total_decisions ?? 0}</div></div>
+        <div class="report-kpi"><div class="report-kpi-label">Blocks</div><div class="report-kpi-value">${ai.block_ip_count ?? 0}</div></div>
+        <div class="report-kpi"><div class="report-kpi-label">Avg Conf</div><div class="report-kpi-value ${confColor(ai.average_confidence ?? 0)}">${((ai.average_confidence ?? 0) * 100).toFixed(0)}%</div></div>
+        <div class="report-kpi"><div class="report-kpi-label">Last 6h Incid.</div><div class="report-kpi-value">${rw.incidents ?? 0}</div></div>
+        <div class="report-kpi"><div class="report-kpi-label">High/Crit 6h</div><div class="report-kpi-value ${(rw.high_critical_incidents ?? 0) > 0 ? 'bad' : 'good'}">${rw.high_critical_incidents ?? 0}</div></div>
+      </div>
+    </div>`;
+
+    // Trend section
+    if (tr.previous_date) {
+      html += `<div class="report-section">
+        <div class="report-section-title">Trend vs ${esc(tr.previous_date)}</div>
+        <div class="report-trend-row">
+          ${trendCell('Events', tr.events)}
+          ${trendCell('Incidents', tr.incidents)}
+          ${trendCell('Decisions', tr.decisions)}
+          ${trendCellF('Incid/1k Events', tr.incident_rate_per_1k_events)}
+          ${trendCellF('Dec/Incident', tr.decision_rate_per_incident)}
+          ${trendCellF('Avg Confidence', tr.average_confidence, true)}
+        </div>
+      </div>`;
+    }
+
+    function trendCell(label, c) {
+      if (!c) return '';
+      const d = c.delta ?? 0;
+      const p = c.pct_change != null ? ` (${pct(c.pct_change)})` : '';
+      return `<div class="report-trend-cell">
+        <div class="report-trend-label">${esc(label)}</div>
+        <div class="report-trend-nums">${c.current} <span style="color:var(--muted)">/ prev ${c.previous}</span></div>
+        <div class="report-trend-delta ${deltaClass(d)}">${deltaSign(d)}${d}${p}</div>
+      </div>`;
+    }
+    function trendCellF(label, c, higherGood) {
+      if (!c) return '';
+      const d = c.delta ?? 0;
+      const cls = higherGood ? (d > 0 ? 'down' : d < 0 ? 'up' : '') : deltaClass(d);
+      const p = c.pct_change != null ? ` (${pct(c.pct_change)})` : '';
+      return `<div class="report-trend-cell">
+        <div class="report-trend-label">${esc(label)}</div>
+        <div class="report-trend-nums">${c.current.toFixed(2)} <span style="color:var(--muted)">/ prev ${c.previous.toFixed(2)}</span></div>
+        <div class="report-trend-delta ${cls}">${deltaSign(d)}${d.toFixed(2)}${p}</div>
+      </div>`;
+    }
+
+    // Anomaly hints
+    if (hints.length > 0) {
+      html += `<div class="report-section">
+        <div class="report-section-title">Anomaly Hints</div>`;
+      hints.forEach(h => {
+        const sev = (h.severity || 'info').toLowerCase();
+        html += `<div class="report-anomaly ${esc(sev)}">
+          <span class="report-anomaly-badge badge-${esc(sev)}">${esc(h.severity)}</span>
+          <span class="report-anomaly-msg">${esc(h.message)}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+
+    // Top IPs
+    if ((ds.top_ips || []).length > 0) {
+      html += `<div class="report-section">
+        <div class="report-section-title">Top IPs</div>
+        <table class="report-table">
+          <thead><tr><th>IP</th><th>Events</th></tr></thead><tbody>`;
+      ds.top_ips.forEach(e => {
+        html += `<tr><td>${esc(e.name)}</td><td>${e.count}</td></tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+
+    // Incidents by type
+    const ibt = ds.incidents_by_type || {};
+    if (Object.keys(ibt).length > 0) {
+      html += `<div class="report-section">
+        <div class="report-section-title">Incidents by Type</div>
+        <table class="report-table">
+          <thead><tr><th>Detector</th><th>Count</th></tr></thead><tbody>`;
+      Object.entries(ibt).sort((a,b) => b[1]-a[1]).forEach(([k,v]) => {
+        html += `<tr><td>${esc(k)}</td><td>${v}</td></tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+
+    // Operational health
+    html += `<div class="report-section">
+      <div class="report-section-title">Operational Health</div>
+      <table class="report-table"><thead><tr><th>File</th><th>Exists</th><th>Valid</th><th>Lines</th><th>Size</th></tr></thead><tbody>`;
+    (oh.files || []).forEach(f => {
+      const valid = f.jsonl_valid == null ? '—' : (f.jsonl_valid ? '<span class="health-ok">✓</span>' : '<span class="health-fail">✗</span>');
+      html += `<tr>
+        <td>${esc(f.file)}</td>
+        <td>${f.exists ? '<span class="health-ok">✓</span>' : '<span class="health-fail">✗</span>'}</td>
+        <td>${valid}</td>
+        <td>${f.lines ?? '—'}</td>
+        <td>${f.size_bytes > 0 ? (f.size_bytes > 1048576 ? (f.size_bytes/1048576).toFixed(1)+'MB' : (f.size_bytes/1024).toFixed(1)+'KB') : '0B'}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+
+    // Suggestions
+    if (suggestions.length > 0) {
+      html += `<div class="report-section">
+        <div class="report-section-title">Suggestions</div>`;
+      suggestions.forEach(s => {
+        html += `<div class="report-suggestion"><span style="color:var(--accent);flex-shrink:0">→</span><span>${esc(s)}</span></div>`;
+      });
+      html += `</div>`;
+    }
+
+    return html;
   }
   // On mobile: auto-collapse the list when a journey is opened, re-open via button
   function collapseLeftOnMobile() {
@@ -4577,6 +4944,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   document.getElementById('flt-window').value = state.filters.window_seconds || '';
   updatePivotUi();
   loadActionConfig();
+  loadReportDates();
 
   // Close modal on Escape key
   document.addEventListener('keydown', (ev) => {

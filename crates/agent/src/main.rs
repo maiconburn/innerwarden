@@ -2,6 +2,7 @@ mod ai;
 mod config;
 mod correlation;
 mod dashboard;
+mod data_retention;
 mod decisions;
 mod narrative;
 mod reader;
@@ -396,6 +397,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Clean up old data files on startup
+    let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
+    if removed > 0 {
+        info!(removed, "data_retention: cleaned up old files on startup");
+    }
+
     // Build shared agent state
     // Pre-populate blocklist + decision cooldowns from recent (today + yesterday)
     // decision files so that IPs we already decided to block are skipped after a
@@ -551,6 +558,10 @@ async fn main() -> Result<()> {
                             warn!("narrative tick error: {e:#}");
                         }
                     }
+                    let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
+                    if removed > 0 {
+                        info!(removed, "data_retention: cleaned up old files");
+                    }
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after narrative tick: {e:#}");
                     }
@@ -586,6 +597,10 @@ async fn main() -> Result<()> {
                             state.telemetry.observe_error("narrative_tick");
                             warn!("narrative tick error: {e:#}");
                         }
+                    }
+                    let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
+                    if removed > 0 {
+                        info!(removed, "data_retention: cleaned up old files");
                     }
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after narrative tick: {e:#}");

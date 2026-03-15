@@ -26,6 +26,8 @@ pub struct AgentConfig {
     pub responder: ResponderConfig,
     #[serde(default)]
     pub telegram: TelegramConfig,
+    #[serde(default)]
+    pub data: DataRetentionConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +880,61 @@ fn default_honeypot_ssh_max_auth_attempts() -> usize {
 
 fn default_honeypot_http_max_requests() -> usize {
     10
+}
+
+// ---------------------------------------------------------------------------
+// Data retention
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct DataRetentionConfig {
+    /// Keep daily events JSONL for N days (default: 7)
+    #[serde(default = "default_data_events_keep_days")]
+    pub events_keep_days: usize,
+
+    /// Keep daily incidents JSONL for N days (default: 30)
+    #[serde(default = "default_data_incidents_keep_days")]
+    pub incidents_keep_days: usize,
+
+    /// Keep daily decisions JSONL for N days — audit trail (default: 90)
+    #[serde(default = "default_data_decisions_keep_days")]
+    pub decisions_keep_days: usize,
+
+    /// Keep daily telemetry JSONL for N days (default: 14)
+    #[serde(default = "default_data_telemetry_keep_days")]
+    pub telemetry_keep_days: usize,
+
+    /// Keep trial-report-*.{json,md} for N days (default: 30)
+    #[serde(default = "default_data_reports_keep_days")]
+    pub reports_keep_days: usize,
+}
+
+impl Default for DataRetentionConfig {
+    fn default() -> Self {
+        Self {
+            events_keep_days: default_data_events_keep_days(),
+            incidents_keep_days: default_data_incidents_keep_days(),
+            decisions_keep_days: default_data_decisions_keep_days(),
+            telemetry_keep_days: default_data_telemetry_keep_days(),
+            reports_keep_days: default_data_reports_keep_days(),
+        }
+    }
+}
+
+fn default_data_events_keep_days() -> usize {
+    7
+}
+fn default_data_incidents_keep_days() -> usize {
+    30
+}
+fn default_data_decisions_keep_days() -> usize {
+    90
+}
+fn default_data_telemetry_keep_days() -> usize {
+    14
+}
+fn default_data_reports_keep_days() -> usize {
+    30
 }
 
 fn default_telegram_min_severity() -> String {

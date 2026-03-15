@@ -76,6 +76,7 @@ Observabilidade e resposta autônoma de host com dois componentes Rust:
 - ✅ **Dashboard D7** — timeline ao vivo: SSE aciona `refreshLeftLive()` em vez de reload completo. Novos cards de entidade aparecem com animação CSS `cardSlideIn` (slide + borda cyan). KPIs piscam em cyan (`kpiFlash`) quando o valor muda. Cards existentes têm contagens atualizadas silenciosamente. Scroll e seleção preservados. `state.knownItemValues` (Set) rastreia entidades renderizadas para diff incremental.
 - ✅ **Dashboard D8** — alertas push de incidentes: file watcher lê novas linhas de `incidents-*.jsonl` por byte offset a cada 2 s; para severidade High/Critical emite evento SSE `alert` com payload `{ severity, title, entity_type, entity_value }`. Frontend exibe `showAlertToast()` — badge colorido (vermelho/laranja), título e link clicável `→ IP/entidade` que abre diretamente o journey panel. Toast persiste 8 s.
 - ✅ **Dashboard D9** — busca inline de entidades: campo `<input type="search">` acima da lista filtra cards em tempo real por qualquer texto visível (IP, detector, severidade, contagens) — sem round-trip ao servidor, sem reload, scroll preservado. Mensagem "No matches for X" quando nenhum card passa no filtro. Filtro re-aplicado automaticamente após `refreshLeft()` e `refreshLeftLive()`.
+- ✅ **Dashboard D10** — tab Report: navegação principal "Investigate / Report" no header. `GET /api/report[?date=YYYY-MM-DD]` computa `TrialReport` on-demand via `report::compute_for_date`. `GET /api/report/dates` lista datas disponíveis. Tab renderiza KPIs, tendências dia-a-dia, anomaly hints com badges de severidade, tabela de saúde operacional, top IPs, incidents by type e sugestões. Seletor de data para navegar histórico. `data_retention.rs`: limpeza automática de arquivos antigos por tipo (`events_keep_days`, `incidents_keep_days`, `decisions_keep_days`, `telemetry_keep_days`, `reports_keep_days`), configurável em `[data]` no agent.toml, rodada no startup e no loop lento (30s).
 - ✅ **Telegram T.1** — notificações push: `send_incident_alert()` enviado para todo incidente High/Critical no tick rápido, com badge de severidade, ícone de fonte (🔬 falco, 🌐 suricata, 🔍 osquery, 🔐 ssh), resumo de entidades e botão deep-link opcional para o dashboard. Configurado via `[telegram]` no agent.toml ou vars de ambiente `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`.
 - ✅ **Telegram T.2** — aprovações bidirecionais: quando AI retorna `RequestConfirmation`, o agent envia inline keyboard (✅ Aprovar / ❌ Rejeitar) via Telegram. Polling task long-poll (25 s) detecta resposta do operador; ao aprovar, executa a ação e registra em `decisions-*.jsonl` com `ai_provider: "telegram:<operador>"`. TTL configurável (default 10 min); expirado → descartado. Suporta comando `/status` no bot.
 
@@ -157,7 +158,8 @@ crates/
       correlation.rs         — correlação temporal leve + clusterização de incidentes
       telemetry.rs           — telemetria operacional leve (snapshot JSONL por tick)
       dashboard.rs           — servidor HTTP local autenticado + UI operacional/investigação
-      report.rs              — relatório operacional v2 (`--report`) com tendências, anomaly hints e telemetria
+      report.rs              — relatório operacional v2 (`--report`) com tendências, anomaly hints e telemetria; `compute_for_date` + `list_available_dates` para API
+      data_retention.rs      — limpeza automática de arquivos antigos por tipo (events/incidents/decisions/telemetry/reports)
       narrative.rs           — geração de Markdown diário (generate/write/cleanup)
       webhook.rs             — HTTP POST de notificações de incidente
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
@@ -471,6 +473,13 @@ enabled = true
 dry_run = true             # SEGURANÇA: começa sempre em dry_run
 block_backend = "ufw"      # ufw | iptables | nftables
 allowed_skills = ["block-ip-ufw", "monitor-ip"]  # adicione "honeypot" e/ou "suspend-user-sudo" para permitir execução dessas skills
+
+[data]
+events_keep_days = 7       # arquivos events-*.jsonl: janela curta (alto volume)
+incidents_keep_days = 30   # arquivos incidents-*.jsonl
+decisions_keep_days = 90   # arquivos decisions-*.jsonl — audit trail, manter mais
+telemetry_keep_days = 14   # arquivos telemetry-*.jsonl
+reports_keep_days = 30     # arquivos trial-report-*.{json,md}
 ```
 
 Config de teste local: `config.test.toml` (aponta para `./testdata/`).
@@ -724,7 +733,7 @@ Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
 - **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
 - **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
-- **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
+- **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`

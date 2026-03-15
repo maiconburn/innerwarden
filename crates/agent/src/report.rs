@@ -211,11 +211,17 @@ struct Counters {
     files_not_growing: Vec<String>,
 }
 
-pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
-    let report_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
-    let analyzed_date = detect_latest_date(data_dir).unwrap_or_else(|| report_date.clone());
+/// Compute a `TrialReport` for the given date (or the latest available date if
+/// `date` is `None`) without writing any files to disk.
+/// Used by the dashboard `/api/report` endpoint.
+pub fn compute_for_date(data_dir: &Path, date: Option<&str>) -> TrialReport {
+    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let analyzed_date = match date {
+        Some(d) => d.to_string(),
+        None => detect_latest_date(data_dir).unwrap_or_else(|| today.clone()),
+    };
     let previous_date = detect_previous_date(data_dir, &analyzed_date);
-    let analyzed_is_today = analyzed_date == report_date;
+    let analyzed_is_today = analyzed_date == today;
 
     let events = data_dir.join(format!("events-{analyzed_date}.jsonl"));
     let incidents = data_dir.join(format!("incidents-{analyzed_date}.jsonl"));
@@ -232,21 +238,11 @@ pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
     files.push(file_health_jsonl("events", &events_outcome));
 
     let incidents_outcome = parse_incidents_file(&incidents, &mut counters);
-    record_quality_hints(
-        "incidents",
-        &incidents_outcome,
-        analyzed_is_today,
-        &mut counters,
-    );
+    record_quality_hints("incidents", &incidents_outcome, analyzed_is_today, &mut counters);
     files.push(file_health_jsonl("incidents", &incidents_outcome));
 
     let decisions_outcome = parse_decisions_file(&decisions, &mut counters);
-    record_quality_hints(
-        "decisions",
-        &decisions_outcome,
-        analyzed_is_today,
-        &mut counters,
-    );
+    record_quality_hints("decisions", &decisions_outcome, analyzed_is_today, &mut counters);
     files.push(file_health_jsonl("decisions", &decisions_outcome));
 
     let summary_info = parse_plain_file(&summary);
@@ -299,7 +295,7 @@ pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
 
     let previous_counters = previous_date
         .as_ref()
-        .map(|date| compute_day_counters(data_dir, date));
+        .map(|d| compute_day_counters(data_dir, d));
 
     let trend_summary = build_trend_summary(&counters, previous_counters.as_ref(), previous_date);
     let anomaly_hints = build_anomaly_hints(
@@ -334,6 +330,20 @@ pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
         suggested_improvements: vec![],
     };
     report.suggested_improvements = build_suggestions(&report);
+    report
+}
+
+/// List dates for which at least one data file (events/incidents/decisions) exists.
+/// Returns dates in descending order (most recent first).
+pub fn list_available_dates(data_dir: &Path) -> Vec<String> {
+    let mut dates = collect_available_dates(data_dir);
+    dates.sort_by(|a, b| b.cmp(a));
+    dates
+}
+
+pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
+    let report_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let report = compute_for_date(data_dir, None);
 
     let json_path = output_dir.join(format!("trial-report-{report_date}.json"));
     let md_path = output_dir.join(format!("trial-report-{report_date}.md"));
