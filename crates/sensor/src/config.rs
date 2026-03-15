@@ -42,6 +42,25 @@ pub struct CollectorsConfig {
     pub falco_log: FalcoLogConfig,
     #[serde(default)]
     pub suricata_eve: SuricataEveConfig,
+    #[serde(default)]
+    pub osquery_log: OsqueryLogConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OsqueryLogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_osquery_log_path")]
+    pub path: String,
+}
+
+impl Default for OsqueryLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_osquery_log_path(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,6 +410,10 @@ fn default_search_abuse_window_seconds() -> u64 {
 
 fn default_search_abuse_path_prefix() -> String {
     "/api/search".to_string()
+}
+
+fn default_osquery_log_path() -> String {
+    "/var/log/osquery/osqueryd.results.log".to_string()
 }
 
 fn default_suricata_eve_path() -> String {

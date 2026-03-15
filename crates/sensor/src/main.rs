@@ -13,7 +13,8 @@ use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
     falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
-    nginx_access::NginxAccessCollector, suricata_eve::SuricataEveCollector,
+    nginx_access::NginxAccessCollector, osquery_log::OsqueryLogCollector,
+    suricata_eve::SuricataEveCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -90,6 +91,7 @@ async fn main() -> Result<()> {
     let shared_nginx_offset = Arc::new(AtomicU64::new(0));
     let shared_falco_offset = Arc::new(AtomicU64::new(0));
     let shared_suricata_offset = Arc::new(AtomicU64::new(0));
+    let shared_osquery_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -340,6 +342,25 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn osquery_log collector
+    if cfg.collectors.osquery_log.enabled {
+        let oc = &cfg.collectors.osquery_log;
+        let offset = state
+            .get_cursor("osquery_log")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_osquery_offset.store(offset, Ordering::Relaxed);
+        let collector = OsqueryLogCollector::new(&oc.path, &cfg.agent.host_id, offset);
+        info!(path = %oc.path, offset, "starting osquery_log collector");
+        let tx_osquery = tx.clone();
+        let shared = Arc::clone(&shared_osquery_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_osquery, shared).await {
+                tracing::error!("osquery_log collector error: {e:#}");
+            }
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -472,6 +493,9 @@ async fn main() -> Result<()> {
 
     let suricata_offset = shared_suricata_offset.load(Ordering::Relaxed);
     state.set_cursor("suricata_eve", serde_json::json!(suricata_offset));
+
+    let osquery_offset = shared_osquery_offset.load(Ordering::Relaxed);
+    state.set_cursor("osquery_log", serde_json::json!(osquery_offset));
 
     state.save(&state_path)?;
     info!(auth_offset, "state saved");

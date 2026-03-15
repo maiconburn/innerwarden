@@ -195,6 +195,7 @@ modules/                           — soluções verticais empacotadas (ver doc
   execution-guard/                 — shell.command_exec + sudo.command → execution_guard AST detector (built-in, observe mode)
   falco-integration/               — Falco eBPF/syscall alerts → incidents (built-in, incident passthrough High+)
   suricata-integration/            — Suricata network IDS alerts → incidents (built-in, incident passthrough sev 1-2)
+  osquery-integration/             — osquery differential results → events (built-in, observability, sem passthrough)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
   integration-recipes.md           — formato de recipe + guia de geração por AI + fluxo de contribuição
@@ -211,7 +212,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 342 testes (101 sensor + 125 agent + 116 ctl)
+make test             # 351 testes (110 sensor + 125 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -593,7 +594,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 342 testes (101 sensor + 125 agent + 116 ctl) — todos devem passar
+make test   # 351 testes (110 sensor + 125 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -690,7 +691,8 @@ Próximas direções:
 - **Fase D10** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Integration recipes** — ✅ sistema de recipes declarativo (`integrations/`) com specs para Falco, Wazuh, osquery; geração de collectors via AI a partir de recipe + module-authoring.md
 - **FalcoLogCollector** — ✅ implementado; `crates/sensor/src/collectors/falco_log.rs`; incident passthrough para High/Critical; módulo `falco-integration/`; 12 testes
-- **SuricataEveCollector** — ✅ implementado; `crates/sensor/src/collectors/suricata_eve.rs`; alert/dns/http/tls/anomaly; incident passthrough sev 1-2; módulo `suricata-integration/`; 10 testes. Próximo: `OsqueryLogCollector`
+- **SuricataEveCollector** — ✅ implementado; `crates/sensor/src/collectors/suricata_eve.rs`; alert/dns/http/tls/anomaly; incident passthrough sev 1-2; módulo `suricata-integration/`; 10 testes
+- **OsqueryLogCollector** — ✅ implementado; `crates/sensor/src/collectors/osquery_log.rs`; severity por prefixo de query name (4 tiers); `removed` actions filtradas; IP privado filtrado; extrai IP (remote), path, user (decorations); summarys contextuais por query slug; módulo `osquery-integration/`; 9 testes
 
 Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
 

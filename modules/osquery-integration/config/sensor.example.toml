@@ -1,0 +1,29 @@
+# osquery integration — sensor config snippet
+#
+# 1. Install osquery: https://osquery.io/downloads/
+#    Ubuntu: sudo apt-get install osquery
+#
+# 2. Enable filesystem logger in /etc/osquery/osquery.conf:
+#
+#    {
+#      "options": {
+#        "logger_plugin": "filesystem",
+#        "logger_path": "/var/log/osquery",
+#        "disable_logging": "false",
+#        "log_result_events": "true"
+#      },
+#      "schedule": {
+#        "listening_ports": {
+#          "query": "SELECT pid, port, protocol, address, path FROM listening_ports;",
+#          "interval": 60
+#        }
+#      }
+#    }
+#
+# 3. Restart osqueryd: sudo systemctl restart osqueryd
+#
+# 4. Add the section below to your sensor config.toml
+
+[collectors.osquery_log]
+enabled = true
+path    = "/var/log/osquery/osqueryd.results.log"
