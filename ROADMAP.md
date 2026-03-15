@@ -1,6 +1,6 @@
 # Roadmap
 
-What is planned, in progress, and under consideration for InnerWarden — a self-defending security agent for Linux and macOS.
+This document tracks what is planned, in progress, and under consideration for InnerWarden — a self-defending security agent for Linux and macOS.
 
 This roadmap is high-level only; implementation details live in the code, commits, and issues.
 
