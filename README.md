@@ -1,186 +1,165 @@
 # InnerWarden
 
-InnerWarden is a host-security observability and response system built around two Rust components:
+An open-source host security agent for Linux and macOS. It watches system
+activity in real time, detects attacks using deterministic rules, and responds
+autonomously when confidence is high enough.
 
-- `innerwarden-sensor`: deterministic host telemetry collection and incident detection
-- `innerwarden-agent`: incremental analysis, AI-assisted triage, dashboarding, and optional response skills
+Two Rust binaries. No external dependencies at runtime.
 
-The project is designed to stay useful in safe, low-automation deployments first. The default posture is conservative:
+- `innerwarden-sensor` — deterministic telemetry collection and incident detection (no AI, no HTTP)
+- `innerwarden-agent` — incremental analysis, AI-assisted triage, response skills, dashboard and Telegram alerts
 
-- data collection is append-only JSONL
+The default posture is conservative:
+
+- all collectors are append-only JSONL
 - responders are disabled by default
 - `dry_run = true` is the recommended starting point
 - privacy-sensitive collectors are explicit opt-ins
 
-## Status
-
-InnerWarden is an actively developed `0.x` project.
-
-Current state:
-
-- production-trial oriented, not yet externally audited
-- single-host focus
-- dashboard available for read-only local/remote investigation
-- host response actions gated by config and confidence thresholds
-
-This is not a full EDR platform, not a SIEM, and not a promise of autonomous remediation safety in every environment.
-
 ## What It Does
 
-### Sensor — detection
+### Sensor — collection
 
-The sensor collects host activity deterministically (no AI, no network calls) and runs stateful detectors:
+The sensor tails log files and system interfaces, normalizes every event into a
+common shape and writes `events-YYYY-MM-DD.jsonl` and `incidents-YYYY-MM-DD.jsonl`.
+
+**Built-in sources:**
+
+- `/var/log/auth.log` — SSH login attempts, failures, invalid users
+- `journald` — sshd, sudo, kernel (firewall signals), any configured unit
+- Docker events — start, stop, die, OOM
+- File integrity — SHA-256 polling of configurable paths
+- nginx access log — HTTP-layer events (Combined Log Format)
+- `auditd EXECVE` — shell command trail (opt-in, explicit consent required)
+- `auditd TTY` — raw keyboard input (opt-in, high privacy impact)
+- `log stream` (macOS) — unified log for SSH, sudo, and system events
+
+**Integration collectors:**
+
+| Tool | What it ingests | How |
+|------|----------------|-----|
+| Falco | Kernel / container anomaly alerts | tails Falco JSON log |
+| Suricata | Network IDS alerts (alert, dns, http, tls, anomaly) | tails EVE JSON log |
+| osquery | Host queries (ports, cron, sudoers, processes, users) | tails differential results log |
+
+High and Critical Falco alerts and Suricata severity-1/2 alerts skip the detector
+layer and go directly to the agent as incidents — the tool already did the detection.
+
+All collectors are fail-open: errors are logged and never crash the sensor.
+
+### Sensor — detectors
+
+Six built-in detectors run on the normalized event stream:
 
 | Detector | What it catches | Source |
 |----------|----------------|--------|
-| `ssh_bruteforce` | Repeated SSH login failures from the same IP | auth.log / journald |
+| `ssh_bruteforce` | Repeated SSH failures from the same IP | auth.log / journald |
 | `credential_stuffing` | Many distinct usernames tried from one IP | auth.log / journald |
 | `port_scan` | Rapid unique-port probing by source IP | firewall / kernel logs |
 | `sudo_abuse` | Burst of suspicious privileged commands by a user | journald sudo |
 | `search_abuse` | High-rate requests to expensive HTTP endpoints | nginx access log |
-| `execution_guard` | Suspicious command execution patterns using AST analysis | auditd EXECVE + journald sudo |
+| `execution_guard` | Suspicious shell command patterns via AST analysis | auditd EXECVE |
 
-**execution_guard** uses [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash) to parse commands structurally rather than with regex. It detects pipelines like `curl | sh`, execution from `/tmp`, reverse shell patterns, obfuscated commands, script persistence, and staged attack sequences (download → chmod → execute) across a per-user rolling window.
-
-All collectors are fail-open: errors are logged and never crash the sensor.
-
-### Sensor — collection
-
-- tails `/var/log/auth.log` and parses SSH auth activity
-- reads `journald` for `sshd`, `sudo`, `kernel`, or any configured unit
-- optionally ingests `auditd` EXECVE records (command execution trail)
-- optionally ingests `auditd` TTY records (keyboard input — explicit opt-in, privacy-sensitive)
-- watches Docker lifecycle events
-- polls file integrity with SHA-256
-- tails nginx access logs for HTTP-layer detection
-- emits normalized `events-YYYY-MM-DD.jsonl` and `incidents-YYYY-MM-DD.jsonl`
+`execution_guard` uses [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash)
+to parse commands structurally. It detects `curl | sh` pipelines, execution from `/tmp`,
+reverse shell patterns, obfuscated commands, and staged sequences (download → chmod → execute).
+Currently runs in `observe` mode only — emits incidents, no automatic blocking.
 
 ### Agent — analysis and response
 
 - reads JSONL incrementally via byte-offset cursors (no re-read on restart)
-- applies an algorithmic gate before any AI call (severity, private IP, already-blocked)
-- correlates incidents in a short time window and clusters them for AI context
-- supports OpenAI, Anthropic, and Ollama as AI providers (AI is optional)
-- writes append-only `decisions-YYYY-MM-DD.jsonl` and `telemetry-YYYY-MM-DD.jsonl`
-- generates daily narrative summaries
-- serves a read-only authenticated dashboard with attacker journey investigation
+- applies an algorithm gate before any AI call (severity, private IP, already-blocked)
+- correlates incidents in a time window and clusters them for richer AI context
+- supports OpenAI, Anthropic, and Ollama (local/air-gapped) as AI providers
 - executes bounded response skills when explicitly enabled
+- sends real-time alerts and approval requests via Telegram
+
+**Response skills:**
+
+| Skill | Tier | What it does |
+|-------|------|-------------|
+| `block-ip-ufw` | Open | Blocks IP via ufw (Linux) |
+| `block-ip-iptables` | Open | Blocks IP via iptables (Linux) |
+| `block-ip-nftables` | Open | Blocks IP via nftables (Linux) |
+| `block-ip-pf` | Open | Blocks IP via pf firewall (macOS) |
+| `suspend-user-sudo` | Open | Temporary sudo denial with auto-expiry TTL |
+| `rate-limit-nginx` | Open | HTTP 403 deny at nginx layer with TTL |
+| `monitor-ip` | Premium | Bounded traffic capture via tcpdump + metadata sidecar |
+| `honeypot` | Premium | SSH/HTTP decoy with containment profiles and forensic handoff |
+
+**Operator communication:**
+
+- Webhook HTTP POST with minimum-severity filter
+- Telegram T.1: real-time push alerts for High/Critical incidents
+- Telegram T.2: inline approve/deny for pending actions — decisions are audited
+
+**Dashboard (local, authenticated):**
+
+- HTTP Basic auth (Argon2 hash), read-only by default
+- Live incident timeline via Server-Sent Events (no polling)
+- Attacker journey viewer with AI-generated chapter rail
+- Report tab: health summary, day-over-day trends, anomaly hints
+- Operator actions: block IPs and suspend users from the browser (requires `responder.enabled = true`)
+- Inline entity search, alert toasts, deep-link investigation state
 
 ### Modules
 
-Detectors and skills are organized into modules — vertical solutions for a specific threat class:
+Detectors and skills are packaged into modules — vertical solutions for a specific threat class:
 
 | Module | What it covers |
 |--------|---------------|
 | `ssh-protection` | SSH brute-force + credential stuffing → block-ip |
-| `network-defense` | Port scan detection → block-ip |
+| `network-defense` | Port scan → block-ip |
 | `sudo-protection` | Sudo abuse → suspend-user-sudo |
-| `execution-guard` | Command execution AST analysis → suspicious_execution incidents |
+| `execution-guard` | Shell command AST analysis → suspicious_execution incidents |
 | `file-integrity` | SHA-256 file monitoring → webhook alert |
 | `container-security` | Docker lifecycle events (observability) |
-| `search-protection` | nginx access log → search_abuse → block-ip |
+| `search-protection` | nginx access log → search_abuse → rate-limit-nginx |
 | `threat-capture` | monitor-ip + honeypot (Premium) |
-
-```bash
-innerwarden list                  # list all capabilities and modules
-innerwarden enable block-ip       # enable block-ip (ufw backend by default)
-innerwarden enable sudo-protection
-innerwarden module validate ./modules/execution-guard
-```
+| `falco-integration` | Falco JSON log → incident passthrough |
+| `suricata-integration` | Suricata EVE JSON → incident passthrough |
+| `osquery-integration` | osquery results log → enriched events |
 
 ## Architecture
 
 ```text
-Host Activity
-  -> innerwarden-sensor
-     -> events-YYYY-MM-DD.jsonl
-     -> incidents-YYYY-MM-DD.jsonl
-  -> innerwarden-agent
-     -> decisions-YYYY-MM-DD.jsonl
-     -> telemetry-YYYY-MM-DD.jsonl
-     -> summary-YYYY-MM-DD.md
-     -> local dashboard / report output
-```
-
-```mermaid
-flowchart LR
-    A["Host activity"] --> B["innerwarden-sensor"]
-    B --> C["events-YYYY-MM-DD.jsonl"]
-    B --> D["incidents-YYYY-MM-DD.jsonl"]
-    C --> E["innerwarden-agent"]
-    D --> E
-    E --> F["decisions-YYYY-MM-DD.jsonl"]
-    E --> G["telemetry-YYYY-MM-DD.jsonl"]
-    E --> H["summary-YYYY-MM-DD.md"]
-    E --> I["read-only dashboard"]
+External tools (Falco, Suricata, osquery)
+  -> log files
+     -> innerwarden-sensor
+        -> events-YYYY-MM-DD.jsonl
+        -> incidents-YYYY-MM-DD.jsonl
+           -> innerwarden-agent
+              -> decisions-YYYY-MM-DD.jsonl
+              -> telemetry-YYYY-MM-DD.jsonl
+              -> summary-YYYY-MM-DD.md
+              -> Telegram alerts / approvals
+              -> local dashboard
 ```
 
 ## Supported Environments
 
-Current support target:
+- **Linux** — Ubuntu 22.04+ (primary reference), any `systemd`-based distro
+- **macOS** — Ventura and later (launchd services, pf firewall, `log stream` collector)
 
-- Linux hosts with `systemd`
-- Ubuntu 22.04 is the primary production-trial reference environment
-
-Local development works well anywhere Rust and the required tooling are available, but install, service, and privileged response flows are Linux-first.
-
-## Project Maturity
-
-Treat the project as:
-
-- `0.x` and still evolving
-- trial-ready for careful operators
-- not externally audited
-- optimized for single-host deployments first
-- conservative by default, especially around automated response
-
-## Safety Model
-
-Before using this outside local testing, read these guardrails carefully:
-
-- response skills are optional and config-gated (`responder.enabled = false` by default)
-- `dry_run = true` should be your default during rollout
-- shell audit via `auditd` is privacy-sensitive — only enable with explicit host-owner authorization
-- `execution_guard` uses AST-based detection; no blocking occurs in `observe` mode
-- honeypot features are bounded and opt-in, but still require operational judgment
-- AI is advisory unless you explicitly allow auto-execution and accept the configured confidence threshold
-
-## Telemetry Stack
-
-InnerWarden sits at the response layer. Connect any combination of the tools below to expand detection coverage across the host and network.
-
-| Layer | Tool | What it detects | Status |
-|---|---|---|---|
-| Kernel / process | Falco | syscalls, container escapes, shell spawns | ✅ integrated |
-| Network | Suricata | port scans, exploit attempts, C2 traffic | ✅ integrated |
-| Host observability | osquery | file changes, new listeners, cron/sudoers mods | ✅ integrated |
-| Auth / shell | InnerWarden sensor | SSH brute-force, sudo abuse, shell commands | built-in |
-
-All layers feed the same AI triage engine. Enable what fits your stack.
-
-AI providers: OpenAI, Anthropic, or **Ollama** (local — no data leaves your server).
-
-See [docs/integrated-setup.md](docs/integrated-setup.md) for a step-by-step setup guide.
+Pre-built binaries for `x86_64` and `aarch64`.
 
 ## Quickstart
 
-### 1. Build and test
+### Build and test
 
 ```bash
-make test
+make test   # 374 tests (145 agent + 116 ctl + 113 sensor)
 make build
 ```
 
-### 2. Run locally with fixture config
+### Run locally with fixture config
 
 ```bash
-make run-sensor
-make run-agent
+make run-sensor   # writes to ./data/
+make run-agent    # reads from ./data/
 ```
 
-The sensor writes to `./data/` and the agent reads from the same directory.
-
-### 3. Start the dashboard
+### Start the dashboard
 
 ```bash
 innerwarden-agent --dashboard-generate-password-hash
@@ -189,56 +168,58 @@ export INNERWARDEN_DASHBOARD_PASSWORD_HASH='$argon2id$...'
 make run-dashboard
 ```
 
-Default dashboard address: `http://127.0.0.1:8787`
+Dashboard: `http://127.0.0.1:8787`
 
-The dashboard is read-only, but authentication is mandatory.
-
-You can deep-link dashboard state through query parameters for reproducible investigations:
+Deep-link investigation state:
 
 ```text
 /?date=2026-03-13&subject_type=ip&subject=203.0.113.10&window_seconds=300
 ```
 
-## Dashboard Preview
-
-Overview:
-
-<img src="docs/assets/screenshots/dashboard-overview.png" alt="InnerWarden dashboard overview" width="960">
-
-Attacker journey:
-
-<img src="docs/assets/screenshots/dashboard-journey.png" alt="InnerWarden attacker journey view" width="960">
-
-Cluster-first investigation:
-
-<img src="docs/assets/screenshots/dashboard-clusters.png" alt="InnerWarden cluster-first investigation view" width="960">
-
-## Trial Install on Linux
-
-A guided installer is available for systemd-based Linux hosts:
+## Install on Linux or macOS
 
 ```bash
-./install.sh
+curl -fsSL https://get.innerwarden.dev | bash
 ```
 
 What it does:
 
-- downloads pre-compiled release binaries (or builds from source with `INNERWARDEN_BUILD_FROM_SOURCE=1`)
-- installs `innerwarden-sensor`, `innerwarden-agent`, and `innerwarden` (the control CLI)
+- downloads pre-built binaries for your architecture (~10 s)
 - creates `/etc/innerwarden/{config.toml,agent.toml,agent.env}`
-- creates and enables systemd units
-- starts in a conservative trial profile (`responder.enabled = false`, `dry_run = true`)
-- prompts for privacy consent before enabling shell audit features
+- creates and enables `systemd` units (Linux) or `launchd` plists (macOS)
+- starts in a conservative profile (`responder.enabled = false`, `dry_run = true`)
+- prompts for privacy consent before enabling shell audit
+- `--with-integrations` flag: detects and optionally installs Falco, Suricata and osquery with pre-configured collectors
 
-Recommended first rollout posture:
+Build from source instead:
+
+```bash
+INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://get.innerwarden.dev | bash
+```
+
+First rollout posture:
 
 - `responder.enabled = false`
 - `dry_run = true`
-- dashboard auth configured before exposing the service remotely
+- dashboard auth configured before any remote exposure
+
+## Control Plane
+
+```bash
+innerwarden list                        # list all capabilities and modules
+innerwarden enable block-ip             # enable IP blocking (ufw backend)
+innerwarden enable block-ip --param backend=nftables
+innerwarden enable sudo-protection
+innerwarden enable shell-audit          # prompts for privacy consent
+innerwarden status                      # services + capabilities + modules
+innerwarden doctor                      # diagnostics with fix hints (exit 1 on issues)
+innerwarden upgrade                     # fetch and install latest release (SHA-256 verified)
+innerwarden upgrade --check             # check without installing
+innerwarden module install <url>        # install a module (SHA-256 verified)
+innerwarden module update-all           # update all modules with update_url
+```
 
 ## Safe Update Path
-
-To update an existing server deployment:
 
 ```bash
 make rollout-precheck HOST=user@server
@@ -253,69 +234,52 @@ Fast rollback:
 make rollout-rollback HOST=user@server
 ```
 
-Or using the built-in upgrade command:
+Or self-update from the binary:
 
 ```bash
-innerwarden upgrade          # fetches and installs the latest release
-innerwarden upgrade --check  # checks for updates without installing
+innerwarden upgrade
 ```
 
-## Distribution Model
+## Safety Model
 
-Current public distribution:
-
-- install from pre-compiled release binaries via `./install.sh`
-- or build from source with `cargo build --release`
-- update deployed hosts with `make deploy` + service restart, or `innerwarden upgrade`
-
-Publishing crates to crates.io is not part of the initial public launch plan.
-
-## Versioning Policy
-
-InnerWarden is currently versioned as `0.x`.
-
-Implications:
-
-- expect change while the product and operational model are still settling
-- prefer pinning a commit or release tag for repeatable deployments
-- read changelog entries and rollout notes before upgrading production-trial hosts
+- response skills are config-gated (`responder.enabled = false` by default)
+- `dry_run = true` is the recommended default during rollout
+- shell audit via `auditd` is privacy-sensitive — only enable with explicit authorization
+- `execution_guard` runs in `observe` mode only in v0.1 — detects, does not block
+- honeypot features are bounded and opt-in
+- AI is advisory unless you explicitly allow auto-execution
 
 ## FAQ
 
-### Is this an EDR?
+**Is this an EDR?**
+No. It is a focused host-security observability and response project with
+append-only artifacts, bounded investigation features, and optional response skills.
 
-No. It is a focused host-security observability and response project with append-only artifacts, bounded investigation features, and optional response skills.
-
-### Does it block by default?
-
+**Does it block by default?**
 No. The safe starting posture is `responder.enabled = false` and `dry_run = true`.
 
-### Do I need OpenAI to use it?
+**Do I need an AI provider?**
+No. Collection, detection, JSONL artifacts, reports and dashboarding all work without AI.
+The AI layer is only needed for the confidence-scored decision engine, which is optional.
 
-No. Collection, detection, JSONL artifacts, reports, and dashboarding all work without AI. The AI provider is only needed for the AI-assisted decision layer, which is optional.
+**Can I use it without Falco or Suricata?**
+Yes. The integration collectors are opt-in. The built-in sensor detectors cover SSH,
+sudo, port scans, API abuse and command execution without any external tools.
 
-### What does execution_guard do?
-
-It monitors command execution events (`auditd` EXECVE records and `sudo` audit trail) and detects suspicious patterns using structural AST analysis via tree-sitter-bash. In `observe` mode (the only mode in v0.1), it detects and emits incidents — no automatic blocking occurs. Future modes (`contain`, `strict`) will add optional automated response.
-
-### Can I use it without honeypot features?
-
-Yes. Honeypot behavior is optional and config-gated.
-
-### Can I add custom detectors or skills?
-
-Yes. The module system allows packaging custom collectors, detectors, and skills as modules. See [docs/module-authoring.md](docs/module-authoring.md) for the authoring guide.
+**Can I add custom detectors or skills?**
+Yes. See [docs/module-authoring.md](docs/module-authoring.md).
 
 ## Repository Guide
 
-- [docs/index.md](docs/index.md) — documentation map
-- [CHANGELOG.md](CHANGELOG.md) — release notes and notable changes
+- [ROADMAP.md](ROADMAP.md) — what is planned and what shipped
+- [CHANGELOG.md](CHANGELOG.md) — release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contributor workflow
-- [SECURITY.md](SECURITY.md) — vulnerability reporting guidance
+- [SECURITY.md](SECURITY.md) — vulnerability reporting
+- [docs/index.md](docs/index.md) — documentation map
 - [docs/format.md](docs/format.md) — JSONL event and incident schemas
-- [docs/development-plan.md](docs/development-plan.md) — roadmap and phase history
 - [docs/module-authoring.md](docs/module-authoring.md) — guide for building custom modules
-- [CLAUDE.md](CLAUDE.md) — maintainer-oriented operating document (kept in-repo for continuity)
+- [docs/integrated-setup.md](docs/integrated-setup.md) — Falco + Suricata + osquery + Telegram setup on Ubuntu 22.04
+- [CLAUDE.md](CLAUDE.md) — maintainer operating document
 
 ## License
 

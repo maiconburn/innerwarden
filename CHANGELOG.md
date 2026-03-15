@@ -109,7 +109,7 @@ Each module ships: `module.toml` manifest, config examples, documentation, and t
 
 ### Test coverage
 
-365 tests across three crates (139 agent + 116 ctl + 110 sensor).
+374 tests across three crates (145 agent + 116 ctl + 113 sensor).
 
 ---
 
