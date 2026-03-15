@@ -22,6 +22,24 @@ pub fn restart_service(unit: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Restart a launchd service (macOS).
+/// In dry_run mode, prints the command without executing.
+pub fn restart_launchd(label: &str, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let out = Command::new("launchctl")
+        .args(["kickstart", "-k", &format!("system/{label}")])
+        .output()
+        .with_context(|| format!("failed to run launchctl kickstart -k system/{label}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("launchctl kickstart system/{label} failed: {stderr}");
+    }
+    Ok(())
+}
+
 /// Returns true if a service is currently active (running).
 pub fn is_service_active(unit: &str) -> bool {
     Command::new("systemctl")

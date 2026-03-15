@@ -105,10 +105,42 @@ enum Command {
         install_dir: PathBuf,
     },
 
+    /// Configure AI provider and API key
+    Configure {
+        #[command(subcommand)]
+        command: ConfigureCommand,
+    },
+
     /// Module management commands
     Module {
         #[command(subcommand)]
         command: ModuleCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigureCommand {
+    /// Set AI provider: openai, anthropic, or ollama
+    ///
+    /// Examples:
+    ///   innerwarden configure ai openai --key sk-...
+    ///   innerwarden configure ai anthropic --key sk-ant-...
+    ///   innerwarden configure ai ollama --model llama3.2
+    Ai {
+        /// Provider to use: openai, anthropic, or ollama
+        provider: String,
+
+        /// API key (required for openai and anthropic)
+        #[arg(long)]
+        key: Option<String>,
+
+        /// Model to use (defaults: openai→gpt-4o-mini, anthropic→claude-haiku-4-5-20251001, ollama→llama3.2)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Ollama base URL (default: http://localhost:11434)
+        #[arg(long)]
+        base_url: Option<String>,
     },
 }
 
@@ -258,6 +290,20 @@ fn main() -> Result<()> {
             ref capability,
             yes,
         } => cmd_disable(&cli, &registry, capability, yes),
+        Command::Configure { ref command } => match command {
+            ConfigureCommand::Ai {
+                ref provider,
+                ref key,
+                ref model,
+                ref base_url,
+            } => cmd_configure_ai(
+                &cli,
+                provider,
+                key.as_deref(),
+                model.as_deref(),
+                base_url.as_deref(),
+            ),
+        },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
             ModuleCommand::Enable { ref path, yes } => cmd_module_enable(&cli, path, *yes),
@@ -1395,6 +1441,111 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
 }
 
 // ---------------------------------------------------------------------------
+// Configure AI
+// ---------------------------------------------------------------------------
+
+fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
+    let existing = std::fs::read_to_string(env_path).unwrap_or_default();
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| {
+            // Remove existing setting (active or commented)
+            let l = l.trim_start_matches('#').trim_start();
+            !l.starts_with(&format!("{key}="))
+        })
+        .map(|l| l.to_string())
+        .collect();
+    lines.push(format!("{key}={value}"));
+    let new_content = lines.join("\n") + "\n";
+    // Atomic write via temp file in same directory
+    let tmp = env_path.with_extension("env.tmp");
+    std::fs::write(&tmp, &new_content)
+        .with_context(|| format!("cannot write {}", tmp.display()))?;
+    std::fs::rename(&tmp, env_path)
+        .with_context(|| format!("cannot update {}", env_path.display()))?;
+    Ok(())
+}
+
+fn cmd_configure_ai(
+    cli: &Cli,
+    provider: &str,
+    key: Option<&str>,
+    model: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<()> {
+    let (default_model, key_var): (&str, Option<&str>) = match provider {
+        "openai" => ("gpt-4o-mini", Some("OPENAI_API_KEY")),
+        "anthropic" => ("claude-haiku-4-5-20251001", Some("ANTHROPIC_API_KEY")),
+        "ollama" => ("llama3.2", None),
+        other => anyhow::bail!(
+            "unknown provider '{}'\nUse one of: openai, anthropic, ollama\n\nExamples:\n  innerwarden configure ai openai --key sk-...\n  innerwarden configure ai anthropic --key sk-ant-...\n  innerwarden configure ai ollama --model llama3.2",
+            other
+        ),
+    };
+
+    let model = model.unwrap_or(default_model);
+
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // Cloud providers require an API key
+    if let Some(var) = key_var {
+        let k = key.ok_or_else(|| {
+            anyhow::anyhow!(
+                "provider '{}' requires an API key.\nRun:\n  innerwarden configure ai {} --key <your-key>",
+                provider,
+                provider
+            )
+        })?;
+
+        if cli.dry_run {
+            println!("  [dry-run] would write {}=... to {}", var, env_file.display());
+        } else {
+            write_env_key(&env_file, var, k)?;
+            println!("  [ok] {}=... written to {}", var, env_file.display());
+        }
+    }
+
+    // Patch agent.toml
+    if cli.dry_run {
+        println!("  [dry-run] would set [ai] enabled=true provider={provider} model={model} in {}", cli.agent_config.display());
+    } else {
+        config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "ai", "provider", provider)?;
+        config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
+        if provider == "ollama" {
+            if let Some(url) = base_url {
+                config_editor::write_str(&cli.agent_config, "ai", "base_url", url)?;
+            }
+        }
+        println!("  [ok] agent.toml updated: provider={provider}, model={model}");
+    }
+
+    // Restart agent
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let restart_cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {restart_cmd}");
+    } else if is_macos {
+        systemd::restart_launchd("com.innerwarden.agent", false)?;
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        systemd::restart_service("innerwarden-agent", false)?;
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("AI configured. Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
 // C.4 — Doctor
 // ---------------------------------------------------------------------------
 
@@ -1465,13 +1616,6 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     let mut total_issues: u32 = 0;
 
     let is_macos = std::env::consts::OS == "macos";
-
-    // OS-aware restart commands used throughout the hints
-    let restart_agent = if is_macos {
-        "sudo launchctl kickstart -k system/com.innerwarden.agent"
-    } else {
-        "sudo systemctl restart innerwarden-agent"
-    };
 
     // ── System ────────────────────────────────────────────
     println!("\nSystem");
@@ -1690,7 +1834,10 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
     };
 
     if !ai_enabled {
-        cfg.push(Check::ok("AI disabled — no API key required"));
+        cfg.push(Check::warn(
+            "AI not configured (ai.enabled = false)",
+            "Detection and logging still work without AI.\nTo add AI triage, run one of:\n\n  innerwarden configure ai openai --key sk-...\n  innerwarden configure ai anthropic --key sk-ant-...\n  innerwarden configure ai ollama --model llama3.2   (no key needed)",
+        ));
     } else {
         match provider.as_str() {
             "anthropic" => {
@@ -1699,49 +1846,46 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     None => {
                         cfg.push(Check::fail(
                             "ANTHROPIC_API_KEY not set (provider = \"anthropic\")",
-                            format!(
-                                "1. Get a key at https://console.anthropic.com/settings/keys\n\
-                                 2. Add it to {}:\n\
-                                 \n   ANTHROPIC_API_KEY=sk-ant-...\n\
-                                 \n3. Restart: {restart_agent}",
-                                env_file.display()
-                            ),
+                            "Get a key at https://console.anthropic.com/settings/keys\n\
+                             Then run:\n\
+                             \n  innerwarden configure ai anthropic --key sk-ant-...",
                         ));
                     }
                     Some(k) => {
                         let looks_valid = k.starts_with("sk-ant-") && k.len() >= 20;
-                        let log_hint = if is_macos {
-                            "sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'".to_string()
-                        } else {
-                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'"
-                                .to_string()
-                        };
                         cfg.push(if looks_valid {
                             Check::ok("ANTHROPIC_API_KEY is set and format looks correct")
                         } else {
                             Check::warn(
-                                "ANTHROPIC_API_KEY is set but format looks wrong",
-                                format!(
-                                    "Anthropic keys start with sk-ant- and are ~108 characters.\n\
-                                     If the key was recently rotated or revoked, update it in {}:\n\
-                                     \n  ANTHROPIC_API_KEY=sk-ant-...\n\
-                                     \nThen restart: {restart_agent}",
-                                    env_file.display()
-                                ),
+                                "ANTHROPIC_API_KEY is set but format looks wrong (should start with sk-ant-)",
+                                "Run:\n  innerwarden configure ai anthropic --key sk-ant-...",
                             )
                         });
-                        if looks_valid {
-                            cfg.push(Check::ok(format!(
-                                "If AI stopped working, key may be revoked — check: {log_hint}"
-                            )));
-                        }
                     }
                 }
             }
             "ollama" => {
-                cfg.push(Check::ok(
-                    "Ollama provider — no API key required (runs locally)",
-                ));
+                // Check if ollama is reachable
+                let ollama_url = agent_doc
+                    .as_ref()
+                    .and_then(|doc| doc.get("ai"))
+                    .and_then(|ai| ai.get("base_url"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http://localhost:11434")
+                    .to_string();
+                let ollama_ok = std::process::Command::new("curl")
+                    .args(["-sf", "--max-time", "2", &format!("{ollama_url}/api/tags")])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                cfg.push(if ollama_ok {
+                    Check::ok(format!("Ollama reachable at {ollama_url}"))
+                } else {
+                    Check::fail(
+                        format!("Ollama not reachable at {ollama_url}"),
+                        "Install and start Ollama:\n\n  curl -fsSL https://ollama.ai/install.sh | sh\n  ollama pull llama3.2\n\nThen run: innerwarden configure ai ollama --model llama3.2",
+                    )
+                });
             }
             _ => {
                 // Default: openai (also handles unknown providers gracefully)
@@ -1750,43 +1894,21 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     None => {
                         cfg.push(Check::fail(
                             "OPENAI_API_KEY not set (provider = \"openai\")",
-                            format!(
-                                "1. Get a key at https://platform.openai.com/api-keys\n\
-                                 2. Add it to {}:\n\
-                                 \n   OPENAI_API_KEY=sk-...\n\
-                                 \n3. Restart: {restart_agent}",
-                                env_file.display()
-                            ),
+                            "Get a key at https://platform.openai.com/api-keys\n\
+                             Then run:\n\
+                             \n  innerwarden configure ai openai --key sk-...",
                         ));
                     }
                     Some(k) => {
-                        // OpenAI keys: legacy sk-<51chars> or newer sk-proj-<...> / sk-svcacct-<...>
                         let looks_valid = k.starts_with("sk-") && k.len() >= 20;
-                        let log_hint = if is_macos {
-                            "sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'".to_string()
-                        } else {
-                            "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'"
-                                .to_string()
-                        };
                         cfg.push(if looks_valid {
                             Check::ok("OPENAI_API_KEY is set and format looks correct")
                         } else {
                             Check::warn(
-                                "OPENAI_API_KEY is set but format looks wrong",
-                                format!(
-                                    "OpenAI keys start with sk- and are 50+ characters.\n\
-                                     If the key was recently rotated or revoked, update it in {}:\n\
-                                     \n  OPENAI_API_KEY=sk-...\n\
-                                     \nThen restart: {restart_agent}",
-                                    env_file.display()
-                                ),
+                                "OPENAI_API_KEY is set but format looks wrong (should start with sk-)",
+                                "Run:\n  innerwarden configure ai openai --key sk-...",
                             )
                         });
-                        if looks_valid {
-                            cfg.push(Check::ok(format!(
-                                "If AI stopped working, key may be revoked — check: {log_hint}"
-                            )));
-                        }
                     }
                 }
             }
