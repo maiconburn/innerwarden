@@ -79,13 +79,12 @@ jobs:
         run: |
           mkdir -p dist
 
-          declare -A ARCH_TARGET=(
-            [x86_64]="x86_64-unknown-linux-gnu"
-            [aarch64]="aarch64-unknown-linux-gnu"
-          )
-
           for arch in x86_64 aarch64; do
-            target="${ARCH_TARGET[$arch]}"
+            if [ "$arch" = "x86_64" ]; then
+              target="x86_64-unknown-linux-gnu"
+            else
+              target="aarch64-unknown-linux-gnu"
+            fi
             for binary in innerwarden-sensor innerwarden-agent innerwarden-ctl; do
               src="target/$target/release/$binary"
               dest="dist/${binary}-linux-${arch}"
@@ -200,13 +199,12 @@ jobs:
         run: |
           mkdir -p dist
 
-          declare -A ARCH_TARGET=(
-            [x86_64]="x86_64-apple-darwin"
-            [aarch64]="aarch64-apple-darwin"
-          )
-
           for arch in x86_64 aarch64; do
-            target="${ARCH_TARGET[$arch]}"
+            if [ "$arch" = "x86_64" ]; then
+              target="x86_64-apple-darwin"
+            else
+              target="aarch64-apple-darwin"
+            fi
             for binary in innerwarden-sensor innerwarden-agent innerwarden-ctl; do
               src="target/$target/release/$binary"
               dest="dist/${binary}-macos-${arch}"
