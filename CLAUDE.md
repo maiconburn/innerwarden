@@ -16,7 +16,7 @@ Agente de defesa autônomo para servidores Linux e macOS. Dois componentes Rust:
 - ✅ Integração com `journald` (sshd, sudo, kernel/qualquer systemd unit)
 - ✅ Trilha opcional de shell via `auditd` (`type=EXECVE`) com parser de comando executado
 - ✅ Ingestão opcional de `auditd type=TTY` (alto impacto de privacidade, gated por config)
-- ✅ Monitoramento de Docker events (start / stop / die / OOM)
+- ✅ Monitoramento de Docker events (start / stop / die / OOM) + **privilege escalation detection**: `docker inspect` no `container.start`; detecta `--privileged`, docker.sock mount (`HostConfig.Binds` + `Mounts`), `CapAdd` perigoso (`SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`); emite `container.privileged` (High), `container.sock_mount` (High), `container.dangerous_cap` (Medium); 10 testes
 - ✅ Integridade de arquivos via SHA-256 polling configurável
 - ✅ Detector de SSH brute-force (sliding window por IP, threshold configurável)
 - ✅ Detector de SSH credential stuffing por IP (spray de múltiplos usuários em janela)
@@ -143,7 +143,7 @@ crates/
         integrity.rs         — SHA-256 polling de arquivos
         journald.rs          — subprocess journalctl --follow --output=json
         exec_audit.rs        — tail /var/log/audit/audit.log (EXECVE + TTY opcional)
-        docker.rs            — subprocess docker events --format '{{json .}}'
+        docker.rs            — subprocess docker events; privilege escalation detection via docker inspect on container.start (--privileged, docker.sock, CapAdd); 10 testes
         nginx_access.rs      — tail nginx access log (Combined Log Format), emite http.request
         nginx_error.rs       — tail nginx error.log; emite http.error (warn/error/crit com client IP); 8 testes
         macos_log.rs         — subprocess `log stream` (macOS); reusa parser SSH; emite sudo.command
@@ -238,7 +238,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 427 testes (139 sensor + 172 agent + 116 ctl)
+make test             # 437 testes (149 sensor + 172 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -642,7 +642,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 427 testes (139 sensor + 172 agent + 116 ctl) — todos devem passar
+make test   # 437 testes (149 sensor + 172 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
