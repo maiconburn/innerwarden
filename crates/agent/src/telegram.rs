@@ -27,9 +27,12 @@ pub struct ApprovalResult {
 /// Tracks a pending confirmation while waiting for the operator's response.
 #[derive(Debug, Clone)]
 pub struct PendingConfirmation {
+    #[allow(dead_code)]
     pub incident_id: String,
     pub telegram_message_id: i64,
+    #[allow(dead_code)]
     pub action_description: String,
+    #[allow(dead_code)]
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }

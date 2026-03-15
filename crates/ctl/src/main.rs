@@ -1683,7 +1683,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
             .and_then(|s| {
                 s.lines()
                     .find(|l| l.starts_with(&format!("{env_var}=")))
-                    .and_then(|l| l.splitn(2, '=').nth(1))
+                    .and_then(|l| l.split_once('=').map(|x| x.1))
                     .filter(|v| !v.trim().is_empty())
                     .map(|v| v.trim().to_string())
             })
@@ -1711,7 +1711,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     Some(k) => {
                         let looks_valid = k.starts_with("sk-ant-") && k.len() >= 20;
                         let log_hint = if is_macos {
-                            format!("sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'")
+                            "sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'".to_string()
                         } else {
                             "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'".to_string()
                         };
@@ -1762,7 +1762,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                         // OpenAI keys: legacy sk-<51chars> or newer sk-proj-<...> / sk-svcacct-<...>
                         let looks_valid = k.starts_with("sk-") && k.len() >= 20;
                         let log_hint = if is_macos {
-                            format!("sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'")
+                            "sudo tail -50 /usr/local/var/log/innerwarden/agent.log | grep -i '401\\|key\\|api'".to_string()
                         } else {
                             "journalctl -u innerwarden-agent -n 50 | grep -i '401\\|key\\|api'".to_string()
                         };
@@ -1833,7 +1833,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 .map(|s| {
                     s.lines()
                         .find(|l| l.starts_with("TELEGRAM_BOT_TOKEN="))
-                        .and_then(|l| l.splitn(2, '=').nth(1))
+                        .and_then(|l| l.split_once('=').map(|x| x.1))
                         .filter(|v| !v.is_empty())
                         .map(|s| s.to_string())
                 })
@@ -1853,7 +1853,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 .map(|s| {
                     s.lines()
                         .find(|l| l.starts_with("TELEGRAM_CHAT_ID="))
-                        .and_then(|l| l.splitn(2, '=').nth(1))
+                        .and_then(|l| l.split_once('=').map(|x| x.1))
                         .filter(|v| !v.is_empty())
                         .map(|s| s.to_string())
                 })
@@ -2061,7 +2061,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     collector_str("falco_log", "path", "/var/log/falco/falco.log");
                 let log_ok = std::path::Path::new(&falco_log).exists()
                     && std::fs::metadata(&falco_log)
-                        .map(|m| m.len() == 0 || true)
+                        .map(|m| m.len() > 0)
                         .unwrap_or(false);
                 let falco_restart_hint = if is_macos {
                     "sudo launchctl kickstart -k system/com.falco"

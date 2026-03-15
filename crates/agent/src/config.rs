@@ -148,7 +148,7 @@ pub struct AiConfig {
     /// - openai: defaults to https://api.openai.com (leave empty)
     /// - anthropic: defaults to https://api.anthropic.com (leave empty)
     /// - ollama: defaults to http://localhost:11434 (override for remote Ollama)
-    /// Can also be set via OLLAMA_BASE_URL env var for Ollama.
+    ///   Can also be set via OLLAMA_BASE_URL env var for Ollama.
     #[serde(default)]
     pub base_url: String,
 }

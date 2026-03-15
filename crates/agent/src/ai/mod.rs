@@ -70,6 +70,7 @@ pub struct AiDecision {
 
 impl AiDecision {
     /// Convenience constructor for a no-op decision.
+    #[allow(dead_code)]
     pub fn ignore(reason: impl Into<String>) -> Self {
         Self {
             action: AiAction::Ignore {
