@@ -1,0 +1,12 @@
+# Default owner for everything
+* @maiconburn
+
+# Core crates
+/crates/core/    @maiconburn
+/crates/sensor/  @maiconburn
+/crates/agent/   @maiconburn
+/crates/ctl/     @maiconburn
+
+# Integrations and modules — community contributions welcome
+/integrations/   @maiconburn
+/modules/        @maiconburn

@@ -674,7 +674,7 @@ Documentação pública do repositório:
 - Desenvolvimento contínuo em branch local dedicada de feature
 - Host de trial permanece estável sem upgrade automático
 - Promoção para produção só acontece por fase, com validação explícita
-- Plano ativo versionado em `docs/development-plan.md`
+- Plano ativo versionado em `ROADMAP.md`
 
 ---
 
@@ -736,7 +736,7 @@ Próximas direções:
 - **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
 
-Referência do roadmap: `docs/development-plan.md`, `docs/dashboard-roadmap.md`, `docs/public-readiness-checklist.md`
+Referência do roadmap: `ROADMAP.md`
 
 ---
 
