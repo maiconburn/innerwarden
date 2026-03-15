@@ -112,6 +112,9 @@ struct AgentState {
     /// Receives approval results from the Telegram polling task.
     /// Drained at the start of every incident tick via try_recv.
     approval_rx: Option<tokio::sync::mpsc::Receiver<telegram::ApprovalResult>>,
+    /// In-memory trust rules: set of "detector:action" strings.
+    /// Loaded from data_dir/trust-rules.json at startup; updated live when operator clicks "Always".
+    trust_rules: std::collections::HashSet<String>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -269,6 +272,69 @@ fn load_last_narrative_instant(data_dir: &Path) -> Option<std::time::Instant> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     let elapsed = modified.elapsed().ok()?;
     std::time::Instant::now().checked_sub(elapsed)
+}
+
+// ---------------------------------------------------------------------------
+// Trust rules — data_dir/trust-rules.json
+// ---------------------------------------------------------------------------
+
+const TRUST_RULES_FILE: &str = "trust-rules.json";
+
+/// Load trust rules from data_dir/trust-rules.json.
+/// Returns a HashSet of "detector:action" keys. Fail-open: returns empty on any error.
+fn load_trust_rules(data_dir: &Path) -> std::collections::HashSet<String> {
+    let path = data_dir.join(TRUST_RULES_FILE);
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return std::collections::HashSet::new();
+    };
+    let rules: Vec<serde_json::Value> = serde_json::from_str(&content).unwrap_or_default();
+    rules
+        .into_iter()
+        .filter_map(|r| {
+            let d = r["detector"].as_str()?.to_string();
+            let a = r["action"].as_str()?.to_string();
+            Some(format!("{d}:{a}"))
+        })
+        .collect()
+}
+
+/// Append a trust rule to data_dir/trust-rules.json and update the in-memory set.
+/// Fail-open: logs a warning on I/O errors.
+fn append_trust_rule(
+    data_dir: &Path,
+    trust_rules: &mut std::collections::HashSet<String>,
+    detector: &str,
+    action: &str,
+) {
+    let key = format!("{detector}:{action}");
+    if trust_rules.contains(&key) {
+        return; // already trusted
+    }
+    trust_rules.insert(key);
+
+    let path = data_dir.join(TRUST_RULES_FILE);
+    let mut rules: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_default();
+    rules.push(serde_json::json!({ "detector": detector, "action": action }));
+
+    match serde_json::to_string_pretty(&rules) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&path, content) {
+                warn!("failed to write trust-rules.json: {e:#}");
+            }
+        }
+        Err(e) => warn!("failed to serialise trust rules: {e:#}"),
+    }
+}
+
+/// Returns true if a (detector, action) pair has been trusted by the operator.
+fn is_trusted(trust_rules: &std::collections::HashSet<String>, detector: &str, action: &str) -> bool {
+    trust_rules.contains(&format!("{detector}:{action}"))
+        || trust_rules.contains(&format!("*:{action}"))
+        || trust_rules.contains(&format!("{detector}:*"))
+        || trust_rules.contains("*:*")
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +557,7 @@ async fn main() -> Result<()> {
         telegram_client,
         pending_confirmations: HashMap::new(),
         approval_rx: None, // set below in continuous mode
+        trust_rules: load_trust_rules(&cli.data_dir),
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -965,19 +1032,32 @@ async fn process_incidents(
             "AI decision"
         );
 
-        // Execute if auto_execute AND confidence above threshold AND responder enabled
-        let execution_result = if decision.auto_execute
+        // Execute if:
+        //   (a) AI flagged auto_execute, OR operator has trusted this detector+action pair
+        //   AND confidence >= threshold
+        //   AND responder is enabled
+        let detector = incident_detector(&incident.incident_id);
+        let action_name = decision.action.name();
+        let trusted = is_trusted(&state.trust_rules, detector, action_name);
+        let execution_result = if (decision.auto_execute || trusted)
             && decision.confidence >= cfg.ai.confidence_threshold
             && cfg.responder.enabled
         {
+            if trusted && !decision.auto_execute {
+                info!(
+                    incident_id = %incident.incident_id,
+                    detector, action = action_name,
+                    "trust rule override: executing without AI auto_execute flag"
+                );
+            }
             state
                 .telemetry
                 .observe_execution_path(cfg.responder.dry_run);
             execute_decision(&decision, incident, data_dir, cfg, state).await
         } else if !cfg.responder.enabled {
             "skipped: responder disabled".to_string()
-        } else if !decision.auto_execute {
-            "skipped: AI did not recommend auto-execution".to_string()
+        } else if !decision.auto_execute && !trusted {
+            "skipped: AI did not recommend auto-execution (no trust rule)".to_string()
         } else {
             format!(
                 "skipped: confidence {:.2} below threshold {:.2}",
@@ -1161,10 +1241,12 @@ async fn execute_decision(
         AiAction::RequestConfirmation { summary } => {
             // T.2 — send inline keyboard approval request via Telegram when enabled
             let tg = state.telegram_client.clone();
+            let req_detector = incident_detector(&incident.incident_id).to_string();
+            let req_action = decision.action.name();
             if let Some(tg) = tg {
                 let ttl = cfg.telegram.approval_ttl_secs;
                 match tg
-                    .send_confirmation_request(incident, summary, decision.confidence, ttl)
+                    .send_confirmation_request(incident, summary, req_action, decision.confidence, ttl)
                     .await
                 {
                     Ok(msg_id) => {
@@ -1175,6 +1257,8 @@ async fn execute_decision(
                             action_description: summary.clone(),
                             created_at: now,
                             expires_at: now + chrono::Duration::seconds(ttl as i64),
+                            detector: req_detector,
+                            action_name: req_action.to_string(),
                         };
                         state.pending_confirmations.insert(
                             incident.incident_id.clone(),
@@ -1445,6 +1529,17 @@ async fn process_telegram_approval(
         return;
     };
 
+    // If "Always" — save trust rule before executing
+    if result.always {
+        info!(
+            detector = %pending.detector,
+            action = %pending.action_name,
+            operator = %result.operator_name,
+            "operator added trust rule via Telegram"
+        );
+        append_trust_rule(data_dir, &mut state.trust_rules, &pending.detector, &pending.action_name);
+    }
+
     // Acknowledge in Telegram: remove inline keyboard and add follow-up message
     let tg = state.telegram_client.clone();
     if let Some(ref tg) = tg {
@@ -1452,6 +1547,7 @@ async fn process_telegram_approval(
             .resolve_confirmation(
                 pending.telegram_message_id,
                 result.approved,
+                result.always,
                 &result.operator_name,
             )
             .await;
@@ -1461,6 +1557,7 @@ async fn process_telegram_approval(
         info!(
             incident_id = %result.incident_id,
             operator = %result.operator_name,
+            always = result.always,
             "operator approved action via Telegram"
         );
         execute_decision(&decision, &incident, data_dir, cfg, state).await
@@ -1760,6 +1857,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            trust_rules: std::collections::HashSet::new(),
         };
 
         // 4. Run the incident tick
@@ -1863,6 +1961,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            trust_rules: std::collections::HashSet::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -1941,6 +2040,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            trust_rules: std::collections::HashSet::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2031,6 +2131,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            trust_rules: std::collections::HashSet::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2098,6 +2199,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            trust_rules: std::collections::HashSet::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2177,6 +2279,7 @@ mod tests {
             telegram_client: None,
             pending_confirmations: HashMap::new(),
             approval_rx: None,
+            trust_rules: std::collections::HashSet::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();

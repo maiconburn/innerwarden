@@ -68,6 +68,20 @@ pub struct AiDecision {
     pub estimated_threat: String,
 }
 
+impl AiAction {
+    /// Short name used as the action key in trust rules (e.g. "block_ip").
+    pub fn name(&self) -> &'static str {
+        match self {
+            AiAction::BlockIp { .. } => "block_ip",
+            AiAction::Monitor { .. } => "monitor",
+            AiAction::Honeypot { .. } => "honeypot",
+            AiAction::SuspendUserSudo { .. } => "suspend_user_sudo",
+            AiAction::RequestConfirmation { .. } => "request_confirmation",
+            AiAction::Ignore { .. } => "ignore",
+        }
+    }
+}
+
 impl AiDecision {
     /// Convenience constructor for a no-op decision.
     #[allow(dead_code)]

@@ -22,6 +22,8 @@ pub struct ApprovalResult {
     pub incident_id: String,
     pub approved: bool,
     pub operator_name: String,
+    /// If true, the operator wants this detector+action pair to always auto-execute.
+    pub always: bool,
 }
 
 /// Tracks a pending confirmation while waiting for the operator's response.
@@ -35,6 +37,10 @@ pub struct PendingConfirmation {
     #[allow(dead_code)]
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// Detector that triggered this incident (for trust-rule creation on "Always").
+    pub detector: String,
+    /// Action name (for trust-rule creation on "Always").
+    pub action_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +121,7 @@ impl TelegramClient {
         &self,
         incident: &Incident,
         action_description: &str,
+        action_name: &str,
         confidence: f32,
         expires_secs: u64,
     ) -> Result<i64> {
@@ -143,14 +150,16 @@ impl TelegramClient {
         );
 
         let id = &incident.incident_id;
+        let always_label = format!("🔁 Always {action_name}");
         let body = serde_json::json!({
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [[
-                    { "text": "✅ Aprovar", "callback_data": format!("approve:{id}") },
-                    { "text": "❌ Rejeitar", "callback_data": format!("reject:{id}") }
+                    { "text": "✅ Approve", "callback_data": format!("approve:{id}") },
+                    { "text": always_label, "callback_data": format!("always:{id}") },
+                    { "text": "❌ Reject", "callback_data": format!("reject:{id}") }
                 ]]
             }
         });
@@ -167,6 +176,7 @@ impl TelegramClient {
         &self,
         message_id: i64,
         approved: bool,
+        always: bool,
         operator: &str,
     ) -> Result<()> {
         let body = serde_json::json!({
@@ -178,7 +188,9 @@ impl TelegramClient {
         let _ = self.post_json("editMessageReplyMarkup", &body).await;
 
         // Send follow-up result message with personality
-        let text = if approved {
+        let text = if always {
+            format!("🔁 Got it, {operator}. I'll handle this automatically from now on. No need to ask.", operator = escape_html(operator))
+        } else if approved {
             format!("✅ Done. Executed on {operator}'s orders. They won't bother us again.", operator = escape_html(operator))
         } else {
             format!("❌ Standing down. {operator} said let it slide. I'll keep watching.", operator = escape_html(operator))
@@ -244,6 +256,7 @@ impl TelegramClient {
                                         .send(ApprovalResult {
                                             incident_id: "__status__".to_string(),
                                             approved: true,
+                                            always: false,
                                             operator_name: msg
                                                 .from
                                                 .and_then(|f| f.first_name)
@@ -509,6 +522,15 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
         return Some(ApprovalResult {
             incident_id: id.to_string(),
             approved: true,
+            always: false,
+            operator_name: operator.to_string(),
+        });
+    }
+    if let Some(id) = data.strip_prefix("always:") {
+        return Some(ApprovalResult {
+            incident_id: id.to_string(),
+            approved: true,
+            always: true,
             operator_name: operator.to_string(),
         });
     }
@@ -516,6 +538,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
         return Some(ApprovalResult {
             incident_id: id.to_string(),
             approved: false,
+            always: false,
             operator_name: operator.to_string(),
         });
     }
