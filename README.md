@@ -8,7 +8,7 @@ InnerWarden is a host-security observability and response system built around tw
 The project is designed to stay useful in safe, low-automation deployments first. The default posture is conservative:
 
 - data collection is append-only JSONL
-- responders can be disabled
+- responders are disabled by default
 - `dry_run = true` is the recommended starting point
 - privacy-sensitive collectors are explicit opt-ins
 
@@ -18,7 +18,7 @@ InnerWarden is an actively developed `0.x` project.
 
 Current state:
 
-- production-trial oriented, not yet audited
+- production-trial oriented, not yet externally audited
 - single-host focus
 - dashboard available for read-only local/remote investigation
 - host response actions gated by config and confidence thresholds
@@ -27,25 +27,66 @@ This is not a full EDR platform, not a SIEM, and not a promise of autonomous rem
 
 ## What It Does
 
-### Sensor
+### Sensor — detection
+
+The sensor collects host activity deterministically (no AI, no network calls) and runs stateful detectors:
+
+| Detector | What it catches | Source |
+|----------|----------------|--------|
+| `ssh_bruteforce` | Repeated SSH login failures from the same IP | auth.log / journald |
+| `credential_stuffing` | Many distinct usernames tried from one IP | auth.log / journald |
+| `port_scan` | Rapid unique-port probing by source IP | firewall / kernel logs |
+| `sudo_abuse` | Burst of suspicious privileged commands by a user | journald sudo |
+| `search_abuse` | High-rate requests to expensive HTTP endpoints | nginx access log |
+| `execution_guard` | Suspicious command execution patterns using AST analysis | auditd EXECVE + journald sudo |
+
+**execution_guard** uses [tree-sitter-bash](https://github.com/tree-sitter/tree-sitter-bash) to parse commands structurally rather than with regex. It detects pipelines like `curl | sh`, execution from `/tmp`, reverse shell patterns, obfuscated commands, script persistence, and staged attack sequences (download → chmod → execute) across a per-user rolling window.
+
+All collectors are fail-open: errors are logged and never crash the sensor.
+
+### Sensor — collection
 
 - tails `/var/log/auth.log` and parses SSH auth activity
 - reads `journald` for `sshd`, `sudo`, `kernel`, or any configured unit
-- optionally ingests `auditd` command execution and TTY records
-- watches Docker events
+- optionally ingests `auditd` EXECVE records (command execution trail)
+- optionally ingests `auditd` TTY records (keyboard input — explicit opt-in, privacy-sensitive)
+- watches Docker lifecycle events
 - polls file integrity with SHA-256
-- emits normalized `events-YYYY-MM-DD.jsonl`
-- emits detector-driven `incidents-YYYY-MM-DD.jsonl`
+- tails nginx access logs for HTTP-layer detection
+- emits normalized `events-YYYY-MM-DD.jsonl` and `incidents-YYYY-MM-DD.jsonl`
 
-### Agent
+### Agent — analysis and response
 
-- reads JSONL incrementally via byte offsets
-- applies a cheap algorithmic gate before any AI call
-- correlates incidents in a short time window
-- writes append-only `decisions-YYYY-MM-DD.jsonl`
-- writes operational `telemetry-YYYY-MM-DD.jsonl`
-- serves a read-only dashboard with attacker journey investigation
-- can execute bounded response skills when explicitly enabled
+- reads JSONL incrementally via byte-offset cursors (no re-read on restart)
+- applies an algorithmic gate before any AI call (severity, private IP, already-blocked)
+- correlates incidents in a short time window and clusters them for AI context
+- supports OpenAI, Anthropic, and Ollama as AI providers (AI is optional)
+- writes append-only `decisions-YYYY-MM-DD.jsonl` and `telemetry-YYYY-MM-DD.jsonl`
+- generates daily narrative summaries
+- serves a read-only authenticated dashboard with attacker journey investigation
+- executes bounded response skills when explicitly enabled
+
+### Modules
+
+Detectors and skills are organized into modules — vertical solutions for a specific threat class:
+
+| Module | What it covers |
+|--------|---------------|
+| `ssh-protection` | SSH brute-force + credential stuffing → block-ip |
+| `network-defense` | Port scan detection → block-ip |
+| `sudo-protection` | Sudo abuse → suspend-user-sudo |
+| `execution-guard` | Command execution AST analysis → suspicious_execution incidents |
+| `file-integrity` | SHA-256 file monitoring → webhook alert |
+| `container-security` | Docker lifecycle events (observability) |
+| `search-protection` | nginx access log → search_abuse → block-ip |
+| `threat-capture` | monitor-ip + honeypot (Premium) |
+
+```bash
+innerwarden list                  # list all capabilities and modules
+innerwarden enable block-ip       # enable block-ip (ufw backend by default)
+innerwarden enable sudo-protection
+innerwarden module validate ./modules/execution-guard
+```
 
 ## Architecture
 
@@ -81,7 +122,7 @@ Current support target:
 - Linux hosts with `systemd`
 - Ubuntu 22.04 is the primary production-trial reference environment
 
-Local development works well anywhere Rust and the required tooling are available, but the install, service, and privileged response flows are Linux-first.
+Local development works well anywhere Rust and the required tooling are available, but install, service, and privileged response flows are Linux-first.
 
 ## Project Maturity
 
@@ -97,9 +138,10 @@ Treat the project as:
 
 Before using this outside local testing, read these guardrails carefully:
 
-- response skills are optional and config-gated
+- response skills are optional and config-gated (`responder.enabled = false` by default)
 - `dry_run = true` should be your default during rollout
-- shell trail via `auditd` is privacy-sensitive and should only be enabled with explicit authorization
+- shell audit via `auditd` is privacy-sensitive — only enable with explicit host-owner authorization
+- `execution_guard` uses AST-based detection; no blocking occurs in `observe` mode
 - honeypot features are bounded and opt-in, but still require operational judgment
 - AI is advisory unless you explicitly allow auto-execution and accept the configured confidence threshold
 
@@ -130,13 +172,11 @@ export INNERWARDEN_DASHBOARD_PASSWORD_HASH='$argon2id$...'
 make run-dashboard
 ```
 
-Default dashboard address:
-
-- `http://127.0.0.1:8787`
+Default dashboard address: `http://127.0.0.1:8787`
 
 The dashboard is read-only, but authentication is mandatory.
 
-You can also deep-link dashboard state through query parameters for reproducible investigations and docs previews, for example:
+You can deep-link dashboard state through query parameters for reproducible investigations:
 
 ```text
 /?date=2026-03-13&subject_type=ip&subject=203.0.113.10&window_seconds=300
@@ -166,11 +206,12 @@ A guided installer is available for systemd-based Linux hosts:
 
 What it does:
 
-- builds release binaries
-- installs `innerwarden-sensor` and `innerwarden-agent`
+- downloads pre-compiled release binaries (or builds from source with `INNERWARDEN_BUILD_FROM_SOURCE=1`)
+- installs `innerwarden-sensor`, `innerwarden-agent`, and `innerwarden` (the control CLI)
 - creates `/etc/innerwarden/{config.toml,agent.toml,agent.env}`
-- creates systemd units
-- starts in a conservative trial profile
+- creates and enables systemd units
+- starts in a conservative trial profile (`responder.enabled = false`, `dry_run = true`)
+- prompts for privacy consent before enabling shell audit features
 
 Recommended first rollout posture:
 
@@ -180,15 +221,7 @@ Recommended first rollout posture:
 
 ## Safe Update Path
 
-To update an existing server deployment without reinstalling everything:
-
-```bash
-make deploy HOST=user@server
-ssh user@server "sudo systemctl restart innerwarden-agent innerwarden-sensor"
-make rollout-postcheck HOST=user@server
-```
-
-Recommended rollout sequence:
+To update an existing server deployment:
 
 ```bash
 make rollout-precheck HOST=user@server
@@ -197,22 +230,28 @@ ssh user@server "sudo systemctl restart innerwarden-agent innerwarden-sensor"
 make rollout-postcheck HOST=user@server
 ```
 
-Fast rollback path:
+Fast rollback:
 
 ```bash
 make rollout-rollback HOST=user@server
-make rollout-stop-agent HOST=user@server
+```
+
+Or using the built-in upgrade command:
+
+```bash
+innerwarden upgrade          # fetches and installs the latest release
+innerwarden upgrade --check  # checks for updates without installing
 ```
 
 ## Distribution Model
 
-Current public distribution is source-first:
+Current public distribution:
 
-- build from source with Cargo
-- install to a Linux host with `./install.sh`
-- update with `make deploy` plus service restart
+- install from pre-compiled release binaries via `./install.sh`
+- or build from source with `cargo build --release`
+- update deployed hosts with `make deploy` + service restart, or `innerwarden upgrade`
 
-Publishing crates or packaged binaries is not part of the initial public launch plan.
+Publishing crates to crates.io is not part of the initial public launch plan.
 
 ## Versioning Policy
 
@@ -232,15 +271,23 @@ No. It is a focused host-security observability and response project with append
 
 ### Does it block by default?
 
-No. The safe starting posture is responder disabled and `dry_run = true`.
+No. The safe starting posture is `responder.enabled = false` and `dry_run = true`.
 
 ### Do I need OpenAI to use it?
 
-No for collection, detection, JSONL artifacts, reports, and dashboarding. AI is only needed for the AI-assisted decision layer.
+No. Collection, detection, JSONL artifacts, reports, and dashboarding all work without AI. The AI provider is only needed for the AI-assisted decision layer, which is optional.
+
+### What does execution_guard do?
+
+It monitors command execution events (`auditd` EXECVE records and `sudo` audit trail) and detects suspicious patterns using structural AST analysis via tree-sitter-bash. In `observe` mode (the only mode in v0.1), it detects and emits incidents — no automatic blocking occurs. Future modes (`contain`, `strict`) will add optional automated response.
 
 ### Can I use it without honeypot features?
 
 Yes. Honeypot behavior is optional and config-gated.
+
+### Can I add custom detectors or skills?
+
+Yes. The module system allows packaging custom collectors, detectors, and skills as modules. See [docs/module-authoring.md](docs/module-authoring.md) for the authoring guide.
 
 ## Repository Guide
 
@@ -248,19 +295,10 @@ Yes. Honeypot behavior is optional and config-gated.
 - [CHANGELOG.md](CHANGELOG.md) — release notes and notable changes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contributor workflow
 - [SECURITY.md](SECURITY.md) — vulnerability reporting guidance
-- [docs/format.md](docs/format.md) — JSONL schemas
+- [docs/format.md](docs/format.md) — JSONL event and incident schemas
 - [docs/development-plan.md](docs/development-plan.md) — roadmap and phase history
-- [CLAUDE.md](CLAUDE.md) — maintainer-oriented operating document kept in-repo for now
-
-## Public Launch Notes
-
-This repository is being prepared for public release, but some maintainer-oriented material is intentionally still present because it remains useful during active development.
-
-Before the repo becomes public, review:
-
-- maintainer/internal process wording in `CLAUDE.md`
-- any local assistant/editor files that should stay ignored
-- screenshots and release notes for the first public-facing release
+- [docs/module-authoring.md](docs/module-authoring.md) — guide for building custom modules
+- [CLAUDE.md](CLAUDE.md) — maintainer-oriented operating document (kept in-repo for continuity)
 
 ## License
 
