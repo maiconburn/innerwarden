@@ -40,6 +40,30 @@ pub struct CollectorsConfig {
     pub nginx_access: NginxAccessConfig,
     #[serde(default)]
     pub falco_log: FalcoLogConfig,
+    #[serde(default)]
+    pub suricata_eve: SuricataEveConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SuricataEveConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_suricata_eve_path")]
+    pub path: String,
+    /// Event types to ingest. Defaults: alert, dns, http, tls, anomaly.
+    /// Add "flow" or "stats" if needed (high volume).
+    #[serde(default = "default_suricata_event_types")]
+    pub event_types: Vec<String>,
+}
+
+impl Default for SuricataEveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_suricata_eve_path(),
+            event_types: default_suricata_event_types(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,6 +391,17 @@ fn default_search_abuse_window_seconds() -> u64 {
 
 fn default_search_abuse_path_prefix() -> String {
     "/api/search".to_string()
+}
+
+fn default_suricata_eve_path() -> String {
+    "/var/log/suricata/eve.json".to_string()
+}
+
+fn default_suricata_event_types() -> Vec<String> {
+    ["alert", "dns", "http", "tls", "anomaly"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn default_falco_log_path() -> String {

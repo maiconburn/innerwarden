@@ -13,7 +13,7 @@ use clap::Parser;
 use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
     falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
-    nginx_access::NginxAccessCollector,
+    nginx_access::NginxAccessCollector, suricata_eve::SuricataEveCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
     let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
     let shared_nginx_offset = Arc::new(AtomicU64::new(0));
     let shared_falco_offset = Arc::new(AtomicU64::new(0));
+    let shared_suricata_offset = Arc::new(AtomicU64::new(0));
 
     // SSH brute force detector (stateful, lives in main loop)
     let ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
@@ -310,6 +311,35 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn suricata_eve collector
+    if cfg.collectors.suricata_eve.enabled {
+        let sc = &cfg.collectors.suricata_eve;
+        let offset = state
+            .get_cursor("suricata_eve")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_suricata_offset.store(offset, Ordering::Relaxed);
+        let collector = SuricataEveCollector::new(
+            &sc.path,
+            &cfg.agent.host_id,
+            offset,
+            sc.event_types.clone(),
+        );
+        info!(
+            path = %sc.path,
+            event_types = ?sc.event_types,
+            offset,
+            "starting suricata_eve collector"
+        );
+        let tx_suricata = tx.clone();
+        let shared = Arc::clone(&shared_suricata_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_suricata, shared).await {
+                tracing::error!("suricata_eve collector error: {e:#}");
+            }
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -440,6 +470,9 @@ async fn main() -> Result<()> {
     let falco_offset = shared_falco_offset.load(Ordering::Relaxed);
     state.set_cursor("falco_log", serde_json::json!(falco_offset));
 
+    let suricata_offset = shared_suricata_offset.load(Ordering::Relaxed);
+    state.set_cursor("suricata_eve", serde_json::json!(suricata_offset));
+
     state.save(&state_path)?;
     info!(auth_offset, "state saved");
 
@@ -450,7 +483,7 @@ async fn main() -> Result<()> {
 /// High/Critical events from these sources are promoted directly to incidents
 /// without going through an InnerWarden detector.
 fn is_passthrough_source(source: &str) -> bool {
-    matches!(source, "falco")
+    matches!(source, "falco" | "suricata")
 }
 
 fn process_event(
@@ -541,6 +574,11 @@ fn passthrough_incident(
             "Review Falco alert details".to_string(),
             "Investigate related container/process activity".to_string(),
             "Check for lateral movement indicators".to_string(),
+        ],
+        "suricata" => vec![
+            "Review Suricata IDS signature".to_string(),
+            "Check network flow context in eve.json".to_string(),
+            "Consider blocking source IP if attack pattern confirmed".to_string(),
         ],
         _ => vec!["Review source alert details".to_string()],
     };
