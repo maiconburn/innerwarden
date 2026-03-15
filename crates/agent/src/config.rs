@@ -28,6 +28,8 @@ pub struct AgentConfig {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub data: DataRetentionConfig,
+    #[serde(default)]
+    pub crowdsec: CrowdSecConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -940,6 +942,49 @@ fn default_data_reports_keep_days() -> usize {
 
 fn default_telegram_min_severity() -> String {
     "high".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// CrowdSec
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CrowdSecConfig {
+    /// Enable CrowdSec LAPI polling (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// CrowdSec Local API URL (default: http://localhost:8080)
+    #[serde(default = "default_crowdsec_url")]
+    pub url: String,
+
+    /// CrowdSec LAPI API key. Can also be set via CROWDSEC_API_KEY env var.
+    /// Find it in: /etc/crowdsec/local_api_credentials.yaml (password field)
+    #[serde(default)]
+    pub api_key: String,
+
+    /// How often to poll the LAPI for new ban decisions (seconds, default: 60)
+    #[serde(default = "default_crowdsec_poll_secs")]
+    pub poll_secs: u64,
+}
+
+impl Default for CrowdSecConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: default_crowdsec_url(),
+            api_key: String::new(),
+            poll_secs: default_crowdsec_poll_secs(),
+        }
+    }
+}
+
+fn default_crowdsec_url() -> String {
+    "http://localhost:8080".to_string()
+}
+
+fn default_crowdsec_poll_secs() -> u64 {
+    60
 }
 
 fn default_telegram_approval_ttl_secs() -> u64 {

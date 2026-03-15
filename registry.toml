@@ -125,6 +125,16 @@ tier        = "open"
 builtin     = true
 enables     = []
 
+[[modules]]
+id          = "crowdsec-integration"
+name        = "CrowdSec Integration"
+version     = "0.1.0"
+description = "Polls the CrowdSec Local API for crowd-sourced ban decisions and enforces them via block skills — no local detection needed"
+tags        = ["crowdsec", "threat-intelligence", "blocklist", "community"]
+tier        = "open"
+builtin     = true
+enables     = []   # configured via [crowdsec] in agent.toml
+
 # ---------------------------------------------------------------------------
 # Community modules — add yours here via pull request
 # ---------------------------------------------------------------------------

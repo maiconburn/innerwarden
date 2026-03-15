@@ -1,6 +1,7 @@
 mod ai;
 mod config;
 mod correlation;
+mod crowdsec;
 mod dashboard;
 mod data_retention;
 mod decisions;
@@ -115,6 +116,8 @@ struct AgentState {
     /// In-memory trust rules: set of "detector:action" strings.
     /// Loaded from data_dir/trust-rules.json at startup; updated live when operator clicks "Always".
     trust_rules: std::collections::HashSet<String>,
+    /// CrowdSec LAPI sync state (None when crowdsec.enabled = false).
+    crowdsec: Option<crowdsec::CrowdSecState>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -558,6 +561,12 @@ async fn main() -> Result<()> {
         pending_confirmations: HashMap::new(),
         approval_rx: None, // set below in continuous mode
         trust_rules: load_trust_rules(&cli.data_dir),
+        crowdsec: if cfg.crowdsec.enabled {
+            info!(url = %cfg.crowdsec.url, "CrowdSec integration enabled");
+            Some(crowdsec::CrowdSecState::new(&cfg.crowdsec))
+        } else {
+            None
+        },
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -594,6 +603,9 @@ async fn main() -> Result<()> {
         let mut narrative_ticker =
             tokio::time::interval(tokio::time::Duration::from_secs(cli.interval));
         let mut incident_ticker = tokio::time::interval(tokio::time::Duration::from_secs(ai_poll));
+        let mut crowdsec_ticker = tokio::time::interval(tokio::time::Duration::from_secs(
+            cfg.crowdsec.poll_secs.max(10),
+        ));
 
         // SIGTERM / SIGINT
         #[cfg(unix)]
@@ -638,6 +650,20 @@ async fn main() -> Result<()> {
                     info!("SIGINT received — shutting down");
                     true
                 }
+                _ = crowdsec_ticker.tick() => {
+                    if let Some(ref mut cs) = state.crowdsec {
+                        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+                        crowdsec::sync_tick(
+                            cs,
+                            &mut state.blocklist,
+                            &state.skill_registry,
+                            &cfg,
+                            &mut state.decision_writer,
+                            &host,
+                        ).await;
+                    }
+                    false
+                }
                 _ = sigterm.recv() => {
                     info!("SIGTERM received — shutting down");
                     true
@@ -671,6 +697,20 @@ async fn main() -> Result<()> {
                     }
                     if let Err(e) = cursor.save(&state_path) {
                         warn!("failed to save cursor after narrative tick: {e:#}");
+                    }
+                    false
+                }
+                _ = crowdsec_ticker.tick() => {
+                    if let Some(ref mut cs) = state.crowdsec {
+                        let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+                        crowdsec::sync_tick(
+                            cs,
+                            &mut state.blocklist,
+                            &state.skill_registry,
+                            &cfg,
+                            &mut state.decision_writer,
+                            &host,
+                        ).await;
                     }
                     false
                 }
@@ -1858,6 +1898,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
         };
 
         // 4. Run the incident tick
@@ -1962,6 +2003,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2041,6 +2083,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2132,6 +2175,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2200,6 +2244,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2280,6 +2325,7 @@ mod tests {
             pending_confirmations: HashMap::new(),
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
+            crowdsec: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
