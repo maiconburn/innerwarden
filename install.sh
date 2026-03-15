@@ -151,18 +151,22 @@ install_from_stdin() {
   rm -f "${tmp}"
 }
 
+# AI provider is optional — can be configured after install.
+# Supported: openai (cloud), anthropic (cloud), ollama (local, no key needed).
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-if [[ -z "${OPENAI_API_KEY}" ]]; then
-  if [[ -t 0 ]]; then
-    read -r -s -p "Enter OPENAI_API_KEY (sk-...): " OPENAI_API_KEY
-    echo
-  else
-    fail "OPENAI_API_KEY not set. Export it before running in non-interactive mode."
-  fi
-fi
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+AI_ENABLED="false"
+AI_PROVIDER="openai"
+AI_MODEL="gpt-4o-mini"
 
-if [[ -z "${OPENAI_API_KEY}" ]]; then
-  fail "OPENAI_API_KEY cannot be empty"
+if [[ -n "${OPENAI_API_KEY}" ]]; then
+  AI_ENABLED="true"
+  AI_PROVIDER="openai"
+  AI_MODEL="gpt-4o-mini"
+elif [[ -n "${ANTHROPIC_API_KEY}" ]]; then
+  AI_ENABLED="true"
+  AI_PROVIDER="anthropic"
+  AI_MODEL="claude-haiku-4-5-20251001"
 fi
 
 ENABLE_EXEC_AUDIT="${INNERWARDEN_ENABLE_EXEC_AUDIT:-}"
@@ -493,12 +497,16 @@ keep_days = 7
 enabled = false
 
 [ai]
-enabled = true
-provider = "openai"
-model = "gpt-4o-mini"
+enabled = ${AI_ENABLED}
+provider = "${AI_PROVIDER}"
+model = "${AI_MODEL}"
 context_events = 20
+# confidence_threshold: minimum confidence for auto-execution (0.0–1.0).
+# 1.01 means AI runs and logs decisions but never auto-executes — safe for trial.
+# Lower to 0.8 when you are ready to enable autonomous response.
 confidence_threshold = 1.01
 incident_poll_secs = 2
+# base_url = "http://localhost:11434"  # Ollama only — override endpoint
 
 [honeypot]
 mode = "demo"
@@ -567,7 +575,31 @@ EOF
 
 log "writing environment file: ${AGENT_ENV}"
 tmp_env="$(mktemp)"
-printf 'OPENAI_API_KEY=%s\n' "${OPENAI_API_KEY}" > "${tmp_env}"
+if [[ -n "${OPENAI_API_KEY}" ]]; then
+  printf 'OPENAI_API_KEY=%s\n' "${OPENAI_API_KEY}" > "${tmp_env}"
+elif [[ -n "${ANTHROPIC_API_KEY}" ]]; then
+  printf 'ANTHROPIC_API_KEY=%s\n' "${ANTHROPIC_API_KEY}" > "${tmp_env}"
+else
+  cat > "${tmp_env}" <<'ENVEOF'
+# AI provider — uncomment and fill ONE option, then restart innerwarden-agent.
+#
+# Option 1: OpenAI (cloud)
+#   OPENAI_API_KEY=sk-...
+#   (provider and model in agent.toml are already set to openai / gpt-4o-mini)
+#
+# Option 2: Anthropic (cloud)
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   Also set in agent.toml: provider = "anthropic"
+#                            model = "claude-haiku-4-5-20251001"
+#
+# Option 3: Ollama (local, no key needed)
+#   1. Install:  curl -fsSL https://ollama.ai/install.sh | sh
+#   2. Pull:     ollama pull llama3.2
+#   3. Set in agent.toml: provider = "ollama"
+#                          model   = "llama3.2"
+#   No changes needed in this file for Ollama.
+ENVEOF
+fi
 backup_if_exists "${AGENT_ENV}"
 run_root install -o root -g "${IW_USER}" -m 640 "${tmp_env}" "${AGENT_ENV}"
 rm -f "${tmp_env}"
@@ -936,39 +968,68 @@ else
 fi
 
 log "installation complete."
-log "services are running in SAFE trial mode (analysis-only):"
-log "  responder.enabled = false"
-log "  responder.dry_run = true"
 echo
-echo "Useful commands:"
-echo "  innerwarden status                              — system overview"
-echo "  innerwarden doctor                              — diagnose any issues"
-echo "  innerwarden list                                — show available capabilities"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " Inner Warden installed — services running in safe trial mode"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo
+echo "  responder.enabled = false  (no actions taken)"
+echo "  dry_run           = true   (logs what it would do)"
+echo "  confidence_threshold = 1.01 (AI runs, but never auto-executes)"
+echo
+echo "── AI provider ─────────────────────────────────────────────────"
+if [[ "${AI_ENABLED}" == "true" ]]; then
+echo "  ✓ Configured: ${AI_PROVIDER} / ${AI_MODEL}"
+else
+echo "  ✗ Not configured — AI analysis is disabled."
+echo
+echo "  To enable, edit ${AGENT_ENV} and uncomment one of:"
+echo
+echo "    OPENAI_API_KEY=sk-...          (OpenAI — fastest to set up)"
+echo "    ANTHROPIC_API_KEY=sk-ant-...   (Anthropic — also set provider in agent.toml)"
+echo
+echo "  Or use Ollama (local, no key needed):"
+echo "    curl -fsSL https://ollama.ai/install.sh | sh"
+echo "    ollama pull llama3.2"
+echo "    # then set in ${AGENT_CONFIG}:"
+echo "    #   provider = \"ollama\""
+echo "    #   model    = \"llama3.2\""
+echo
+echo "  Run 'innerwarden doctor' after configuring — it validates your setup."
+fi
+echo
+echo "── Enable response skills ───────────────────────────────────────"
+echo "  innerwarden enable block-ip          # IP blocking (ufw by default)"
+echo "  innerwarden enable sudo-protection   # suspend sudo on abuse"
+echo
+echo "── Useful commands ─────────────────────────────────────────────"
+echo "  innerwarden status   — system overview"
+echo "  innerwarden doctor   — diagnose issues with fix hints"
+echo "  innerwarden list     — show available capabilities"
+echo "  innerwarden upgrade  — update to the latest release"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo "  sudo launchctl list com.innerwarden.sensor"
-echo "  sudo launchctl list com.innerwarden.agent"
+echo
 echo "  sudo tail -f ${LOG_DIR}/sensor.log"
 echo "  sudo tail -f ${LOG_DIR}/agent.log"
 else
-echo "  sudo systemctl status innerwarden-sensor --no-pager"
-echo "  sudo systemctl status innerwarden-agent --no-pager"
+echo
 echo "  sudo journalctl -u innerwarden-sensor -f --no-pager"
 echo "  sudo journalctl -u innerwarden-agent -f --no-pager"
 fi
-echo "  ls -lah ${DATA_DIR}"
+echo
+echo "── Go live (when you trust the decisions) ───────────────────────"
+echo "  Edit ${AGENT_CONFIG}:"
+echo "    [responder]"
+echo "    dry_run = false"
+if [[ "$OS_TYPE" == "Darwin" ]]; then
+echo "  sudo launchctl kickstart -k system/com.innerwarden.agent"
+else
+echo "  sudo systemctl restart innerwarden-agent"
+fi
 echo
 if [[ "$OS_TYPE" != "Darwin" ]]; then
-echo "To add Falco + Suricata + osquery integration:"
-echo "  curl -fsSL .../install.sh | sudo bash -s -- --with-integrations"
-echo "  # or on an existing install:"
-echo "  sudo bash install.sh --with-integrations"
+echo "── Optional integrations ────────────────────────────────────────"
+echo "  curl -fsSL https://innerwarden.com/install | sudo bash -s -- --with-integrations"
+echo "  Detects and installs Falco, Suricata, and osquery."
 echo
-fi
-echo "To move to dry-run execution validation later:"
-echo "  1) Edit ${AGENT_CONFIG}"
-echo "  2) Set [responder] enabled = true (keep dry_run = true)"
-if [[ "$OS_TYPE" == "Darwin" ]]; then
-echo "  3) sudo launchctl kickstart -k system/com.innerwarden.agent"
-else
-echo "  3) sudo systemctl restart innerwarden-agent"
 fi

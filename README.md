@@ -144,19 +144,16 @@ innerwarden module enable /path/to/module
 
 ## Install
 
-Export your AI provider key first (or the installer will prompt for it):
-
 ```bash
-export OPENAI_API_KEY=sk-...
 curl -fsSL https://innerwarden.com/install | sudo bash
 ```
 
-What it does:
+No API key required. What it does:
 - Creates a dedicated `innerwarden` service user
 - Downloads pre-built binaries for your architecture (x86_64 or aarch64), SHA-256 verified
 - Writes config to `/etc/innerwarden/` and creates the data directory
 - Starts `innerwarden-sensor` + `innerwarden-agent` via systemd (Linux) or launchd (macOS)
-- Safe posture by default: AI runs and logs what it would do, no response skills enabled, `dry_run = true`
+- Safe posture by default: detection and logging active, no response skills enabled, `dry_run = true`
 
 With integrations (Falco, Suricata, osquery):
 ```bash
@@ -167,6 +164,50 @@ Build from source:
 ```bash
 INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://innerwarden.com/install | sudo bash
 ```
+
+### Configure AI
+
+AI triage is optional. Inner Warden detects and logs threats without it. Add AI to get confidence-scored decisions and autonomous response.
+
+**OpenAI** (fastest to set up):
+```bash
+# Add to /etc/innerwarden/agent.env
+OPENAI_API_KEY=sk-...
+```
+
+**Anthropic:**
+```bash
+# Add to /etc/innerwarden/agent.env
+ANTHROPIC_API_KEY=sk-ant-...
+```
+```toml
+# Set in /etc/innerwarden/agent.toml
+[ai]
+provider = "anthropic"
+model = "claude-haiku-4-5-20251001"
+```
+
+**Ollama (local, no key needed):**
+```bash
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama pull llama3.2
+```
+```toml
+# Set in /etc/innerwarden/agent.toml
+[ai]
+enabled = true
+provider = "ollama"
+model = "llama3.2"
+# base_url = "http://localhost:11434"  # default, override if needed
+```
+
+After changing either file, restart the agent:
+```bash
+sudo systemctl restart innerwarden-agent          # Linux
+sudo launchctl kickstart -k system/com.innerwarden.agent  # macOS
+```
+
+Run `innerwarden doctor` to validate your provider configuration.
 
 ### After install
 
