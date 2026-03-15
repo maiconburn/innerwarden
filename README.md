@@ -144,26 +144,49 @@ innerwarden module enable /path/to/module
 
 ## Install
 
+**Prerequisite:** export your AI provider key before running (or the installer will prompt for it):
+
 ```bash
-curl -fsSL https://get.innerwarden.dev | bash
+export OPENAI_API_KEY=sk-...
+```
+
+Then install (requires root or sudo):
+
+```bash
+curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
 ```
 
 What it does:
-- Downloads pre-built binaries for your architecture (~10 s)
-- Creates config in `/etc/innerwarden/`
-- Starts services via systemd (Linux) or launchd (macOS)
-- Starts in observe-only mode — no actions until you say so
+- Creates a dedicated `innerwarden` service user
+- Downloads pre-built binaries for your architecture (~10 s), verified with SHA-256
+- Creates config in `/etc/innerwarden/` and data directory
+- Starts `innerwarden-sensor` + `innerwarden-agent` via systemd (Linux) or launchd (macOS)
+- Starts in safe trial mode: AI analysis on, no actions taken (`responder.enabled = false`, `dry_run = true`)
 
-With integrations:
+With integrations (Falco, Suricata, osquery):
 ```bash
-curl -fsSL https://get.innerwarden.dev | bash -s -- --with-integrations
+curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash -s -- --with-integrations
 ```
 Detects and optionally installs Falco, Suricata, and osquery with pre-configured collectors.
 
 Build from source:
 ```bash
-INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://get.innerwarden.dev | bash
+INNERWARDEN_BUILD_FROM_SOURCE=1 curl -fsSL https://github.com/maiconburn/innerwarden/releases/latest/download/install.sh | sudo bash
 ```
+
+### After install
+
+```bash
+innerwarden status     # verify services are running
+innerwarden doctor     # diagnose any issues with fix hints
+innerwarden list       # see available capabilities and modules
+```
+
+To enable active response when you trust what you see:
+1. Edit `/etc/innerwarden/agent.toml`
+2. Set `[responder] enabled = true` (keep `dry_run = true` to validate first)
+3. Restart: `sudo systemctl restart innerwarden-agent`
+4. When confident: set `dry_run = false` and restart
 
 ### Control plane
 
