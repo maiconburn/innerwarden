@@ -19,3 +19,5 @@ docs/public-readiness-checklist.md
 # Operational data from server trials — never publish
 /reports/
 /reports-innerwarden/
+benchmark-report-*.json
+benchmark-report-*.md

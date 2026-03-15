@@ -178,6 +178,7 @@ impl AiConfig {
         let env_var = match self.provider.as_str() {
             "openai" => "OPENAI_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
+            "ollama" => "OLLAMA_API_KEY",
             _ => "AI_API_KEY",
         };
         std::env::var(env_var).unwrap_or_default()

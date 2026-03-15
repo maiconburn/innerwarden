@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command as Process, Stdio};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -173,20 +172,28 @@ enum ConfigureCommand {
 
 #[derive(Subcommand)]
 enum AiCommand {
-    /// Install Ollama and a lightweight local model, then configure the agent
+    /// Configure Ollama cloud as the AI provider (free tier, no GPU needed)
     ///
-    /// Downloads and installs Ollama if not present, pulls a small model
-    /// optimised for security triage, and configures innerwarden-agent to use it.
-    /// No API key needed. Everything runs on this host.
+    /// Sets up InnerWarden to use the Ollama cloud API with qwen3-coder:480b —
+    /// the model that scored 100% accuracy in InnerWarden's security benchmark.
+    ///
+    /// You need a free Ollama account and an API key:
+    ///   1. Sign up at https://ollama.com
+    ///   2. Go to https://ollama.com/settings/api-keys
+    ///   3. Create a key and paste it when prompted (or set OLLAMA_API_KEY env var)
     ///
     /// Examples:
     ///   innerwarden ai install
-    ///   innerwarden ai install --model qwen2.5:1.5b
-    ///   innerwarden ai install --yes
+    ///   innerwarden ai install --model qwen3-coder:480b
+    ///   innerwarden ai install --api-key ollama_...
     Install {
-        /// Model to pull (default: qwen2.5:1.5b — ~1 GB, fast, good for structured decisions)
-        #[arg(long, default_value = "qwen2.5:1.5b")]
+        /// Model to use on Ollama cloud (default: qwen3-coder:480b — 100% benchmark accuracy)
+        #[arg(long, default_value = "qwen3-coder:480b")]
         model: String,
+
+        /// Ollama API key (skip prompt). Can also be set via OLLAMA_API_KEY env var.
+        #[arg(long, value_name = "KEY")]
+        api_key: Option<String>,
 
         /// Skip interactive confirmation prompt
         #[arg(long)]
@@ -391,7 +398,11 @@ fn main() -> Result<()> {
             } => cmd_module_update_all(&cli, modules_dir, *check, *yes),
         },
         Command::Ai { ref command } => match command {
-            AiCommand::Install { ref model, yes } => cmd_ai_install(&cli, model, *yes),
+            AiCommand::Install {
+                ref model,
+                ref api_key,
+                yes,
+            } => cmd_ai_install(&cli, model, api_key.as_deref(), *yes),
         },
     }
 }
@@ -1669,19 +1680,31 @@ fn cmd_configure_responder(
 // innerwarden ai install
 // ---------------------------------------------------------------------------
 
-fn cmd_ai_install(cli: &Cli, model: &str, yes: bool) -> Result<()> {
+fn cmd_ai_install(cli: &Cli, model: &str, api_key_arg: Option<&str>, yes: bool) -> Result<()> {
     let is_macos = std::env::consts::OS == "macos";
-    let ollama_bin = which_ollama();
 
-    println!("InnerWarden AI — local model setup");
+    // Resolve API key: --api-key flag > OLLAMA_API_KEY env var > interactive prompt
+    let api_key = if let Some(k) = api_key_arg {
+        k.to_string()
+    } else if let Ok(k) = std::env::var("OLLAMA_API_KEY") {
+        if !k.is_empty() {
+            k
+        } else {
+            prompt_ollama_api_key()?
+        }
+    } else {
+        prompt_ollama_api_key()?
+    };
+
+    println!("InnerWarden AI — Ollama cloud setup");
     println!();
+    println!("  Provider: Ollama cloud (https://api.ollama.com)");
     println!("  Model:    {model}");
-    println!("  Provider: Ollama (local — no API key, no cloud)");
-    println!("  Ollama:   {}", if ollama_bin.is_some() { "already installed" } else { "will be installed" });
+    println!("  API key:  {}...", &api_key[..api_key.len().min(12)]);
     println!();
 
     if !yes {
-        print!("Proceed? [Y/n] ");
+        print!("Configure innerwarden-agent with these settings? [Y/n] ");
         std::io::stdout().flush()?;
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -1692,60 +1715,23 @@ fn cmd_ai_install(cli: &Cli, model: &str, yes: bool) -> Result<()> {
         }
     }
 
-    // Step 1: install Ollama if missing
-    if ollama_bin.is_none() {
-        println!("[1/4] Installing Ollama...");
-        if cli.dry_run {
-            println!("  [dry-run] would run: curl -fsSL https://ollama.ai/install.sh | sh");
-        } else {
-            let status = Process::new("sh")
-                .arg("-c")
-                .arg("curl -fsSL https://ollama.ai/install.sh | sh")
-                .status()
-                .context("failed to run Ollama install script")?;
-            if !status.success() {
-                anyhow::bail!("Ollama installation failed — check network and try again");
-            }
-            println!("  [ok] Ollama installed");
-        }
-    } else {
-        println!("[1/4] Ollama already installed — skipping");
-    }
-
-    // Step 2: ensure Ollama is running
-    println!("[2/4] Starting Ollama service...");
+    // Configure agent.toml and restart
+    println!("[1/2] Updating innerwarden-agent config...");
     if cli.dry_run {
-        println!("  [dry-run] would ensure ollama service is running");
-    } else {
-        ensure_ollama_running(is_macos)?;
-    }
-
-    // Step 3: pull the model
-    println!("[3/4] Pulling model {model} (this may take a few minutes)...");
-    if cli.dry_run {
-        println!("  [dry-run] would run: ollama pull {model}");
-    } else {
-        let status = Process::new("ollama")
-            .args(["pull", model])
-            .status()
-            .context("failed to run 'ollama pull' — is Ollama installed and in PATH?")?;
-        if !status.success() {
-            anyhow::bail!("'ollama pull {model}' failed — check model name and try again");
-        }
-        println!("  [ok] Model {model} ready");
-    }
-
-    // Step 4: configure agent.toml and restart
-    println!("[4/4] Configuring innerwarden-agent...");
-    if cli.dry_run {
-        println!("  [dry-run] would set [ai] enabled=true provider=ollama model={model}");
-        println!("  [dry-run] would restart innerwarden-agent");
+        println!("  [dry-run] would set [ai] enabled=true provider=ollama model={model} base_url=https://api.ollama.com api_key=<redacted>");
     } else {
         config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
         config_editor::write_str(&cli.agent_config, "ai", "provider", "ollama")?;
         config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
+        config_editor::write_str(&cli.agent_config, "ai", "base_url", "https://api.ollama.com")?;
+        config_editor::write_str(&cli.agent_config, "ai", "api_key", &api_key)?;
         println!("  [ok] agent.toml updated");
+    }
 
+    println!("[2/2] Restarting innerwarden-agent...");
+    if cli.dry_run {
+        println!("  [dry-run] would restart innerwarden-agent");
+    } else {
         if is_macos {
             systemd::restart_launchd("com.innerwarden.agent", false)?;
         } else {
@@ -1755,87 +1741,34 @@ fn cmd_ai_install(cli: &Cli, model: &str, yes: bool) -> Result<()> {
     }
 
     println!();
-    println!("Done. Local AI is active — no API key, no cloud, everything runs on this host.");
-    println!("Run 'innerwarden doctor' to validate.");
+    println!("Done. Ollama cloud AI is active.");
+    println!("Model:   {model}");
+    println!("Tier:    Free (check https://ollama.com/pricing for limits)");
+    println!();
+    println!("Run 'innerwarden doctor' to validate the connection.");
     Ok(())
 }
 
-/// Returns the path to the ollama binary if it is present in PATH or common locations.
-fn which_ollama() -> Option<std::path::PathBuf> {
-    // Check PATH first
-    if let Ok(output) = Process::new("which").arg("ollama").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(std::path::PathBuf::from(path));
-            }
-        }
+/// Prompt the user to paste their Ollama API key interactively.
+fn prompt_ollama_api_key() -> Result<String> {
+    println!("Ollama API key required.");
+    println!();
+    println!("  1. Create a free account at https://ollama.com");
+    println!("  2. Go to https://ollama.com/settings/api-keys");
+    println!("  3. Click 'New API Key', copy the key, and paste it below.");
+    println!();
+    print!("Ollama API key: ");
+    std::io::stdout().flush()?;
+    let mut key = String::new();
+    std::io::stdin().read_line(&mut key)?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        anyhow::bail!(
+            "No API key provided.\n\
+             You can also set the OLLAMA_API_KEY environment variable and re-run."
+        );
     }
-    // Common install locations
-    for p in &["/usr/local/bin/ollama", "/usr/bin/ollama"] {
-        let pb = std::path::PathBuf::from(p);
-        if pb.exists() {
-            return Some(pb);
-        }
-    }
-    None
-}
-
-/// Ensure Ollama is running, starting it if needed.
-fn ensure_ollama_running(is_macos: bool) -> Result<()> {
-    use std::time::Duration;
-
-    // Quick check: can we reach the API?
-    if ollama_reachable() {
-        println!("  [ok] Ollama is already running");
-        return Ok(());
-    }
-
-    // Try to start via service manager
-    if is_macos {
-        let _ = Process::new("launchctl")
-            .args(["load", "/Library/LaunchDaemons/com.ollama.plist"])
-            .status();
-    } else {
-        // Try systemctl, fall back to background process
-        let started = Process::new("systemctl")
-            .args(["start", "ollama"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if !started {
-            // Start in background if systemd service doesn't exist
-            Process::new("ollama")
-                .arg("serve")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .context("failed to start 'ollama serve'")?;
-        }
-    }
-
-    // Wait up to 10s for Ollama to become ready
-    for _ in 0..10 {
-        std::thread::sleep(Duration::from_secs(1));
-        if ollama_reachable() {
-            println!("  [ok] Ollama is running");
-            return Ok(());
-        }
-    }
-
-    anyhow::bail!(
-        "Ollama did not start within 10 seconds.\n\
-         Try starting it manually: ollama serve\n\
-         Then re-run: innerwarden ai install --yes"
-    )
-}
-
-/// Returns true if the Ollama API is reachable at localhost:11434.
-fn ollama_reachable() -> bool {
-    use std::net::TcpStream;
-    TcpStream::connect("127.0.0.1:11434").is_ok()
+    Ok(key)
 }
 
 // C.4 — Doctor

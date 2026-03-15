@@ -8,36 +8,42 @@ use super::{AiDecision, AiProvider, DecisionContext};
 use crate::ai::openai::{build_prompt_pub, parse_decision_pub, system_prompt};
 
 // ---------------------------------------------------------------------------
-// Ollama provider — local LLM via http://localhost:11434 (or configurable)
+// Ollama provider — cloud API or local instance
 // ---------------------------------------------------------------------------
 //
-// Ollama exposes an OpenAI-compatible /api/chat endpoint.
-// Key differences from the hosted APIs:
-//   - No API key required for local instances
-//   - Response schema: `message.content` instead of `choices[0].message.content`
-//   - JSON mode: `"format": "json"` (not `response_format`)
-//   - Temperature/options live under `"options"` object
-//   - Default endpoint: http://localhost:11434/api/chat
+// Supports two modes:
 //
-// Compatible models: llama3.2, llama3.1, mistral, gemma2, qwen2.5, etc.
-// Install a model: `ollama pull llama3.2`
+// 1. Ollama Cloud (recommended) — https://ollama.com free tier
+//    - Set base_url = "https://api.ollama.com"
+//    - Set api_key  = your Ollama API key (or OLLAMA_API_KEY env var)
+//    - Recommended model: qwen3-coder:480b (100% accuracy in benchmarks)
+//    - No local GPU required; no model download needed
+//
+// 2. Local instance — http://localhost:11434 (self-hosted)
+//    - Leave api_key empty; no authentication required
+//    - Compatible models: llama3.2, mistral, gemma2, qwen2.5, etc.
+//    - Install a model locally: `ollama pull <model>`
+//
+// Both modes use the same /api/chat endpoint and response schema.
 
 pub struct OllamaProvider {
     base_url: String,
     model: String,
+    api_key: Option<String>,
     client: reqwest::Client,
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: String, model: String) -> Self {
+    pub fn new(base_url: String, model: String, api_key: Option<String>) -> Self {
         let client = reqwest::Client::builder()
-            // Local inference can be slow depending on hardware
+            // Cloud inference can occasionally be slower for large models
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("failed to build Ollama HTTP client");
         Self {
             base_url,
             model,
+            api_key,
             client,
         }
     }
@@ -69,24 +75,38 @@ impl AiProvider for OllamaProvider {
             }
         });
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
+        let mut req = self.client.post(&url).json(&body);
+
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let resp = req
             .send()
             .await
             .with_context(|| {
-                format!(
-                    "Ollama request to {url} failed — is Ollama running? \
-                     Start it with: ollama serve"
-                )
+                if self.api_key.is_some() {
+                    format!("Ollama cloud request to {url} failed — check network connectivity")
+                } else {
+                    format!(
+                        "Ollama request to {url} failed — is Ollama running? \
+                         Start it with: ollama serve"
+                    )
+                }
             })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            // Surface a helpful message for the most common error: model not pulled
-            if status.as_u16() == 404 || text.contains("model") {
+            if status.as_u16() == 401 || status.as_u16() == 403 {
+                bail!(
+                    "Ollama returned {status}: authentication failed.\n\
+                     Check your OLLAMA_API_KEY or api_key in agent.toml.\n\
+                     Get a key at: https://ollama.com/settings/api-keys"
+                );
+            }
+            // Surface a helpful message for the most common local error: model not pulled
+            if (status.as_u16() == 404 || text.contains("model")) && self.api_key.is_none() {
                 bail!(
                     "Ollama returned {status}: {}\n\
                      Hint: pull the model first with: ollama pull {}",
@@ -178,14 +198,25 @@ mod tests {
 
     #[test]
     fn new_uses_supplied_values() {
-        let p = OllamaProvider::new("http://192.168.1.10:11434".into(), "mistral".into());
+        let p = OllamaProvider::new("http://192.168.1.10:11434".into(), "mistral".into(), None);
         assert_eq!(p.base_url, "http://192.168.1.10:11434");
         assert_eq!(p.model, "mistral");
+        assert!(p.api_key.is_none());
+    }
+
+    #[test]
+    fn new_stores_api_key() {
+        let p = OllamaProvider::new(
+            "https://api.ollama.com".into(),
+            "qwen3-coder:480b".into(),
+            Some("test-key".into()),
+        );
+        assert_eq!(p.api_key.as_deref(), Some("test-key"));
     }
 
     #[test]
     fn url_construction_strips_trailing_slash() {
-        let p = OllamaProvider::new("http://localhost:11434/".into(), "llama3.2".into());
+        let p = OllamaProvider::new("http://localhost:11434/".into(), "llama3.2".into(), None);
         let url = format!("{}/api/chat", p.base_url.trim_end_matches('/'));
         assert_eq!(url, "http://localhost:11434/api/chat");
     }
