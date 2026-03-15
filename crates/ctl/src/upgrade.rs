@@ -65,12 +65,26 @@ pub const TARGETS: &[UpgradeTarget] = &[
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Build a ureq request with common headers. If `GITHUB_TOKEN` is set in the
+/// environment, adds an `Authorization: Bearer <token>` header so that private
+/// repository releases and assets are accessible.
+fn github_get(url: &str) -> ureq::Request {
+    let mut req = ureq::get(url)
+        .set("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
+        .set("Accept", "application/vnd.github+json");
+    if let Ok(tok) = std::env::var("GITHUB_TOKEN") {
+        if !tok.is_empty() {
+            req = req.set("Authorization", &format!("Bearer {tok}"));
+        }
+    }
+    req
+}
+
 /// Fetch the latest release metadata from GitHub.
+/// Set GITHUB_TOKEN env var to access private repository releases.
 pub fn fetch_latest_release() -> Result<GithubRelease> {
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    let resp = ureq::get(&url)
-        .set("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
-        .set("Accept", "application/vnd.github+json")
+    let resp = github_get(&url)
         .call()
         .context("failed to reach GitHub API — check network connectivity")?;
 
@@ -114,8 +128,7 @@ pub fn find_asset<'a>(release: &'a GithubRelease, name: &str) -> Option<&'a Gith
 /// Download `url` to `dest`, return bytes written.
 /// Prints a simple dot-progress indicator to stdout.
 pub fn download(url: &str, dest: &Path) -> Result<u64> {
-    let resp = ureq::get(url)
-        .set("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
+    let resp = github_get(url)
         .call()
         .context("download request failed")?;
 
@@ -141,8 +154,7 @@ pub fn download(url: &str, dest: &Path) -> Result<u64> {
 
 /// Download a `.sha256` sidecar file and return the expected hex hash (first token).
 pub fn fetch_expected_hash(url: &str) -> Result<String> {
-    let resp = ureq::get(url)
-        .set("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
+    let resp = github_get(url)
         .call()
         .context("sha256 sidecar download failed")?;
     let text = resp.into_string().context("sha256 sidecar is not UTF-8")?;
