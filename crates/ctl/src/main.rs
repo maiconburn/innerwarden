@@ -250,9 +250,30 @@ enum ModuleCommand {
         modules_dir: PathBuf,
     },
 
-    /// Install a module from a .tar.gz URL or local file path
+    /// Search available modules from the InnerWarden registry
+    ///
+    /// Fetches the live registry from the repository and lists all modules,
+    /// optionally filtering by name, tag, or description.
+    ///
+    /// Examples:
+    ///   innerwarden module search
+    ///   innerwarden module search ssh
+    ///   innerwarden module search honeypot
+    Search {
+        /// Filter by name, tag, or description (case-insensitive)
+        query: Option<String>,
+    },
+
+    /// Install a module by name, URL, or local path
+    ///
+    /// Accepts:
+    ///   - A module name from the registry:  innerwarden module install ssh-protection
+    ///   - An HTTPS URL to a .tar.gz:        innerwarden module install https://...
+    ///   - A local file or directory path:   innerwarden module install ./my-module
+    ///
+    /// Built-in modules are enabled directly without downloading anything.
     Install {
-        /// HTTPS URL or local path to a .tar.gz module package
+        /// Module name (registry), HTTPS URL, or local path to a .tar.gz / directory
         source: String,
 
         /// Directory where modules are installed
@@ -370,6 +391,7 @@ fn main() -> Result<()> {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
             ModuleCommand::Enable { ref path, yes } => cmd_module_enable(&cli, path, *yes),
             ModuleCommand::Disable { ref path, yes } => cmd_module_disable(&cli, path, *yes),
+            ModuleCommand::Search { ref query } => cmd_module_search(query.as_deref()),
             ModuleCommand::List { ref modules_dir } => cmd_module_list(&cli, modules_dir),
             ModuleCommand::Status {
                 ref id,
@@ -993,6 +1015,160 @@ fn cmd_disable(cli: &Cli, registry: &CapabilityRegistry, id: &str, yes: bool) ->
 }
 
 // ---------------------------------------------------------------------------
+// Registry — fetched from GitHub raw content at install/search time
+// ---------------------------------------------------------------------------
+
+const REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/maiconburn/innerwarden/main/registry.toml";
+
+/// A single entry from registry.toml.
+#[derive(Debug)]
+struct RegistryModule {
+    id: String,
+    name: String,
+    version: String,
+    description: String,
+    tags: Vec<String>,
+    tier: String,
+    builtin: bool,
+    /// Capabilities to activate for builtin modules (maps to `innerwarden enable <cap>`)
+    enables: Vec<String>,
+    /// Tarball URL for non-builtin modules
+    install_url: Option<String>,
+}
+
+/// Fetch and parse the registry. Falls back to an empty list on network errors
+/// so `module install <url>` still works offline.
+fn fetch_registry() -> Vec<RegistryModule> {
+    let raw = match ureq_get(REGISTRY_URL) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("  [warn] could not fetch registry: {e}");
+            return vec![];
+        }
+    };
+
+    parse_registry_toml(&raw)
+}
+
+fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
+    // Minimal TOML array-of-tables parser — no external dep needed.
+    // We parse [[modules]] blocks by splitting on that header.
+    let mut modules = vec![];
+    for block in raw.split("\n[[modules]]") {
+        let get = |key: &str| -> String {
+            for line in block.lines() {
+                let line = line.trim();
+                if line.starts_with(&format!("{key} ")) || line.starts_with(&format!("{key}=")) {
+                    if let Some(rest) = line.splitn(2, '=').nth(1) {
+                        return rest.trim().trim_matches('"').to_string();
+                    }
+                }
+            }
+            String::new()
+        };
+        let get_bool = |key: &str| get(key) == "true";
+        let get_vec = |key: &str| -> Vec<String> {
+            for line in block.lines() {
+                let line = line.trim();
+                if line.starts_with(&format!("{key} ")) || line.starts_with(&format!("{key}=")) {
+                    if let Some(rest) = line.splitn(2, '=').nth(1) {
+                        return rest
+                            .trim()
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .split(',')
+                            .map(|s| s.trim().trim_matches('"').to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                }
+            }
+            vec![]
+        };
+
+        let id = get("id");
+        if id.is_empty() {
+            continue;
+        }
+        modules.push(RegistryModule {
+            id,
+            name: get("name"),
+            version: get("version"),
+            description: get("description"),
+            tags: get_vec("tags"),
+            tier: get("tier"),
+            builtin: get_bool("builtin"),
+            enables: get_vec("enables"),
+            install_url: {
+                let u = get("install_url");
+                if u.is_empty() { None } else { Some(u) }
+            },
+        });
+    }
+    modules
+}
+
+/// Simple blocking HTTP GET — downloads URL to a temp file and reads it.
+fn ureq_get(url: &str) -> anyhow::Result<String> {
+    use std::io::Read;
+    let tmp = tempfile::tempdir()?;
+    let dest = module_package::download(url, tmp.path())?;
+    let mut s = String::new();
+    std::fs::File::open(dest)?.read_to_string(&mut s)?;
+    Ok(s)
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden module search
+// ---------------------------------------------------------------------------
+
+fn cmd_module_search(query: Option<&str>) -> Result<()> {
+    println!("Fetching registry from {}...", REGISTRY_URL);
+    let modules = fetch_registry();
+
+    if modules.is_empty() {
+        println!("No modules found (registry unavailable or empty).");
+        return Ok(());
+    }
+
+    let q = query.unwrap_or("").to_lowercase();
+    let filtered: Vec<_> = modules
+        .iter()
+        .filter(|m| {
+            q.is_empty()
+                || m.id.contains(&q)
+                || m.name.to_lowercase().contains(&q)
+                || m.description.to_lowercase().contains(&q)
+                || m.tags.iter().any(|t| t.to_lowercase().contains(&q))
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        println!("No modules match '{q}'.");
+        return Ok(());
+    }
+
+    println!();
+    for m in &filtered {
+        let tier_badge = if m.tier == "premium" { " [premium]" } else { "" };
+        let builtin_note = if m.builtin { " (built-in)" } else { "" };
+        println!("  {}  v{}{}{}", m.id, m.version, tier_badge, builtin_note);
+        println!("    {}", m.description);
+        if !m.tags.is_empty() {
+            println!("    tags: {}", m.tags.join(", "));
+        }
+        println!();
+    }
+
+    println!("{} module(s) found.", filtered.len());
+    if query.is_none() {
+        println!("Install: innerwarden module install <id>");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Module install / uninstall / publish
 // ---------------------------------------------------------------------------
 
@@ -1008,6 +1184,68 @@ fn cmd_module_install(
     use module_package::*;
 
     let is_url = source.starts_with("https://") || source.starts_with("http://");
+    let is_path = source.starts_with('/') || source.starts_with('.') || std::path::Path::new(source).exists();
+
+    // ── Registry lookup: short module name (e.g. "ssh-protection") ────────
+    if !is_url && !is_path {
+        let name = source;
+        println!("Looking up '{}' in the InnerWarden registry...", name);
+        let registry = fetch_registry();
+        let entry = registry
+            .into_iter()
+            .find(|m| m.id == name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Module '{}' not found in registry.\n\
+                     Run 'innerwarden module search' to see available modules.\n\
+                     You can also pass a URL or local path directly.",
+                    name
+                )
+            })?;
+
+        println!("Found: {} v{} — {}", entry.name, entry.version, entry.description);
+        println!();
+
+        // Built-in modules ship with the binary; enable the underlying capabilities.
+        if entry.builtin {
+            if entry.enables.is_empty() {
+                println!("'{}' is a built-in module configured via sensor config.", entry.id);
+                println!("See modules/{}/docs/README.md for setup instructions.", entry.id);
+                return Ok(());
+            }
+            println!("'{}' is a built-in module. Enabling its capabilities:", entry.id);
+            for cap in &entry.enables {
+                println!("  innerwarden enable {cap}");
+            }
+            println!();
+            if !yes {
+                print!("Proceed? [Y/n] ");
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                let trimmed = input.trim().to_lowercase();
+                if !trimmed.is_empty() && trimmed != "y" {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+            let cap_registry = CapabilityRegistry::default_all();
+            for cap_id in &entry.enables {
+                if cap_registry.get(cap_id).is_none() {
+                    anyhow::bail!("capability '{}' not found — update InnerWarden", cap_id);
+                }
+                cmd_enable(cli, &cap_registry, cap_id, HashMap::new(), yes)?;
+            }
+            return Ok(());
+        }
+
+        // External module — install from registry URL.
+        let url = entry.install_url.ok_or_else(|| {
+            anyhow::anyhow!("Registry entry for '{}' has no install_url", name)
+        })?;
+        println!("Downloading from registry...");
+        return cmd_module_install(cli, &url, modules_dir, enable_after, force, yes);
+    }
 
     let tmp = tempfile::tempdir().context("failed to create temp directory")?;
 

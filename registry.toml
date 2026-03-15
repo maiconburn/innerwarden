@@ -1,0 +1,140 @@
+# InnerWarden Module Registry
+#
+# This file is the source of truth for `innerwarden module install <name>` and
+# `innerwarden module search`. The CLI fetches the latest version of this file
+# from the repository at install time.
+#
+# Built-in modules (builtin = true) ship with the InnerWarden binary.
+# Installing them routes to `innerwarden enable` automatically.
+#
+# Community modules must provide an install_url pointing to a .tar.gz package.
+
+version = "1"
+
+# ---------------------------------------------------------------------------
+# Built-in modules (ship with the binary)
+# ---------------------------------------------------------------------------
+
+[[modules]]
+id          = "ssh-protection"
+name        = "SSH Protection"
+version     = "0.1.0"
+description = "Detects and blocks SSH brute-force attacks and credential stuffing via sliding window analysis"
+tags        = ["ssh", "blocking", "brute-force"]
+tier        = "open"
+builtin     = true
+enables     = ["block-ip"]   # capabilities activated by innerwarden enable
+
+[[modules]]
+id          = "network-defense"
+name        = "Network Defense"
+version     = "0.1.0"
+description = "Detects and blocks port scans via firewall log analysis"
+tags        = ["network", "blocking", "port-scan"]
+tier        = "open"
+builtin     = true
+enables     = ["block-ip"]
+
+[[modules]]
+id          = "sudo-protection"
+name        = "Sudo Protection"
+version     = "0.1.0"
+description = "Detects sudo abuse bursts and temporarily suspends sudo for the offending user"
+tags        = ["sudo", "privilege", "lateral-movement"]
+tier        = "open"
+builtin     = true
+enables     = ["sudo-protection"]
+
+[[modules]]
+id          = "file-integrity"
+name        = "File Integrity"
+version     = "0.1.0"
+description = "SHA-256 polling of critical files; alerts on unexpected changes"
+tags        = ["integrity", "monitoring", "compliance"]
+tier        = "open"
+builtin     = true
+enables     = []   # configured via sensor config; no capability to enable
+
+[[modules]]
+id          = "container-security"
+name        = "Container Security"
+version     = "0.1.0"
+description = "Docker lifecycle event monitoring (start/stop/die/OOM)"
+tags        = ["docker", "containers", "observability"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
+id          = "threat-capture"
+name        = "Threat Capture"
+version     = "0.1.0"
+description = "Deep packet capture (monitor-ip) and honeypot decoy services for attacker forensics"
+tags        = ["honeypot", "forensics", "capture"]
+tier        = "premium"
+builtin     = true
+enables     = []
+
+[[modules]]
+id          = "search-protection"
+name        = "Search Protection"
+version     = "0.1.0"
+description = "Detects and blocks abusive crawlers hammering expensive search/filter routes via nginx access logs"
+tags        = ["nginx", "web", "rate-limiting", "abuse"]
+tier        = "open"
+builtin     = true
+enables     = ["search-protection"]
+
+[[modules]]
+id          = "execution-guard"
+name        = "Execution Guard"
+version     = "0.1.0"
+description = "AST analysis of shell commands via tree-sitter-bash; detects reverse shells, download-exec chains, and privilege escalation patterns"
+tags        = ["execution", "shell", "exploit-detection"]
+tier        = "open"
+builtin     = true
+enables     = ["shell-audit"]
+
+[[modules]]
+id          = "falco-integration"
+name        = "Falco Integration"
+version     = "0.1.0"
+description = "Tails Falco eBPF/syscall alerts and routes High+ severity incidents through InnerWarden's AI triage"
+tags        = ["falco", "ebpf", "syscall", "runtime-security"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
+id          = "suricata-integration"
+name        = "Suricata Integration"
+version     = "0.1.0"
+description = "Tails Suricata eve.json and routes severity 1-2 network IDS alerts through AI triage"
+tags        = ["suricata", "ids", "network"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
+id          = "osquery-integration"
+name        = "osquery Integration"
+version     = "0.1.0"
+description = "Ingests osquery differential results and emits structured events by query category"
+tags        = ["osquery", "host-observability", "compliance"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+# ---------------------------------------------------------------------------
+# Community modules — add yours here via pull request
+# ---------------------------------------------------------------------------
+
+# [[modules]]
+# id          = "my-module"
+# name        = "My Module"
+# version     = "1.0.0"
+# description = "What it does"
+# tags        = ["tag1", "tag2"]
+# tier        = "open"
+# builtin     = false
+# install_url = "https://github.com/you/innerwarden-my-module/releases/latest/download/my-module-v1.0.0.tar.gz"
