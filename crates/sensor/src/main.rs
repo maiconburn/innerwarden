@@ -14,7 +14,8 @@ use collectors::{
     auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
     falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
     macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
-    osquery_log::OsqueryLogCollector, suricata_eve::SuricataEveCollector,
+    nginx_error::NginxErrorCollector, osquery_log::OsqueryLogCollector,
+    suricata_eve::SuricataEveCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
@@ -22,6 +23,7 @@ use detectors::port_scan::PortScanDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
+use detectors::web_scan::WebScanDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -44,6 +46,7 @@ struct DetectorSet {
     port_scan: Option<PortScanDetector>,
     sudo_abuse: Option<SudoAbuseDetector>,
     search_abuse: Option<SearchAbuseDetector>,
+    web_scan: Option<WebScanDetector>,
     execution_guard: Option<ExecutionGuardDetector>,
 }
 
@@ -89,6 +92,7 @@ async fn main() -> Result<()> {
     let shared_docker_since: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let shared_exec_audit_offset = Arc::new(AtomicU64::new(0));
     let shared_nginx_offset = Arc::new(AtomicU64::new(0));
+    let shared_nginx_error_offset = Arc::new(AtomicU64::new(0));
     let shared_falco_offset = Arc::new(AtomicU64::new(0));
     let shared_suricata_offset = Arc::new(AtomicU64::new(0));
     let shared_osquery_offset = Arc::new(AtomicU64::new(0));
@@ -145,6 +149,15 @@ async fn main() -> Result<()> {
             &d.path_prefix,
         )
     });
+    let web_scan_detector = cfg.detectors.web_scan.enabled.then(|| {
+        let d = &cfg.detectors.web_scan;
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            "web_scan detector enabled"
+        );
+        WebScanDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
+    });
     let execution_guard_detector = cfg.detectors.execution_guard.enabled.then(|| {
         let d = &cfg.detectors.execution_guard;
         info!(
@@ -164,6 +177,7 @@ async fn main() -> Result<()> {
         port_scan: port_scan_detector,
         sudo_abuse: sudo_abuse_detector,
         search_abuse: search_abuse_detector,
+        web_scan: web_scan_detector,
         execution_guard: execution_guard_detector,
     };
 
@@ -290,6 +304,25 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = collector.run(tx7, shared).await {
                 tracing::error!("nginx_access collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn nginx_error collector
+    if cfg.collectors.nginx_error.enabled {
+        let nec = &cfg.collectors.nginx_error;
+        let offset = state
+            .get_cursor("nginx_error")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        shared_nginx_error_offset.store(offset, Ordering::Relaxed);
+        let collector = NginxErrorCollector::new(&nec.path, &cfg.agent.host_id, offset);
+        info!(path = %nec.path, offset, "starting nginx_error collector");
+        let tx_nginx_error = tx.clone();
+        let shared = Arc::clone(&shared_nginx_error_offset);
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_nginx_error, shared).await {
+                tracing::error!("nginx_error collector error: {e:#}");
             }
         });
     }
@@ -496,6 +529,9 @@ async fn main() -> Result<()> {
     let nginx_offset = shared_nginx_offset.load(Ordering::Relaxed);
     state.set_cursor("nginx_access", serde_json::json!(nginx_offset));
 
+    let nginx_error_offset = shared_nginx_error_offset.load(Ordering::Relaxed);
+    state.set_cursor("nginx_error", serde_json::json!(nginx_error_offset));
+
     let falco_offset = shared_falco_offset.load(Ordering::Relaxed);
     state.set_cursor("falco_log", serde_json::json!(falco_offset));
 
@@ -571,6 +607,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.search_abuse {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.web_scan {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

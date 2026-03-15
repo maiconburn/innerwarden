@@ -1,0 +1,7 @@
+[abuseipdb]
+enabled      = true
+# api_key is read from ABUSEIPDB_API_KEY env var if not set here.
+# Free tier: 1,000 checks/day — sufficient for most self-hosted servers.
+# Get your key at: https://www.abuseipdb.com/register
+api_key      = ""
+max_age_days = 30

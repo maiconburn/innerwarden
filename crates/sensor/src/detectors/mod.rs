@@ -4,3 +4,4 @@ pub mod port_scan;
 pub mod search_abuse;
 pub mod ssh_bruteforce;
 pub mod sudo_abuse;
+pub mod web_scan;

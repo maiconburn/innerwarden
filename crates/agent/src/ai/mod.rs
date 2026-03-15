@@ -113,6 +113,8 @@ pub struct DecisionContext<'a> {
     pub already_blocked: Vec<String>,
     /// Available skill IDs (sent to the AI so it can select the right one)
     pub available_skills: Vec<SkillInfo>,
+    /// Optional AbuseIPDB reputation data for the primary IP (enrichment).
+    pub ip_reputation: Option<crate::abuseipdb::IpReputation>,
 }
 
 #[derive(Debug, Clone, Serialize)]

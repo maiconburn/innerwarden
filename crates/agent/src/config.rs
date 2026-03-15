@@ -30,6 +30,8 @@ pub struct AgentConfig {
     pub data: DataRetentionConfig,
     #[serde(default)]
     pub crowdsec: CrowdSecConfig,
+    #[serde(default)]
+    pub abuseipdb: AbuseIpDbConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +991,40 @@ fn default_crowdsec_poll_secs() -> u64 {
 
 fn default_telegram_approval_ttl_secs() -> u64 {
     600
+}
+
+// ---------------------------------------------------------------------------
+// AbuseIPDB
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AbuseIpDbConfig {
+    /// Enable AbuseIPDB IP reputation enrichment (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// AbuseIPDB API key. Can also be set via ABUSEIPDB_API_KEY env var.
+    /// Free tier: 1,000 checks/day — sufficient for most self-hosted servers.
+    #[serde(default)]
+    pub api_key: String,
+
+    /// Maximum age of abuse reports to consider (default: 30 days).
+    #[serde(default = "default_abuseipdb_max_age_days")]
+    pub max_age_days: u32,
+}
+
+impl Default for AbuseIpDbConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            max_age_days: default_abuseipdb_max_age_days(),
+        }
+    }
+}
+
+fn default_abuseipdb_max_age_days() -> u32 {
+    30
 }
 
 // ---------------------------------------------------------------------------

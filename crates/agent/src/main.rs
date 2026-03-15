@@ -1,3 +1,4 @@
+mod abuseipdb;
 mod ai;
 mod config;
 mod correlation;
@@ -118,6 +119,8 @@ struct AgentState {
     trust_rules: std::collections::HashSet<String>,
     /// CrowdSec LAPI sync state (None when crowdsec.enabled = false).
     crowdsec: Option<crowdsec::CrowdSecState>,
+    /// AbuseIPDB client for IP reputation enrichment (None when disabled).
+    abuseipdb: Option<abuseipdb::AbuseIpDbClient>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -567,6 +570,18 @@ async fn main() -> Result<()> {
         } else {
             None
         },
+        abuseipdb: if cfg.abuseipdb.enabled {
+            let key = abuseipdb::resolve_api_key(&cfg.abuseipdb.api_key);
+            if key.is_empty() {
+                warn!("abuseipdb.enabled=true but no API key found — disabling enrichment");
+                None
+            } else {
+                info!("AbuseIPDB enrichment enabled (max_age_days={})", cfg.abuseipdb.max_age_days);
+                Some(abuseipdb::AbuseIpDbClient::new(key, cfg.abuseipdb.max_age_days))
+            }
+        } else {
+            None
+        },
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -1009,6 +1024,23 @@ async fn process_incidents(
         let related_refs: Vec<&innerwarden_core::incident::Incident> =
             related_incidents.iter().collect();
 
+        // Optionally enrich with AbuseIPDB reputation data
+        let ip_reputation = if let Some(ref client) = state.abuseipdb {
+            // Extract primary IP from the incident
+            let primary_ip = incident
+                .entities
+                .iter()
+                .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
+                .map(|e| e.value.as_str());
+            if let Some(ip) = primary_ip {
+                client.check(ip).await
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let ctx = ai::DecisionContext {
             incident,
             recent_events: recent,
@@ -1021,6 +1053,7 @@ async fn process_incidents(
                     applicable_to: s.applicable_to.clone(),
                 })
                 .collect(),
+            ip_reputation,
         };
 
         state.telemetry.observe_ai_sent();
@@ -1899,6 +1932,7 @@ mod tests {
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
+            abuseipdb: None,
         };
 
         // 4. Run the incident tick
@@ -2004,6 +2038,7 @@ mod tests {
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
+            abuseipdb: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2084,6 +2119,7 @@ mod tests {
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
+            abuseipdb: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2176,6 +2212,7 @@ mod tests {
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
+            abuseipdb: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2245,6 +2282,7 @@ mod tests {
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
+            abuseipdb: None,
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -2326,6 +2364,7 @@ mod tests {
             approval_rx: None,
             trust_rules: std::collections::HashSet::new(),
             crowdsec: None,
+            abuseipdb: None,
         };
 
         let mut cursor = reader::AgentCursor::default();

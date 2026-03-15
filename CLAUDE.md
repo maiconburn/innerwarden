@@ -140,6 +140,7 @@ crates/
         exec_audit.rs        — tail /var/log/audit/audit.log (EXECVE + TTY opcional)
         docker.rs            — subprocess docker events --format '{{json .}}'
         nginx_access.rs      — tail nginx access log (Combined Log Format), emite http.request
+        nginx_error.rs       — tail nginx error.log; emite http.error (warn/error/crit com client IP); 8 testes
         macos_log.rs         — subprocess `log stream` (macOS); reusa parser SSH; emite sudo.command
       detectors/
         ssh_bruteforce.rs    — sliding window por IP
@@ -147,6 +148,7 @@ crates/
         port_scan.rs         — portas de destino únicas por IP (firewall logs)
         sudo_abuse.rs        — burst de comandos sudo suspeitos por usuário (janela + threshold)
         search_abuse.rs      — sliding window por IP+path (nginx http.request events)
+        web_scan.rs          — sliding window por IP (nginx http.error events); detecta scanners/probes; 6 testes
         execution_guard.rs   — AST (tree-sitter-bash) + argv analysis + timeline correlation por usuário
       sinks/
         jsonl.rs             — DatedWriter com rotação diária
@@ -165,6 +167,7 @@ crates/
       webhook.rs             — HTTP POST de notificações de incidente
       decisions.rs           — DecisionWriter + DecisionEntry (audit trail JSONL)
       telegram.rs            — TelegramClient: T.1 notifications + T.2 inline-keyboard approvals + polling loop
+      abuseipdb.rs           — AbuseIpDbClient: IP reputation enrichment via AbuseIPDB API v2; IpReputation + as_context_line(); 6 testes
       ai/
         mod.rs               — AiProvider trait, AiDecision, AiAction, algorithm gate, factory
         openai.rs            — implementação real OpenAI (gpt-4o-mini)
@@ -203,6 +206,8 @@ modules/                           — soluções verticais empacotadas (ver doc
   execution-guard/                 — shell.command_exec + sudo.command → execution_guard AST detector (built-in, observe mode)
   falco-integration/               — Falco eBPF/syscall alerts → incidents (built-in, incident passthrough High+)
   suricata-integration/            — Suricata network IDS alerts → incidents (built-in, incident passthrough sev 1-2)
+  nginx-error-monitor/             — nginx error.log → web_scan → block-ip (built-in)
+  abuseipdb-enrichment/            — AbuseIPDB IP reputation → AI context enrichment (built-in)
   osquery-integration/             — osquery differential results → events (built-in, observability, sem passthrough)
 docs/
   module-authoring.md              — guia completo para criar módulos + passo-a-passo Claude Code/Codex
@@ -220,7 +225,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 351 testes (110 sensor + 125 agent + 116 ctl)
+make test             # 400 testes (127 sensor + 157 agent + 116 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -501,6 +506,8 @@ modules/
   container-security/   — docker lifecycle events (observability)
   threat-capture/       — monitor-ip + honeypot (Premium)
   search-protection/    — nginx access log → search_abuse → block-ip (M.3)
+  nginx-error-monitor/  — nginx error.log → web_scan → block-ip
+  abuseipdb-enrichment/ — AbuseIPDB IP reputation → AI context enrichment
 ```
 
 Cada módulo contém:
@@ -618,7 +625,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 351 testes (110 sensor + 125 agent + 116 ctl) — todos devem passar
+make test   # 400 testes (127 sensor + 157 agent + 116 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -729,11 +736,14 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **macos_log collector:** ✅ implementado; `crates/sensor/src/collectors/macos_log.rs`; `log stream` subprocess; reusa parser SSH (`parse_sshd_message`); emite `sudo.command`; restart loop; 3 testes
 - **CI macOS builds:** ✅ job `build-release-macos` em `macos-latest`; `x86_64-apple-darwin` + `aarch64-apple-darwin`; assets `innerwarden-*-macos-{x86_64,aarch64}`; `needs: build-release`
 - **install.sh macOS:** ✅ detecta `Darwin`; paths `/usr/local/etc/innerwarden` + `/usr/local/var/lib/innerwarden`; launchd plists em `/Library/LaunchDaemons`; `macos_log` collector; asset naming `macos-{arch}`; unsupported arch imprime URL de issue pré-preenchida
+- **NginxErrorCollector:** ✅ implementado; `crates/sensor/src/collectors/nginx_error.rs`; emite `http.error` com client IP, level, request; skipa debug/notice; crit/alert emitidos mesmo sem client; 8 testes
+- **WebScanDetector:** ✅ implementado; `crates/sensor/src/detectors/web_scan.rs`; sliding window por IP em `http.error` events; módulo `nginx-error-monitor/`; 6 testes
+- **AbuseIPDB enrichment:** ✅ implementado; `crates/agent/src/abuseipdb.rs`; lookup antes do call AI para IPs de incidentes High/Critical; injetado no prompt como `IP REPUTATION (AbuseIPDB):`; fail-silent (rate limit, timeout, parse error não bloqueiam o agent); módulo `abuseipdb-enrichment/`; 6 testes
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
 - **L.5 — Repositório público:** confirmar sem credenciais, adicionar tópicos GitHub, habilitar Discussions
-- **`innerwarden module search`** — registry central em TOML hospedado; `search <termo>` lista módulos da comunidade com `install_url`
+- **`innerwarden module search`:** ✅ registry central em `registry.toml`; `search <termo>` filtra por nome/descrição/tags; `install <name>` resolve short names via registry
 - **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
 - **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
 

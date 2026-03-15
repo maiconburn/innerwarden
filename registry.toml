@@ -126,6 +126,26 @@ builtin     = true
 enables     = []
 
 [[modules]]
+id          = "nginx-error-monitor"
+name        = "Nginx Error Monitor"
+version     = "0.1.0"
+description = "Tails nginx error.log and detects automated web scans, path traversal probes, and LFI attempts via sliding window analysis"
+tags        = ["nginx", "web", "scan", "probe", "lfi"]
+tier        = "open"
+builtin     = true
+enables     = ["block-ip"]
+
+[[modules]]
+id          = "abuseipdb-enrichment"
+name        = "AbuseIPDB Enrichment"
+version     = "0.1.0"
+description = "Enriches AI triage context with AbuseIPDB crowd-sourced reputation scores — raises AI confidence for known-bad IPs"
+tags        = ["threat-intelligence", "reputation", "enrichment", "abuseipdb"]
+tier        = "open"
+builtin     = true
+enables     = []
+
+[[modules]]
 id          = "crowdsec-integration"
 name        = "CrowdSec Integration"
 version     = "0.1.0"

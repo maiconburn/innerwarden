@@ -39,6 +39,8 @@ pub struct CollectorsConfig {
     #[serde(default)]
     pub nginx_access: NginxAccessConfig,
     #[serde(default)]
+    pub nginx_error: NginxErrorConfig,
+    #[serde(default)]
     pub falco_log: FalcoLogConfig,
     #[serde(default)]
     pub suricata_eve: SuricataEveConfig,
@@ -203,6 +205,8 @@ pub struct DetectorsConfig {
     pub sudo_abuse: SudoAbuseConfig,
     #[serde(default)]
     pub search_abuse: SearchAbuseConfig,
+    #[serde(default)]
+    pub web_scan: WebScanConfig,
     #[serde(default)]
     pub execution_guard: ExecutionGuardConfig,
 }
@@ -445,6 +449,55 @@ fn default_execution_guard_mode() -> String {
 
 fn default_execution_guard_window_seconds() -> u64 {
     300
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NginxErrorConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_nginx_error_path")]
+    pub path: String,
+}
+
+impl Default for NginxErrorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_nginx_error_path(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WebScanConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_scan_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_web_scan_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for WebScanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_web_scan_threshold(),
+            window_seconds: default_web_scan_window_seconds(),
+        }
+    }
+}
+
+fn default_nginx_error_path() -> String {
+    "/var/log/nginx/error.log".to_string()
+}
+
+fn default_web_scan_threshold() -> usize {
+    15
+}
+
+fn default_web_scan_window_seconds() -> u64 {
+    60
 }
 
 pub fn load(path: &str) -> Result<Config> {

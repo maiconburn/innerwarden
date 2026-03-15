@@ -1,0 +1,23 @@
+[module]
+id          = "abuseipdb-enrichment"
+name        = "AbuseIPDB Enrichment"
+version     = "0.1.0"
+description = "Enriches AI triage context with AbuseIPDB crowd-sourced reputation scores — raises confidence for known bad IPs, lowers it for clean ones"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = []
+detectors  = []
+skills     = []
+
+[requires]
+event_sources = []
+
+[security]
+allowed_commands        = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
