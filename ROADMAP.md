@@ -53,7 +53,7 @@ This roadmap is high-level only; implementation details live in the code, commit
 ## v0.2.0 — Operator experience
 
 - 📋 **`innerwarden module search`** — central community registry; `search <term>` lists modules with install URL
-- 📋 **Ollama provider** — local/offline AI (currently stub)
+- 📋 **Ollama provider** — local/offline AI (currently a stub)
 - 📋 **Dashboard D11** — browser push notifications (Web Notifications API)
 - 📋 **Structured allowlists** — per-user/per-IP/per-pattern temporary and permanent exceptions
 
