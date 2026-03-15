@@ -126,12 +126,12 @@ impl TelegramClient {
         let text = format!(
             "{source_icon} {sev} — <b>{host}</b>\n\
              <b>{title}</b>\n\
-             \n\
-             Ação proposta: <code>{action}</code>\n\
-             Confiança da AI: {pct}% (abaixo do threshold de execução automática)\n\
              {entity_line}\n\
              \n\
-             ⏱ Expira em {expires_secs}s. Sem resposta = <i>ignorar</i>.",
+             🤖 I'm {pct}% sure about this. Ready to pull the trigger:\n\
+             <code>{action}</code>\n\
+             \n\
+             Your call. ⏱ {expires_secs}s to decide — then I stand down.",
             host = escape_html(&incident.host),
             title = escape_html(&incident.title),
             action = escape_html(action_description),
@@ -169,11 +169,6 @@ impl TelegramClient {
         approved: bool,
         operator: &str,
     ) -> Result<()> {
-        let label = if approved {
-            "✅ Aprovado"
-        } else {
-            "❌ Rejeitado"
-        };
         let body = serde_json::json!({
             "chat_id": self.chat_id,
             "message_id": message_id,
@@ -182,8 +177,12 @@ impl TelegramClient {
         // Remove inline keyboard
         let _ = self.post_json("editMessageReplyMarkup", &body).await;
 
-        // Send follow-up result message
-        let text = format!("{label} por {operator}.", operator = escape_html(operator));
+        // Send follow-up result message with personality
+        let text = if approved {
+            format!("✅ Done. Executed on {operator}'s orders. They won't bother us again.", operator = escape_html(operator))
+        } else {
+            format!("❌ Standing down. {operator} said let it slide. I'll keep watching.", operator = escape_html(operator))
+        };
         let body2 = serde_json::json!({
             "chat_id": self.chat_id,
             "text": text,
@@ -380,6 +379,7 @@ fn format_incident_message(incident: &Incident, dashboard_url: Option<&str>) -> 
     let sev = severity_label(incident);
     let source_icon = source_icon(&incident.tags);
     let entity_line = entity_summary(incident);
+    let quip = incident_quip(incident);
 
     let summary_trunc = if incident.summary.len() > 200 {
         format!("{}…", &incident.summary[..200])
@@ -391,7 +391,7 @@ fn format_incident_message(incident: &Incident, dashboard_url: Option<&str>) -> 
         .and_then(|base| first_ip_entity(incident).map(|ip| (base, ip)))
         .map(|(base, ip)| {
             format!(
-                "\n🔗 <a href=\"{}/?subject_type=ip&subject={}&date={}\">Investigar no dashboard</a>",
+                "\n🔗 <a href=\"{}/?subject_type=ip&subject={}&date={}\">Investigate</a>",
                 base,
                 ip,
                 incident.ts.format("%Y-%m-%d")
@@ -403,15 +403,53 @@ fn format_incident_message(incident: &Incident, dashboard_url: Option<&str>) -> 
         "{source_icon} {sev} — <b>{host}</b>\n\
          <b>{title}</b>\n\
          {entity_line}\n\
-         <i>{summary}</i>{link_line}",
+         <i>{summary}</i>\n\
+         \n\
+         {quip}{link_line}",
         host = escape_html(&incident.host),
         title = escape_html(&incident.title),
         summary = escape_html(&summary_trunc),
         entity_line = entity_line,
         sev = sev,
         source_icon = source_icon,
+        quip = quip,
         link_line = link_line,
     )
+}
+
+/// Returns a snarky one-liner based on the incident type.
+fn incident_quip(incident: &Incident) -> &'static str {
+    let title = incident.title.to_lowercase();
+    let tags: Vec<&str> = incident.tags.iter().map(|s| s.as_str()).collect();
+
+    if title.contains("brute") || title.contains("ssh") {
+        return "🧱 Script kiddie found the door. On it.";
+    }
+    if title.contains("credential") || title.contains("stuffing") || title.contains("spray") {
+        return "🎭 Someone's cosplaying as your users. Not for long.";
+    }
+    if title.contains("port scan") || title.contains("portscan") {
+        return "🔭 They're window shopping. Let's close the blinds.";
+    }
+    if title.contains("sudo") || title.contains("privilege") {
+        return "👑 Someone's reaching for the crown. Hard no.";
+    }
+    if title.contains("execution") || title.contains("shell") || title.contains("command") {
+        return "💀 That command had bad news written all over it.";
+    }
+    if title.contains("rate") || title.contains("search") || title.contains("abuse") {
+        return "🤖 Bot party detected. Bouncer mode: engaged.";
+    }
+    if title.contains("file") || title.contains("integrity") {
+        return "🕵️ Someone touched what they shouldn't have.";
+    }
+    if tags.contains(&"falco") {
+        return "🔬 Falco caught something spicy in the kernel.";
+    }
+    if tags.contains(&"suricata") {
+        return "🌐 Network IDS flagged it. Dirty traffic incoming.";
+    }
+    "👀 Something's off. Eyes on this one."
 }
 
 fn severity_label(incident: &Incident) -> &'static str {
@@ -542,7 +580,7 @@ mod tests {
         let msg = format_incident_message(&inc, Some("http://127.0.0.1:8787"));
         assert!(msg.contains("HIGH"));
         assert!(msg.contains("🌐"), "suricata icon");
-        assert!(msg.contains("Investigar no dashboard"));
+        assert!(msg.contains("Investigate"));
         assert!(msg.contains("203.0.113.10"));
     }
 
