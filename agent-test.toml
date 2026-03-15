@@ -93,5 +93,13 @@ backend = "iptables"
 [responder]
 enabled = true
 dry_run = true              # SAFE: logs "DRY RUN: would execute..." — no real blocks
-block_backend = "ufw"
-allowed_skills = ["block-ip-ufw", "monitor-ip"]
+# Linux:  block_backend = "ufw"
+# macOS:  block_backend = "pf"
+block_backend = "pf"
+allowed_skills = ["block-ip-ufw", "block-ip-pf", "monitor-ip"]
+
+[telegram]
+enabled = false             # set to true + fill bot_token/chat_id to get push alerts
+# bot_token = ""            # or env var TELEGRAM_BOT_TOKEN
+# chat_id = ""              # or env var TELEGRAM_CHAT_ID
+# min_severity = "high"
