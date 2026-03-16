@@ -878,7 +878,10 @@ mod tests {
     fn strip_bot_suffix_removes_at_username() {
         assert_eq!(strip_bot_suffix("/help@InnerWardenBot"), "/help");
         assert_eq!(strip_bot_suffix("/status@Bot"), "/status");
-        assert_eq!(strip_bot_suffix("/ask@Bot question here"), "/ask question here");
+        assert_eq!(
+            strip_bot_suffix("/ask@Bot question here"),
+            "/ask question here"
+        );
         assert_eq!(strip_bot_suffix("/status"), "/status");
         assert_eq!(strip_bot_suffix("hello"), "hello");
         assert_eq!(strip_bot_suffix("text with @mention"), "text with @mention");

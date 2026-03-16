@@ -135,7 +135,8 @@ pub fn fetch_latest_release() -> Result<GithubRelease> {
         .call()
         .context("failed to reach GitHub API — check network connectivity")?;
 
-    resp.into_body().read_json::<GithubRelease>()
+    resp.into_body()
+        .read_json::<GithubRelease>()
         .context("failed to parse GitHub release JSON")
 }
 
@@ -202,7 +203,10 @@ pub fn fetch_expected_hash(url: &str) -> Result<String> {
     let resp = github_get(url)
         .call()
         .context("sha256 sidecar download failed")?;
-    let text = resp.into_body().read_to_string().context("sha256 sidecar is not UTF-8")?;
+    let text = resp
+        .into_body()
+        .read_to_string()
+        .context("sha256 sidecar is not UTF-8")?;
     let hash = text
         .split_whitespace()
         .next()

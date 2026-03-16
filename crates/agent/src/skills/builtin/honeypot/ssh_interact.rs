@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use russh::keys::{PrivateKey, PublicKey, Algorithm};
+use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth, Config, Handler, Session};
 use serde::Serialize;
 use tracing::debug;
@@ -90,11 +90,7 @@ impl Handler for HoneypotSshHandler {
         })
     }
 
-    async fn auth_publickey(
-        &mut self,
-        user: &str,
-        key: &PublicKey,
-    ) -> Result<Auth, Self::Error> {
+    async fn auth_publickey(&mut self, user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_publickey");
         self.record(
             "publickey",
