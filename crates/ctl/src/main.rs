@@ -196,6 +196,69 @@ enum Command {
         #[arg(long, default_value = "/var/lib/innerwarden")]
         data_dir: PathBuf,
     },
+
+    /// List recent security incidents detected on this host.
+    ///
+    /// Shows threats from today (and optionally yesterday) with severity,
+    /// IP address, title and time. No need to open the dashboard.
+    ///
+    /// Examples:
+    ///   innerwarden incidents
+    ///   innerwarden incidents --days 2
+    ///   innerwarden incidents --severity critical
+    Incidents {
+        /// How many days back to look (default: 1 = today only)
+        #[arg(long, default_value = "1")]
+        days: u64,
+
+        /// Filter by minimum severity: low, medium, high, critical (default: low = all)
+        #[arg(long, default_value = "low")]
+        severity: String,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Block an IP address at the firewall and record it in the audit trail.
+    ///
+    /// Uses the same block skill configured in agent.toml (ufw/iptables/nftables).
+    /// Requires sudo. The block is recorded in decisions-YYYY-MM-DD.jsonl.
+    ///
+    /// Examples:
+    ///   innerwarden block 1.2.3.4 --reason "manual block after investigation"
+    Block {
+        /// IP address to block
+        ip: String,
+
+        /// Reason for the block (required — kept in audit trail)
+        #[arg(long)]
+        reason: String,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Remove a previously blocked IP from the firewall.
+    ///
+    /// Reverses a block created by InnerWarden (manual or AI-initiated).
+    /// The unblock is recorded in decisions-YYYY-MM-DD.jsonl.
+    ///
+    /// Examples:
+    ///   innerwarden unblock 1.2.3.4 --reason "false positive"
+    Unblock {
+        /// IP address to unblock
+        ip: String,
+
+        /// Reason for removing the block (required — kept in audit trail)
+        #[arg(long)]
+        reason: String,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -358,6 +421,20 @@ enum ConfigureCommand {
     /// Examples:
     ///   innerwarden configure fail2ban
     Fail2ban,
+
+    /// Set up automatic health monitoring via cron (watchdog).
+    ///
+    /// Adds a cron entry that runs `innerwarden watchdog --notify` every N minutes.
+    /// Sends a Telegram alert if the agent stops writing telemetry.
+    ///
+    /// Examples:
+    ///   innerwarden configure watchdog
+    ///   innerwarden configure watchdog --interval 5
+    Watchdog {
+        /// How often to check (minutes, default: 10)
+        #[arg(long, default_value = "10")]
+        interval: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -602,6 +679,7 @@ fn main() -> Result<()> {
             }
             Some(ConfigureCommand::Geoip) => cmd_configure_geoip(&cli),
             Some(ConfigureCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
+            Some(ConfigureCommand::Watchdog { interval }) => cmd_configure_watchdog(&cli, *interval),
         },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
@@ -643,6 +721,21 @@ fn main() -> Result<()> {
             } => cmd_ai_install(&cli, model, api_key.as_deref(), *yes),
         },
         Command::TestAlert { ref channel } => cmd_test_alert(&cli, channel.as_deref()),
+        Command::Incidents {
+            days,
+            ref severity,
+            ref data_dir,
+        } => cmd_incidents(&cli, days, severity, data_dir),
+        Command::Block {
+            ref ip,
+            ref reason,
+            ref data_dir,
+        } => cmd_block(&cli, ip, reason, data_dir),
+        Command::Unblock {
+            ref ip,
+            ref reason,
+            ref data_dir,
+        } => cmd_unblock(&cli, ip, reason, data_dir),
         Command::Report {
             ref date,
             ref data_dir,
@@ -2254,6 +2347,11 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
     let geoip_ok = is_enabled("geoip");
     let fail2ban_ok = is_enabled("fail2ban");
     let responder_ok = is_enabled("responder");
+    let watchdog_ok = std::process::Command::new("crontab")
+        .arg("-l")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("innerwarden watchdog"))
+        .unwrap_or(false);
 
     println!("InnerWarden — configure\n");
     println!("Choose what to set up:\n");
@@ -2266,6 +2364,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
     println!("   7. GeoIP            {}", status(geoip_ok));
     println!("   8. Fail2ban         {}", status(fail2ban_ok));
     println!("   9. Responder        {}", status(responder_ok));
+    println!("  10. Watchdog (cron)  {}", status(watchdog_ok));
     println!();
     print!("Enter number (or q to quit): ");
     std::io::stdout().flush()?;
@@ -2285,6 +2384,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         "7" => cmd_configure_geoip(cli),
         "8" => cmd_configure_fail2ban(cli),
         "9" => cmd_configure_responder(cli, false, false, None),
+        "10" => cmd_configure_watchdog(cli, 10),
         "q" | "Q" | "" => {
             println!("Tip: run 'innerwarden configure <name>' to jump directly to any integration.");
             Ok(())
@@ -3216,6 +3316,85 @@ fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// innerwarden configure watchdog
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
+    if std::env::consts::OS == "macos" {
+        println!("On macOS, use a launchd plist instead of cron.");
+        println!("Create /Library/LaunchDaemons/com.innerwarden.watchdog.plist with an interval of {}s.", interval_mins * 60);
+        println!("Or run: innerwarden watchdog --notify (manually, or via a scheduled job).");
+        return Ok(());
+    }
+
+    // Build cron line
+    let bin = which_bin("innerwarden")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "/usr/local/bin/innerwarden".to_string());
+    let cron_line = format!("*/{interval_mins} * * * * {bin} watchdog --notify");
+
+    if cli.dry_run {
+        println!("[dry-run] would add to crontab:");
+        println!("  {cron_line}");
+        return Ok(());
+    }
+
+    // Read current crontab
+    let current = std::process::Command::new("crontab")
+        .arg("-l")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // Check if already installed
+    if current.contains("innerwarden watchdog") {
+        println!("Watchdog cron is already installed:");
+        for line in current.lines().filter(|l| l.contains("innerwarden watchdog")) {
+            println!("  {line}");
+        }
+        println!();
+        println!("To update the interval, remove it first with 'crontab -e' and re-run.");
+        return Ok(());
+    }
+
+    // Append new line and write back
+    let new_crontab = if current.trim().is_empty() {
+        format!("{cron_line}\n")
+    } else {
+        let trimmed = current.trim_end();
+        format!("{trimmed}\n{cron_line}\n")
+    };
+
+    let mut child = std::process::Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to run crontab — is it installed?")?;
+    if let Some(stdin) = child.stdin.take() {
+        use std::io::Write;
+        let mut stdin = stdin;
+        stdin.write_all(new_crontab.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("crontab returned non-zero exit code");
+    }
+
+    println!("  [ok] cron entry added");
+    println!();
+    println!("Watchdog configured — checks every {interval_mins} minute(s).");
+    println!("If the agent stops responding, you'll get a Telegram alert.");
+    println!();
+    println!("Cron entry:");
+    println!("  {cron_line}");
+    println!();
+    println!("To remove:  crontab -e  (delete the innerwarden watchdog line)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Shared restart helper
 // ---------------------------------------------------------------------------
 
@@ -3755,6 +3934,338 @@ fn maybe_send_watchdog_alert(cli: &Cli, message: &str) {
                 .send_string(&body.to_string());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden incidents
+// ---------------------------------------------------------------------------
+
+fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -> Result<()> {
+    // Resolve data_dir from agent.toml if using default
+    let effective_dir = if data_dir == Path::new("/var/lib/innerwarden") {
+        std::fs::read_to_string(&cli.agent_config)
+            .ok()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|v| {
+                v.get("output")
+                    .and_then(|o| o.get("data_dir"))
+                    .and_then(|d| d.as_str())
+                    .map(|s| PathBuf::from(s))
+            })
+            .unwrap_or_else(|| data_dir.to_path_buf())
+    } else {
+        data_dir.to_path_buf()
+    };
+
+    let min_rank = severity_rank(severity_filter);
+
+    // Collect dates to scan
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut dates = Vec::new();
+    for i in 0..days {
+        let secs = now_secs.saturating_sub(i * 86400);
+        dates.push(epoch_secs_to_date(secs));
+    }
+
+    let mut total = 0usize;
+    for date in &dates {
+        let path = effective_dir.join(format!("incidents-{date}.jsonl"));
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.is_empty() {
+            continue;
+        }
+
+        println!("── {date} ─────────────────────────────────────────────");
+
+        // Print in reverse (newest last, most scannable)
+        for line in &lines {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let sev = v["severity"].as_str().unwrap_or("Info");
+            if severity_rank(sev) < min_rank {
+                continue;
+            }
+            let title = v["title"].as_str().unwrap_or("Unknown threat");
+            let ts = v["ts"].as_str().unwrap_or("");
+            let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
+            let ip = v["entities"]
+                .as_array()
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|e| e["type"].as_str() == Some("Ip"))
+                        .and_then(|e| e["value"].as_str())
+                })
+                .unwrap_or("");
+            let sev_tag = match sev {
+                "Critical" => "[CRITICAL]",
+                "High"     => "[HIGH]    ",
+                "Medium"   => "[MEDIUM]  ",
+                "Low"      => "[LOW]     ",
+                _          => "[INFO]    ",
+            };
+            let ip_part = if ip.is_empty() { String::new() } else { format!("  {ip}") };
+            println!("  {time}  {sev_tag}  {title}{ip_part}");
+            total += 1;
+        }
+        println!();
+    }
+
+    if total == 0 {
+        if severity_filter != "low" {
+            println!("No {} or higher incidents found in the last {} day(s).", severity_filter, days);
+        } else {
+            println!("No incidents found in the last {} day(s). Quiet!", days);
+        }
+    } else {
+        println!("{total} incident(s) shown.  Run 'innerwarden report' for the full narrative.");
+    }
+    Ok(())
+}
+
+fn severity_rank(sev: &str) -> u8 {
+    match sev.to_lowercase().as_str() {
+        "critical" => 5,
+        "high"     => 4,
+        "medium"   => 3,
+        "low"      => 2,
+        _          => 1,
+    }
+}
+
+fn epoch_secs_to_date(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden block / unblock
+// ---------------------------------------------------------------------------
+
+fn cmd_block(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
+    // Basic IP validation
+    if !looks_like_ip(ip) {
+        anyhow::bail!("'{ip}' doesn't look like a valid IP address");
+    }
+
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    // Read configured block backend from agent.toml
+    let backend = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|v| {
+            v.get("responder")
+                .and_then(|r| r.get("block_backend"))
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "ufw".to_string());
+
+    println!("Blocking {ip} via {backend}...");
+
+    if cli.dry_run {
+        println!("  [dry-run] would run block command for {ip}");
+        println!("  [dry-run] would record in {}/decisions-*.jsonl", effective_dir.display());
+        return Ok(());
+    }
+
+    // Execute the block
+    let blocked = match backend.as_str() {
+        "iptables" => {
+            std::process::Command::new("sudo")
+                .args(["iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        "nftables" => {
+            std::process::Command::new("sudo")
+                .args(["nft", "add", "element", "ip", "filter", "innerwarden-blocked", &format!("{{ {ip} }}")])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        "pf" => {
+            std::process::Command::new("sudo")
+                .args(["pfctl", "-t", "innerwarden-blocked", "-T", "add", ip])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        _ => {
+            // ufw (default)
+            std::process::Command::new("sudo")
+                .args(["ufw", "deny", "from", ip])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    };
+
+    if !blocked {
+        anyhow::bail!("block command failed — check sudo permissions (run: innerwarden doctor)");
+    }
+    println!("  [ok] {ip} blocked via {backend}");
+
+    // Write audit trail
+    write_manual_decision(&effective_dir, ip, "block_ip", reason, "operator:cli")?;
+    println!("  [ok] recorded in decisions log");
+
+    println!();
+    println!("{ip} is now blocked. To reverse: innerwarden unblock {ip} --reason \"...\"");
+    Ok(())
+}
+
+fn cmd_unblock(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
+    if !looks_like_ip(ip) {
+        anyhow::bail!("'{ip}' doesn't look like a valid IP address");
+    }
+
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    let backend = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|v| {
+            v.get("responder")
+                .and_then(|r| r.get("block_backend"))
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "ufw".to_string());
+
+    println!("Unblocking {ip} via {backend}...");
+
+    if cli.dry_run {
+        println!("  [dry-run] would remove block for {ip}");
+        println!("  [dry-run] would record in {}/decisions-*.jsonl", effective_dir.display());
+        return Ok(());
+    }
+
+    let unblocked = match backend.as_str() {
+        "iptables" => {
+            std::process::Command::new("sudo")
+                .args(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        "nftables" => {
+            std::process::Command::new("sudo")
+                .args(["nft", "delete", "element", "ip", "filter", "innerwarden-blocked", &format!("{{ {ip} }}")])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        "pf" => {
+            std::process::Command::new("sudo")
+                .args(["pfctl", "-t", "innerwarden-blocked", "-T", "delete", ip])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        _ => {
+            // ufw: delete the deny rule
+            std::process::Command::new("sudo")
+                .args(["ufw", "delete", "deny", "from", ip])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    };
+
+    if !unblocked {
+        println!("  Warning: unblock command may have failed (rule may not exist).");
+        println!("  Check manually: sudo ufw status | grep {ip}");
+    } else {
+        println!("  [ok] {ip} unblocked via {backend}");
+    }
+
+    write_manual_decision(&effective_dir, ip, "unblock_ip", reason, "operator:cli")?;
+    println!("  [ok] recorded in decisions log");
+
+    println!();
+    println!("{ip} is now unblocked.");
+    Ok(())
+}
+
+fn looks_like_ip(s: &str) -> bool {
+    // Accept IPv4 (digits and dots) or IPv6 (hex, colons, optional /)
+    let s = s.split('/').next().unwrap_or(s); // strip CIDR
+    let v4 = s.split('.').count() == 4 && s.split('.').all(|p| p.parse::<u8>().is_ok());
+    let v6 = s.contains(':') && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
+    v4 || v6
+}
+
+fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {
+    if data_dir == Path::new("/var/lib/innerwarden") {
+        std::fs::read_to_string(&cli.agent_config)
+            .ok()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|v| {
+                v.get("output")
+                    .and_then(|o| o.get("data_dir"))
+                    .and_then(|d| d.as_str())
+                    .map(|s| PathBuf::from(s))
+            })
+            .unwrap_or_else(|| data_dir.to_path_buf())
+    } else {
+        data_dir.to_path_buf()
+    }
+}
+
+fn write_manual_decision(
+    data_dir: &Path,
+    ip: &str,
+    action: &str,
+    reason: &str,
+    provider: &str,
+) -> Result<()> {
+    let today = epoch_secs_to_date(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+    let path = data_dir.join(format!("decisions-{today}.jsonl"));
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let entry = serde_json::json!({
+        "ts": now_iso,
+        "action": action,
+        "target_ip": ip,
+        "reason": reason,
+        "ai_provider": provider,
+        "confidence": 1.0,
+        "executed": true,
+        "dry_run": false,
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    use std::io::Write;
+    writeln!(file, "{}", entry)?;
+    Ok(())
 }
 
 // C.4 — Doctor

@@ -839,6 +839,11 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **doctor — Agent health:** ✅ nova seção verifica mtime do `telemetry-YYYY-MM-DD.jsonl` do dia; warn se > 5 min sem escrita; sugestão de `journalctl` para diagnóstico
 - **Telegram — resumo diário:** ✅ `TelegramConfig.daily_summary_hour: Option<u8>`; quando configurado, o agent envia o resumo Markdown via Telegram no horário local definido (máx 1x por dia); método `TelegramClient::send_text_message()` para mensagens HTML genéricas
 - **Dashboard `/api/quickwins`:** ✅ retorna sugestões acionáveis — lê incidentes High/Critical dos últimos 2 dias, cruza com decisões de bloqueio existentes, retorna IPs não tratados com ação sugerida e comando de ativação
+- **`innerwarden incidents`:** ✅ lista incidentes recentes no terminal com severidade, IP, título e hora; `--days N` para histórico; `--severity high` para filtrar; helpers `severity_rank()` + `epoch_secs_to_date()` (puro stdlib, sem chrono)
+- **`innerwarden block <ip> --reason`:** ✅ bloqueia IP manualmente via backend configurado (ufw/iptables/nftables/pf); registra em `decisions-*.jsonl` com `ai_provider: "operator:cli"`; `--dry-run` simulado
+- **`innerwarden unblock <ip> --reason`:** ✅ remove bloqueio manual; registra unblock no audit trail; avisa se regra não existia
+- **`innerwarden configure watchdog`:** ✅ adiciona entrada cron `*/N * * * * innerwarden watchdog --notify` automaticamente via `crontab -`; detecta se já instalado; instrução alternativa para macOS launchd; disponível no menu interativo do `innerwarden configure`
+- **helpers compartilhados em ctl:** `looks_like_ip()`, `resolve_data_dir()`, `write_manual_decision()`, `epoch_secs_to_date()`
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)
@@ -846,6 +851,7 @@ Próximas direções:
 - **`innerwarden module search`:** ✅ registry central em `registry.toml`; `search <termo>` filtra por nome/descrição/tags; `install <name>` resolve short names via registry
 - **`innerwarden scan`:** ✅ probe automático (sshd, docker, nginx, fail2ban, falco, suricata, osquery, wazuh, crowdsec, firewall, auditd, log files, OS); score por módulo (Essential/Recommended/Optional/NotAvailable); output formatado com estrelas + razão contextual + comando de ativação; Q&A interativo (número ou nome → exibe README do módulo); fail-silent em todos os probes (sem root); 7 testes
 - **Fase D11** — notificações por browser (Web Notifications API) quando o dashboard está em background
+- **Email notifications (planned):** SMTP direto (sendmail / relay externo) para alertas e digest diário; `innerwarden configure email` com wizard; alcança usuários sem Telegram/Slack
 - **Windows (v0.3.0 planned):** `sysmon_evtx` collector + `windows_event_log` collector + `block-ip-netsh` skill + `chocolatey`/`winget` install recipe. Tracked via platform-support issues.
 
 Referência do roadmap: `ROADMAP.md`
