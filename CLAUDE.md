@@ -133,6 +133,7 @@ crates/
       sudoers.rs           — SudoersDropIn: write + visudo validation + install
       systemd.rs           — restart_service / is_service_active
       capabilities/
+        ai.rs                 — enable/disable AI analysis (provider=openai|anthropic|ollama + model + base_url)
         block_ip.rs           — enable/disable block-ip (ufw|iptables|nftables)
         sudo_protection.rs    — enable/disable sudo-protection (detector + skill)
         shell_audit.rs        — enable/disable shell-audit (privacy gate obrigatório)
@@ -258,6 +259,11 @@ make build-ctl        # só o ctl (innerwarden binary)
 innerwarden list                    # lista capabilities com status atual
 innerwarden status                  # overview global: serviços + capabilities + módulos
 innerwarden status block-ip         # status de uma capability específica
+innerwarden enable ai                # ativa AI analysis (openai por default)
+innerwarden enable ai --param provider=ollama --param model=llama3.2  # Ollama local
+innerwarden enable ai --param provider=anthropic  # Anthropic (requer ANTHROPIC_API_KEY)
+innerwarden enable ai --param provider=ollama --param base_url=http://remote:11434
+innerwarden disable ai              # desativa AI (preserva provider/model no config)
 innerwarden enable block-ip         # ativa block-ip (ufw por default)
 innerwarden enable block-ip --param backend=iptables  # backend alternativo
 innerwarden enable sudo-protection  # ativa detector sudo_abuse + skill
