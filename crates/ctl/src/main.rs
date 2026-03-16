@@ -1206,6 +1206,9 @@ fn cmd_enable(
     params: HashMap<String, String>,
     yes: bool,
 ) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
     let opts = make_opts(cli, params, yes);
 
@@ -1651,6 +1654,9 @@ fn apply_module_enable(
 }
 
 fn cmd_disable(cli: &Cli, registry: &CapabilityRegistry, id: &str, yes: bool) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
     let opts = make_opts(cli, HashMap::new(), yes);
 
@@ -2926,6 +2932,9 @@ fn cmd_configure_ai(
     model: Option<&str>,
     base_url: Option<&str>,
 ) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let (default_model, key_var): (&str, Option<&str>) = match provider {
         "openai" => ("gpt-4o-mini", Some("OPENAI_API_KEY")),
         "anthropic" => ("claude-haiku-4-5-20251001", Some("ANTHROPIC_API_KEY")),
@@ -3012,6 +3021,9 @@ fn cmd_configure_responder(
     disable: bool,
     dry_run_flag: Option<bool>,
 ) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     // Interactive mode when called with no flags
     if !enable && !disable && dry_run_flag.is_none() {
         return cmd_configure_responder_interactive(cli);
@@ -3153,6 +3165,9 @@ fn cmd_configure_telegram(
     chat_id_arg: Option<&str>,
     no_test: bool,
 ) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let env_file = cli
         .agent_config
         .parent()
@@ -3211,14 +3226,23 @@ fn cmd_configure_telegram(
                 }
             }
             None => {
-                println!("\nStep 2 — Get your chat ID");
-                println!("  Option A (easiest):  send any message to your new bot, then re-run");
-                println!("                       this command — it will detect it automatically.");
-                println!("  Option B (manual):   message @userinfobot on Telegram;");
-                println!("                       it replies with your numeric user ID.\n");
-                let c = prompt("Chat ID (numeric)")?;
+                println!("\nStep 2 — Find your chat ID\n");
+                println!("  Auto-detect (easiest):");
+                println!("    Open Telegram and send any message to your new bot.");
+                println!(
+                    "    Then re-run this command — your chat ID will be detected automatically."
+                );
+                println!();
+                println!("  Or get it manually:");
+                println!(
+                    "    Message @userinfobot on Telegram — it replies with your numeric user ID."
+                );
+                println!();
+                let c = prompt("Chat ID (numeric, e.g. 123456789)")?;
                 if c.is_empty() {
-                    anyhow::bail!("chat ID cannot be empty");
+                    anyhow::bail!(
+                        "chat ID cannot be empty.\nSend a message to your bot on Telegram first, then re-run this command."
+                    );
                 }
                 c
             }
@@ -3290,8 +3314,15 @@ fn cmd_configure_telegram(
     }
 
     println!();
-    println!("Telegram configured. You'll receive alerts for High and Critical incidents.");
-    println!("Run 'innerwarden doctor' to validate the full setup.");
+    println!("Telegram is ready.");
+    println!();
+    println!("  Your bot sends alerts — it does not respond to general messages.");
+    println!("  Send /status to your bot to request a health check at any time.");
+    println!();
+    println!("Next steps:");
+    println!("  innerwarden status       — check services and active capabilities");
+    println!("  innerwarden doctor       — validate the full setup");
+    println!("  innerwarden test-alert   — send a test alert right now");
     Ok(())
 }
 
@@ -3315,7 +3346,7 @@ fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
     let url = format!("https://api.telegram.org/bot{token}/sendMessage");
     let body = serde_json::json!({
         "chat_id": chat_id,
-        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here for High and Critical threats.\n\nSend /status to your bot at any time to check the system.",
+        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here when High or Critical threats are detected on your server.\n\n<b>Note:</b> This bot sends notifications only — it does not respond to general messages. Use /status to request a health check.",
         "parse_mode": "HTML"
     });
     let resp = ureq::post(&url)
@@ -3342,6 +3373,9 @@ fn cmd_configure_slack(
     min_severity: &str,
     no_test: bool,
 ) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let env_file = cli
         .agent_config
         .parent()
@@ -3475,6 +3509,9 @@ fn cmd_configure_webhook(
     min_severity: &str,
     no_test: bool,
 ) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     // Validate severity
     if !matches!(min_severity, "low" | "medium" | "high" | "critical") {
         anyhow::bail!("min-severity must be one of: low, medium, high, critical");
@@ -3548,6 +3585,9 @@ fn send_webhook_test(url: &str) -> Result<u16> {
 // ---------------------------------------------------------------------------
 
 fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let env_file = cli
         .agent_config
         .parent()
@@ -3735,6 +3775,9 @@ fn which_bin(name: &str) -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let env_file = cli
         .agent_config
         .parent()
@@ -3790,6 +3833,9 @@ fn cmd_configure_abuseipdb(cli: &Cli, api_key_arg: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     if cli.dry_run {
         println!(
             "[dry-run] would set [geoip] enabled=true in {}",
@@ -3827,6 +3873,9 @@ fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     // Check fail2ban is installed
     let installed = std::process::Command::new("fail2ban-client")
         .arg("--version")
@@ -4000,6 +4049,9 @@ fn hostname() -> String {
 // ---------------------------------------------------------------------------
 
 fn cmd_ai_install(cli: &Cli, model: &str, api_key_arg: Option<&str>, yes: bool) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
     let is_macos = std::env::consts::OS == "macos";
 
     // Resolve API key: --api-key flag > OLLAMA_API_KEY env var > interactive prompt
@@ -5186,6 +5238,42 @@ fn looks_like_ip(s: &str) -> bool {
     let v4 = s.split('.').count() == 4 && s.split('.').all(|p| p.parse::<u8>().is_ok());
     let v6 = s.contains(':') && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
     v4 || v6
+}
+
+/// Check whether the current process can write to the InnerWarden config directory.
+/// If not, print a clear hint and exit — avoids failing mid-operation.
+fn require_sudo(cli: &Cli) {
+    let config_dir = cli
+        .agent_config
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/etc/innerwarden"));
+
+    // Try creating a temp file in the directory as the write test
+    let test_path = config_dir.join(".innerwarden-write-test");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&test_path)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_path);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!(
+                "Permission denied: cannot write to {}",
+                config_dir.display()
+            );
+            eprintln!();
+            // Reconstruct the original command to show the sudo hint
+            let args: Vec<String> = std::env::args().collect();
+            let cmd_args = args[1..].join(" ");
+            eprintln!("Run with sudo:");
+            eprintln!("  sudo innerwarden {cmd_args}");
+            std::process::exit(1);
+        }
+        Err(_) => {} // some other error; let the real operation surface it
+    }
 }
 
 fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {

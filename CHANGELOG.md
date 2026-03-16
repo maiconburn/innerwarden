@@ -11,6 +11,23 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.5] — 2026-03-16
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+**UX fixes**
+- `enable`, `disable`, and all `configure` sub-commands now detect missing write permissions early and print a clear `sudo innerwarden <args>` hint before any partial writes occur
+- Telegram wizard: removed "Option A / Option B" labels that appeared immediately before the Chat ID input prompt (users were typing "A" as the chat ID); instructions are now presented separately from the input
+- `configure telegram` success output now explains the bot is notification-only and does not respond to general messages; `/status` is the only command it handles
+- Test notification sent during setup clarifies notification-only behaviour
+- `configure telegram` completion shows explicit next steps: `status`, `doctor`, `test-alert`
+
+### Test coverage
+
+511 tests across three crates (185 sensor + 178 agent + 148 ctl).
+
+---
+
 ## [0.1.4] — 2026-03-16
 
 ### Sensor (`innerwarden-sensor`)
@@ -75,7 +92,7 @@ New built-in modules: `wazuh-integration`, `nginx-error-monitor`, `falco-integra
 
 ### Test coverage
 
-502 tests across three crates (185 sensor + 178 agent + 139 ctl).
+511 tests across three crates (185 sensor + 178 agent + 148 ctl).
 
 ---
 
