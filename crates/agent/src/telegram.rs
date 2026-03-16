@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use innerwarden_core::incident::Incident;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -284,6 +284,9 @@ impl TelegramClient {
 
             match self.get_updates(offset).await {
                 Ok(updates) => {
+                    if !updates.is_empty() {
+                        info!(count = updates.len(), offset, "Telegram: received updates");
+                    }
                     for update in updates {
                         offset = update.update_id + 1;
 
@@ -314,11 +317,12 @@ impl TelegramClient {
                                     .as_ref()
                                     .and_then(|f| f.first_name.clone())
                                     .unwrap_or_default();
+                                info!(text = %text, operator = %operator, "Telegram: text message received");
 
                                 let incident_id = if text == "/status"
                                     || text.starts_with("/status ")
                                 {
-                                    debug!("Telegram /status command received");
+                                    info!("Telegram: routing /status command");
                                     "__status__".to_string()
                                 } else if text == "/help" || text.starts_with("/help ") {
                                     "__help__".to_string()
@@ -388,8 +392,15 @@ impl TelegramClient {
             return Ok(vec![]);
         }
 
-        let updates: Vec<Update> =
-            serde_json::from_value(resp["result"].clone()).unwrap_or_default();
+        let raw_result = resp["result"].clone();
+        let result_count = raw_result.as_array().map(|a| a.len()).unwrap_or(0);
+        let updates: Vec<Update> = match serde_json::from_value(raw_result) {
+            Ok(u) => u,
+            Err(e) => {
+                warn!(error = %e, raw_count = result_count, "Telegram: failed to deserialize updates");
+                vec![]
+            }
+        };
         Ok(updates)
     }
 

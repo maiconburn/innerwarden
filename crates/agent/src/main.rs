@@ -950,6 +950,28 @@ async fn process_incidents(
         }
     };
 
+    // Drain any pending T.2/T.3 approval results from the Telegram polling task.
+    // This MUST run before the early-return below, otherwise bot commands
+    // (/status, /menu, etc.) would never be processed when there are no new incidents.
+    let pending_approvals: Vec<telegram::ApprovalResult> = {
+        let mut results = Vec::new();
+        if let Some(rx) = state.approval_rx.as_mut() {
+            while let Ok(r) = rx.try_recv() {
+                results.push(r);
+            }
+        }
+        results
+    };
+    for approval in pending_approvals {
+        process_telegram_approval(approval, data_dir, cfg, state).await;
+    }
+
+    // Expire stale pending confirmations
+    let now = chrono::Utc::now();
+    state
+        .pending_confirmations
+        .retain(|_, (pending, _, _)| pending.expires_at > now);
+
     if new_incidents.entries.is_empty() {
         return 0;
     }
@@ -977,26 +999,6 @@ async fn process_incidents(
     } else {
         None
     };
-
-    // Drain any pending T.2 approval results from the Telegram polling task
-    let pending_approvals: Vec<telegram::ApprovalResult> = {
-        let mut results = Vec::new();
-        if let Some(rx) = state.approval_rx.as_mut() {
-            while let Ok(r) = rx.try_recv() {
-                results.push(r);
-            }
-        }
-        results
-    };
-    for approval in pending_approvals {
-        process_telegram_approval(approval, data_dir, cfg, state).await;
-    }
-
-    // Expire stale pending confirmations
-    let now = chrono::Utc::now();
-    state
-        .pending_confirmations
-        .retain(|_, (pending, _, _)| pending.expires_at > now);
 
     // Circuit breaker: if a previous tick tripped the breaker, check if cooldown expired
     if let Some(until) = state.circuit_breaker_until {
