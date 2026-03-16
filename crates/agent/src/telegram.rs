@@ -130,23 +130,37 @@ impl TelegramClient {
         let entity_line = entity_summary(incident);
         let pct = (confidence * 100.0) as u32;
 
+        let confidence_phrase = match pct {
+            90..=100 => "I'm very confident about this",
+            75..=89 => "I'm fairly confident about this",
+            60..=74 => "I think this is the right call",
+            _ => "not 100% sure, but leaning toward this",
+        };
+        let action_plain = plain_action(action_description);
+        let expires_min = expires_secs / 60;
+        let expires_label = if expires_min >= 1 {
+            format!("{expires_min} min")
+        } else {
+            format!("{expires_secs}s")
+        };
+
         let text = format!(
             "{source_icon} {sev} — <b>{host}</b>\n\
              <b>{title}</b>\n\
              {entity_line}\n\
              \n\
-             🤖 I'm {pct}% sure about this. Ready to pull the trigger:\n\
-             <code>{action}</code>\n\
+             🤖 {confidence_phrase}. Suggested action:\n\
+             <b>{action_plain}</b>\n\
              \n\
-             Your call. ⏱ {expires_secs}s to decide — then I stand down.",
+             Your call — {expires_label} to decide.",
             host = escape_html(&incident.host),
             title = escape_html(&incident.title),
-            action = escape_html(action_description),
+            action_plain = escape_html(&action_plain),
             entity_line = entity_line,
             sev = sev,
             source_icon = source_icon,
-            pct = pct,
-            expires_secs = expires_secs,
+            confidence_phrase = confidence_phrase,
+            expires_label = expires_label,
         );
 
         let id = &incident.incident_id;
@@ -469,6 +483,36 @@ fn incident_quip(incident: &Incident) -> &'static str {
         return "🌐 Network IDS flagged it. Dirty traffic incoming.";
     }
     "👀 Something's off. Eyes on this one."
+}
+
+/// Converts a technical action description into plain language.
+fn plain_action(action: &str) -> String {
+    let a = action.trim();
+    // block-ip variants
+    if a.contains("ufw deny from") || a.contains("iptables") || a.contains("nftables") || a.contains("pfctl") {
+        let ip = a.split_whitespace().last().unwrap_or("IP");
+        return format!("Block {ip} at the firewall");
+    }
+    if a.contains("block") && a.contains("ip") {
+        let ip = a.split_whitespace().last().unwrap_or("IP");
+        return format!("Block {ip} at the firewall");
+    }
+    // suspend-user-sudo
+    if a.contains("sudoers") || a.contains("suspend") {
+        let user = a.split_whitespace().last().unwrap_or("user");
+        return format!("Suspend sudo access for {user}");
+    }
+    // monitor
+    if a.contains("tcpdump") || a.contains("monitor") || a.contains("pcap") {
+        let ip = a.split_whitespace().last().unwrap_or("IP");
+        return format!("Capture traffic from {ip} for analysis");
+    }
+    // honeypot
+    if a.contains("honeypot") {
+        return "Redirect attacker to honeypot".to_string();
+    }
+    // fallback: show as-is but clean up
+    a.to_string()
 }
 
 fn severity_label(incident: &Incident) -> &'static str {

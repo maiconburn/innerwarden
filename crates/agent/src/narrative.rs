@@ -26,33 +26,54 @@ pub fn generate(
 
     // Header
     out.push_str(&format!("# Inner Warden — {date}\n\n"));
-    out.push_str(&format!(
-        "**Host:** {host} | **Eventos:** {} | **Incidentes:** {}\n\n",
-        events.len(),
-        incidents.len()
-    ));
+
+    // TL;DR summary at the top
+    let high_plus = incidents
+        .iter()
+        .filter(|i| matches!(i.severity, Severity::High | Severity::Critical))
+        .count();
+    let tldr = if incidents.is_empty() {
+        format!("✅ Quiet day on **{host}** — no threats detected out of {} logged events.", events.len())
+    } else if high_plus == 0 {
+        format!(
+            "🟡 **{host}** had {} low-severity alert{} today across {} logged events. Nothing critical.",
+            incidents.len(),
+            if incidents.len() == 1 { "" } else { "s" },
+            events.len()
+        )
+    } else {
+        format!(
+            "🔴 **{host}** had {} high-priority alert{} today ({} total, {} logged events). Review below.",
+            high_plus,
+            if high_plus == 1 { "" } else { "s" },
+            incidents.len(),
+            events.len()
+        )
+    };
+    out.push_str(&format!("{tldr}\n\n"));
+    out.push_str("---\n\n");
 
     // Incidents section
     if incidents.is_empty() {
-        out.push_str("✅ Nenhum incidente detectado.\n\n");
+        out.push_str("## Threats\n\nNo threats detected today.\n\n");
     } else {
-        out.push_str("## Incidentes\n\n");
-        // Sort by severity (highest first)
+        out.push_str("## Threats\n\n");
         let mut sorted_incidents: Vec<&Incident> = incidents.iter().collect();
         sorted_incidents
             .sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
 
         for inc in &sorted_incidents {
             let icon = severity_icon(&inc.severity);
-            let sev = format!("{:?}", inc.severity).to_uppercase();
+            let sev_label = severity_plain(&inc.severity);
             let time = inc.ts.format("%H:%M UTC").to_string();
 
-            out.push_str(&format!("### {icon} {} ({})\n\n", inc.title, sev));
-            out.push_str(&format!("- **Quando:** {time}\n"));
-            out.push_str(&format!("- **Resumo:** {}\n", inc.summary));
+            out.push_str(&format!("### {icon} {}\n\n", inc.title));
+            out.push_str(&format!("- **Severity:** {sev_label}\n"));
+            out.push_str(&format!("- **When:** {time}\n"));
+            out.push_str(&format!("- **What happened:** {}\n", inc.summary));
 
             if !inc.recommended_checks.is_empty() {
-                out.push_str("- **Verificar:**\n");
+                out.push_str("- **What to check:**\n");
                 for check in &inc.recommended_checks {
                     out.push_str(&format!("  - {check}\n"));
                 }
@@ -61,7 +82,7 @@ pub fn generate(
         }
     }
 
-    // Correlated clusters (narrative-ready grouping)
+    // Related activity (clusters)
     if incidents.len() > 1 {
         let clusters: Vec<correlation::IncidentCluster> =
             correlation::build_clusters(incidents, correlation_window_secs)
@@ -70,19 +91,23 @@ pub fn generate(
                 .collect();
 
         if !clusters.is_empty() {
-            out.push_str("## Clusters correlacionados\n\n");
+            out.push_str("## Related activity\n\n");
             for cluster in clusters {
-                let kinds = cluster.detector_kinds.join(", ");
+                let kinds: Vec<String> = cluster
+                    .detector_kinds
+                    .iter()
+                    .map(|k| human_detector_name(k))
+                    .collect();
                 let window = format!(
-                    "{} -> {} UTC",
+                    "{} – {} UTC",
                     cluster.start_ts.format("%H:%M"),
                     cluster.end_ts.format("%H:%M")
                 );
                 out.push_str(&format!(
-                    "- **{}** | {} incidentes | detectores: {} | janela: {}\n",
+                    "- **{}** triggered {} alerts ({}) between {}\n",
                     format_pivot(&cluster.pivot),
                     cluster.size(),
-                    kinds,
+                    kinds.join(", "),
                     window
                 ));
             }
@@ -90,11 +115,11 @@ pub fn generate(
         }
     }
 
-    // Events by kind
+    // Activity breakdown
     if !events.is_empty() {
-        out.push_str("## Eventos por tipo\n\n");
-        out.push_str("| Tipo | Total |\n");
-        out.push_str("|------|-------|\n");
+        out.push_str("## Activity breakdown\n\n");
+        out.push_str("| Activity | Count |\n");
+        out.push_str("|----------|-------|\n");
 
         let mut by_kind: HashMap<&str, usize> = HashMap::new();
         for ev in events {
@@ -103,7 +128,7 @@ pub fn generate(
         let mut kinds: Vec<(&&str, &usize)> = by_kind.iter().collect();
         kinds.sort_by(|a, b| b.1.cmp(a.1));
         for (kind, count) in &kinds {
-            out.push_str(&format!("| {kind} | {count} |\n"));
+            out.push_str(&format!("| {} | {count} |\n", human_event_kind(kind)));
         }
         out.push('\n');
     }
@@ -112,11 +137,11 @@ pub fn generate(
     let (ips, users) = collect_entities(events);
 
     if !ips.is_empty() || !users.is_empty() {
-        out.push_str("## Entidades notáveis\n\n");
+        out.push_str("## Most active\n\n");
         if !ips.is_empty() {
             let ip_list = top_n(&ips, 5)
                 .iter()
-                .map(|(v, c)| format!("{v} ({c} eventos)"))
+                .map(|(v, c)| format!("{v} ({c} events)"))
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push_str(&format!("**IPs:** {ip_list}\n\n"));
@@ -124,14 +149,67 @@ pub fn generate(
         if !users.is_empty() {
             let user_list = top_n(&users, 5)
                 .iter()
-                .map(|(v, c)| format!("{v} ({c} eventos)"))
+                .map(|(v, c)| format!("{v} ({c} events)"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            out.push_str(&format!("**Usuários:** {user_list}\n\n"));
+            out.push_str(&format!("**Users:** {user_list}\n\n"));
         }
     }
 
     out
+}
+
+/// Convert a technical detector/event kind into plain English.
+fn human_event_kind(kind: &str) -> &'static str {
+    match kind {
+        "ssh.login_failed" => "Failed SSH login",
+        "ssh.login_success" => "Successful SSH login",
+        "ssh.invalid_user" => "SSH login with unknown username",
+        "ssh.disconnected" => "SSH disconnection",
+        "sudo.command" => "Sudo command executed",
+        "shell.command_exec" => "Shell command executed",
+        "network.connection_blocked" => "Blocked connection attempt",
+        "http.request" => "HTTP request",
+        "http.error" => "HTTP error",
+        "http.scanner_ua" => "Scanner detected (by User-Agent)",
+        "file.changed" => "File modification",
+        "ssh.authorized_keys_changed" => "SSH authorized_keys modified",
+        "cron.tampering" => "Cron job modification",
+        "container.start" => "Container started",
+        "container.stop" => "Container stopped",
+        "container.die" => "Container crashed",
+        "container.privileged" => "Privileged container started",
+        "container.sock_mount" => "Container with Docker socket access",
+        "container.dangerous_cap" => "Container with dangerous capabilities",
+        "wazuh.syslog" | "wazuh.web" | "wazuh.ids" => "Wazuh alert",
+        "falco.syscall" | "falco.k8s_audit" => "Falco runtime alert",
+        _ => "Unknown event",
+    }
+}
+
+/// Convert a detector kind into plain English for narratives.
+fn human_detector_name(detector: &str) -> String {
+    match detector {
+        "ssh_bruteforce" => "SSH brute force".to_string(),
+        "credential_stuffing" => "credential stuffing".to_string(),
+        "port_scan" => "port scan".to_string(),
+        "sudo_abuse" => "sudo abuse".to_string(),
+        "web_scan" => "web scan".to_string(),
+        "search_abuse" => "search/API abuse".to_string(),
+        "user_agent_scanner" => "scanner detection".to_string(),
+        "execution_guard" => "suspicious command execution".to_string(),
+        _ => detector.replace('_', " "),
+    }
+}
+
+fn severity_plain(severity: &Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "Critical — immediate attention needed",
+        Severity::High => "High",
+        Severity::Medium => "Medium",
+        Severity::Low => "Low",
+        _ => "Informational",
+    }
 }
 
 /// Write the summary to `data_dir/summary-YYYY-MM-DD.md` (overwrites if exists).
@@ -279,12 +357,10 @@ mod tests {
         let md = generate("2026-03-12", "my-server", &events, &incidents, 300);
 
         assert!(md.contains("# Inner Warden — 2026-03-12"));
-        assert!(md.contains("**Host:** my-server"));
-        assert!(md.contains("**Eventos:** 3"));
-        assert!(md.contains("**Incidentes:** 1"));
+        assert!(md.contains("my-server"));
         assert!(md.contains("SSH Brute Force"));
-        assert!(md.contains("HIGH"));
-        assert!(md.contains("ssh.login_failed"));
+        assert!(md.contains("High"));
+        assert!(md.contains("Failed SSH login"));
         assert!(md.contains("1.2.3.4"));
     }
 
@@ -292,8 +368,8 @@ mod tests {
     fn generates_markdown_no_incidents() {
         let events = vec![make_event("sudo.command", Severity::Info, None)];
         let md = generate("2026-03-12", "host", &events, &[], 300);
-        assert!(md.contains("Nenhum incidente"));
-        assert!(md.contains("sudo.command"));
+        assert!(md.contains("No threats detected today"));
+        assert!(md.contains("Sudo command executed"));
     }
 
     #[test]
@@ -347,9 +423,9 @@ mod tests {
         ];
 
         let md = generate("2026-03-12", "host", &[], &incidents, 120);
-        assert!(md.contains("Clusters correlacionados"));
+        assert!(md.contains("Related activity"));
         assert!(md.contains("IP 1.2.3.4"));
-        assert!(md.contains("port_scan"));
-        assert!(md.contains("ssh_bruteforce"));
+        assert!(md.contains("port scan"));
+        assert!(md.contains("SSH brute force"));
     }
 }

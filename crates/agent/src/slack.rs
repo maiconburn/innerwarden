@@ -103,10 +103,10 @@ impl SlackClient {
                 "type": "context",
                 "elements": [{
                     "type": "mrkdwn",
-                    "text": format!("Host: `{host}`  |  {entity_line}  |  `{id}`",
+                    "text": format!("🖥 `{host}`  {entity_part}  🕐 {time}",
                         host = &incident.host,
-                        entity_line = if entity_line.is_empty() { "—".to_string() } else { entity_line },
-                        id = &incident.incident_id,
+                        entity_part = if entity_line.is_empty() { String::new() } else { format!(" |  {entity_line}") },
+                        time = incident.ts.format("%H:%M UTC"),
                     )
                 }]
             }),
