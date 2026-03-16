@@ -25,4 +25,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["clock"], default-features = false }
 sha2 = { version = "0.10", features = ["std"] }
-digest = "0.10"
+digest = "0.11"
