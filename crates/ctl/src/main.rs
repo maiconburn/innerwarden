@@ -2595,13 +2595,15 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         println!("Step 1/4 — AI provider   ✅ already configured\n");
     } else {
         println!("Step 1/4 — AI provider\n");
-        println!("InnerWarden uses AI to analyse threats and decide how to respond.");
-        println!("Options:");
-        println!("  1. Ollama (recommended) — free, no credit card, runs in the cloud");
-        println!("  2. OpenAI               — requires API key (paid)");
-        println!("  3. Anthropic            — requires API key (paid)");
+        println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
+        println!("All three providers work well — choose based on what you already have:\n");
+        println!(
+            "  1. Ollama    — free tier available (Ollama cloud), no credit card for basic models"
+        );
+        println!("  2. OpenAI    — gpt-4o-mini, pay-as-you-go (very low cost for this workload)");
+        println!("  3. Anthropic — claude-haiku, pay-as-you-go (very low cost for this workload)");
         println!("  s. Skip for now\n");
-        let choice = prompt("Choose [1/2/3/s]")?;
+        let choice = prompt("Choose provider [1/2/3/s]")?;
         println!();
         match choice.trim().to_lowercase().as_str() {
             "1" | "" => {
@@ -2611,13 +2613,29 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                 }
             }
             "2" => {
-                if let Err(e) = cmd_configure_ai(cli, "openai", None, None, None) {
-                    println!("  Skipped AI setup: {e:#}");
+                println!("OpenAI — enter your API key (get one at platform.openai.com)");
+                match prompt("OPENAI_API_KEY") {
+                    Ok(k) if !k.is_empty() => {
+                        if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
+                            println!("  Could not configure OpenAI: {e:#}");
+                        }
+                    }
+                    _ => println!(
+                        "  Skipped. Run later:  innerwarden configure ai openai --key <key>"
+                    ),
                 }
             }
             "3" => {
-                if let Err(e) = cmd_configure_ai(cli, "anthropic", None, None, None) {
-                    println!("  Skipped AI setup: {e:#}");
+                println!("Anthropic — enter your API key (get one at console.anthropic.com)");
+                match prompt("ANTHROPIC_API_KEY") {
+                    Ok(k) if !k.is_empty() => {
+                        if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
+                            println!("  Could not configure Anthropic: {e:#}");
+                        }
+                    }
+                    _ => println!(
+                        "  Skipped. Run later:  innerwarden configure ai anthropic --key <key>"
+                    ),
                 }
             }
             _ => println!("  Skipped. Run later:  innerwarden configure ai"),
@@ -2902,7 +2920,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
 
     println!();
     match choice {
-        "1" => cmd_configure_ai(cli, "openai", None, None, None),
+        "1" => cmd_configure_ai_interactive(cli),
         "2" => cmd_configure_telegram(cli, None, None, false),
         "3" => cmd_configure_slack(cli, None, "high", false),
         "4" => cmd_configure_webhook(cli, None, "high", false),
@@ -2920,6 +2938,47 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         }
         _ => {
             println!("Invalid choice. Run 'innerwarden configure' again.");
+            Ok(())
+        }
+    }
+}
+
+/// Interactive AI provider picker — shown when running `innerwarden configure` → 1 (AI)
+/// or from the setup wizard. Lets the user choose a provider and enter their key.
+fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
+    println!("InnerWarden — AI provider setup\n");
+    println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
+    println!("All three providers work well — choose based on what you already have:\n");
+    println!(
+        "  1. Ollama    — free tier available (Ollama cloud), no credit card for basic models"
+    );
+    println!("  2. OpenAI    — gpt-4o-mini, pay-as-you-go (very low cost for this workload)");
+    println!("  3. Anthropic — claude-haiku, pay-as-you-go (very low cost for this workload)");
+    println!("  s. Skip for now\n");
+
+    let choice = prompt("Choose provider [1/2/3/s]")?;
+    println!();
+
+    match choice.trim().to_lowercase().as_str() {
+        "1" | "" => cmd_ai_install(cli, "qwen3-coder:480b", None, false),
+        "2" => {
+            println!("OpenAI — enter your API key (get one at platform.openai.com)");
+            let key = prompt("OPENAI_API_KEY")?;
+            if key.is_empty() {
+                anyhow::bail!("API key cannot be empty. Get one at platform.openai.com");
+            }
+            cmd_configure_ai(cli, "openai", Some(&key), None, None)
+        }
+        "3" => {
+            println!("Anthropic — enter your API key (get one at console.anthropic.com)");
+            let key = prompt("ANTHROPIC_API_KEY")?;
+            if key.is_empty() {
+                anyhow::bail!("API key cannot be empty. Get one at console.anthropic.com");
+            }
+            cmd_configure_ai(cli, "anthropic", Some(&key), None, None)
+        }
+        _ => {
+            println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
             Ok(())
         }
     }

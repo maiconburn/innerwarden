@@ -21,6 +21,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `configure telegram` success output now explains the bot is notification-only and does not respond to general messages; `/status` is the only command it handles
 - Test notification sent during setup clarifies notification-only behaviour
 - `configure telegram` completion shows explicit next steps: `status`, `doctor`, `test-alert`
+- AI provider picker: `innerwarden configure` (option 1) now shows an interactive sub-menu for all three providers instead of silently failing with no key; prompts for the API key inline for OpenAI and Anthropic
+- Setup wizard and configure menu now present all AI providers with balanced descriptions — no provider is labelled as the only recommended option; all costs and free tiers are described fairly
 
 ### Test coverage
 
