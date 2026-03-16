@@ -275,6 +275,22 @@ innerwarden doctor                  # diagnóstico completo com fix hints; exit 
 innerwarden upgrade                 # busca novo release no GitHub e instala atomicamente
 innerwarden upgrade --check         # só verifica se há update disponível, não instala
 
+# Notification setup (interactive wizards)
+innerwarden configure telegram                           # wizard: cria bot, detecta chat_id, testa, reinicia agent
+innerwarden configure telegram --token T --chat-id C    # não-interativo (CI/scripts)
+innerwarden configure slack                              # wizard: URL do webhook, testa, reinicia agent
+innerwarden configure slack --webhook-url URL --min-severity medium
+
+# AI provider setup
+innerwarden configure ai openai --key sk-...
+innerwarden configure ai anthropic --key sk-ant-...
+innerwarden configure ai ollama --model llama3.2
+
+# Responder (auto-execute decisions)
+innerwarden configure responder --enable
+innerwarden configure responder --enable --dry-run false  # ativar execução real
+innerwarden configure responder --disable
+
 # Module management
 innerwarden module validate ./modules/ssh-protection   # valida manifest, segurança, testes, docs
 innerwarden module install https://example.com/mod.tar.gz  # baixa, valida SHA-256, instala
@@ -792,6 +808,10 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **AbuseIPDB auto-block gate:** ✅ `abuseipdb.auto_block_threshold` (u8, 0=disabled); quando score ≥ threshold, block sem chamar AI; `ai_provider: "abuseipdb"` no audit trail
 - **AI circuit breaker:** ✅ `ai.circuit_breaker_threshold` + `circuit_breaker_cooldown_secs`; `AgentState.circuit_breaker_until`; suspende AI analysis quando volume de incidentes explode
 - **AI call rate limit:** ✅ `ai.max_ai_calls_per_tick` (default 5); conta `ai_calls_this_tick` no loop de incidentes; excesso desviado para próximo tick
+- **`innerwarden configure telegram`:** ✅ wizard interativo — instruções @BotFather, detecção automática de chat_id via `getUpdates`, prompt manual com fallback, validação de formato, envio de mensagem de teste, salva em `agent.env`, habilita `[telegram] enabled=true` no agent.toml, reinicia agent; flags `--token`/`--chat-id` para uso não-interativo; suporte a `--dry-run`
+- **`innerwarden configure slack`:** ✅ wizard interativo — instruções de criação de Incoming Webhook, validação do prefixo de URL, envio de mensagem de teste, salva em `agent.env`, habilita `[slack] enabled=true` + `min_severity` no agent.toml, reinicia agent; flag `--webhook-url` para uso não-interativo
+- **`innerwarden configure ai / responder`:** ✅ — subcomandos já existentes documentados em "Comandos essenciais"
+- **`serde_json` adicionado como dep explícita em `innerwarden-ctl`** (antes vinha transitivamente via ureq)
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)

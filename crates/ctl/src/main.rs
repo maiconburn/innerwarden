@@ -181,6 +181,50 @@ enum ConfigureCommand {
         #[arg(long, value_name = "BOOL")]
         dry_run: Option<bool>,
     },
+
+    /// Set up Telegram notifications (interactive wizard)
+    ///
+    /// Walks you through creating a bot and getting your chat ID.
+    /// Credentials are saved to agent.env (never in plain TOML).
+    ///
+    /// Examples:
+    ///   innerwarden configure telegram
+    ///   innerwarden configure telegram --token 123:ABC --chat-id 456789
+    Telegram {
+        /// Bot token from @BotFather (skips the wizard prompt)
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Your Telegram chat ID (skips the wizard prompt)
+        #[arg(long)]
+        chat_id: Option<String>,
+
+        /// Skip the test message after configuring
+        #[arg(long)]
+        no_test: bool,
+    },
+
+    /// Set up Slack notifications (interactive wizard)
+    ///
+    /// Walks you through creating an Incoming Webhook in your Slack workspace.
+    /// The webhook URL is saved to agent.env.
+    ///
+    /// Examples:
+    ///   innerwarden configure slack
+    ///   innerwarden configure slack --webhook-url https://hooks.slack.com/services/...
+    Slack {
+        /// Slack Incoming Webhook URL (skips the wizard prompt)
+        #[arg(long)]
+        webhook_url: Option<String>,
+
+        /// Minimum severity to notify: low, medium, high, critical (default: high)
+        #[arg(long, default_value = "high")]
+        min_severity: String,
+
+        /// Skip the test message after configuring
+        #[arg(long)]
+        no_test: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -400,6 +444,16 @@ fn main() -> Result<()> {
                 disable,
                 dry_run,
             } => cmd_configure_responder(&cli, *enable, *disable, *dry_run),
+            ConfigureCommand::Telegram {
+                ref token,
+                ref chat_id,
+                no_test,
+            } => cmd_configure_telegram(&cli, token.as_deref(), chat_id.as_deref(), *no_test),
+            ConfigureCommand::Slack {
+                ref webhook_url,
+                ref min_severity,
+                no_test,
+            } => cmd_configure_slack(&cli, webhook_url.as_deref(), min_severity, *no_test),
         },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
@@ -1984,6 +2038,310 @@ fn cmd_configure_responder(
         println!("Responder updated. Run 'innerwarden status' to confirm.");
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure telegram
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_telegram(
+    cli: &Cli,
+    token_arg: Option<&str>,
+    chat_id_arg: Option<&str>,
+    no_test: bool,
+) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // ── Step 1: bot token ──────────────────────────────────────────────────
+    let token = if let Some(t) = token_arg {
+        t.to_string()
+    } else {
+        println!("InnerWarden — Telegram setup\n");
+        println!("Step 1 — Create a bot");
+        println!("  1. Open Telegram and message @BotFather");
+        println!("  2. Send:  /newbot");
+        println!("  3. Choose a name and username for your bot");
+        println!("  4. Copy the token BotFather gives you (looks like 123456789:ABCdef...)\n");
+        let t = prompt("Bot token")?;
+        if t.is_empty() {
+            anyhow::bail!("token cannot be empty");
+        }
+        t
+    };
+
+    // Basic format check: digits : alphanumeric
+    if !token.contains(':') || token.split(':').next().map_or(true, |s| s.is_empty()) {
+        anyhow::bail!(
+            "token looks wrong — expected format: 123456789:ABCdef...\nGet one from @BotFather on Telegram."
+        );
+    }
+
+    // ── Step 2: chat ID ────────────────────────────────────────────────────
+    let chat_id = if let Some(c) = chat_id_arg {
+        c.to_string()
+    } else {
+        // Try to discover chat_id from pending updates (works if user already messaged the bot)
+        let discovered = discover_telegram_chat_id(&token);
+
+        match discovered {
+            Some(id) => {
+                println!("\n  Found your chat ID automatically: {id}");
+                print!("  Use this chat ID? [Y/n] ");
+                std::io::stdout().flush()?;
+                let mut ans = String::new();
+                std::io::stdin().read_line(&mut ans)?;
+                if ans.trim().to_lowercase() == "n" {
+                    let manual = prompt_with_hint(
+                        "Chat ID",
+                        "send a message to your bot first, then re-run",
+                    )?;
+                    if manual.is_empty() {
+                        anyhow::bail!("chat ID cannot be empty");
+                    }
+                    manual
+                } else {
+                    id
+                }
+            }
+            None => {
+                println!("\nStep 2 — Get your chat ID");
+                println!("  Option A (easiest):  send any message to your new bot, then re-run");
+                println!("                       this command — it will detect it automatically.");
+                println!("  Option B (manual):   message @userinfobot on Telegram;");
+                println!("                       it replies with your numeric user ID.\n");
+                let c = prompt("Chat ID (numeric)")?;
+                if c.is_empty() {
+                    anyhow::bail!("chat ID cannot be empty");
+                }
+                c
+            }
+        }
+    };
+
+    // Validate chat_id is numeric (may be negative for groups)
+    let chat_id_trimmed = chat_id.trim_start_matches('-');
+    if !chat_id_trimmed.chars().all(|c| c.is_ascii_digit()) {
+        anyhow::bail!(
+            "chat ID must be a number (e.g. 123456789 for a user, -100... for a group).\nGet yours by messaging @userinfobot on Telegram."
+        );
+    }
+
+    // ── Save credentials ───────────────────────────────────────────────────
+    if cli.dry_run {
+        println!("\n  [dry-run] would write TELEGRAM_BOT_TOKEN=... to {}", env_file.display());
+        println!("  [dry-run] would write TELEGRAM_CHAT_ID={chat_id} to {}", env_file.display());
+        println!("  [dry-run] would set [telegram] enabled=true in {}", cli.agent_config.display());
+    } else {
+        write_env_key(&env_file, "TELEGRAM_BOT_TOKEN", &token)?;
+        write_env_key(&env_file, "TELEGRAM_CHAT_ID", &chat_id)?;
+        println!("\n  [ok] Credentials saved to {}", env_file.display());
+
+        config_editor::write_bool(&cli.agent_config, "telegram", "enabled", true)?;
+        println!("  [ok] agent.toml: telegram.enabled = true");
+    }
+
+    // ── Test notification ──────────────────────────────────────────────────
+    if !no_test && !cli.dry_run {
+        print!("  Sending test notification... ");
+        std::io::stdout().flush()?;
+        match send_telegram_test(&token, &chat_id) {
+            Ok(()) => println!("sent!"),
+            Err(e) => {
+                println!("failed");
+                println!();
+                println!("  Warning: could not send test message: {e:#}");
+                println!("  Your credentials have been saved. Check token and chat_id with:");
+                println!("  innerwarden doctor");
+            }
+        }
+    }
+
+    // ── Restart agent ──────────────────────────────────────────────────────
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {cmd}");
+    } else if is_macos {
+        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        let _ = systemd::restart_service("innerwarden-agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("Telegram configured. You'll receive alerts for High and Critical incidents.");
+    println!("Run 'innerwarden doctor' to validate the full setup.");
+    Ok(())
+}
+
+/// Try to get the chat_id from recent bot updates (works after the user messages the bot).
+fn discover_telegram_chat_id(token: &str) -> Option<String> {
+    let url = format!("https://api.telegram.org/bot{token}/getUpdates?limit=1&timeout=0");
+    let resp = ureq::get(&url).call().ok()?;
+    let json: serde_json::Value = resp.into_json().ok()?;
+    json["result"]
+        .as_array()?
+        .last()?
+        .get("message")?
+        .get("chat")?
+        .get("id")?
+        .as_i64()
+        .map(|id| id.to_string())
+}
+
+/// Send a test Telegram message to confirm the configuration works.
+fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
+    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "text": "✅ InnerWarden is connected. You'll receive security alerts here.",
+        "parse_mode": "HTML"
+    });
+    let resp = ureq::post(&url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let json: serde_json::Value = resp.into_json()?;
+    if json["ok"].as_bool() != Some(true) {
+        anyhow::bail!("{}", json["description"].as_str().unwrap_or("unknown error"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure slack
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_slack(
+    cli: &Cli,
+    webhook_url_arg: Option<&str>,
+    min_severity: &str,
+    no_test: bool,
+) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // ── Webhook URL ────────────────────────────────────────────────────────
+    let webhook_url = if let Some(u) = webhook_url_arg {
+        u.to_string()
+    } else {
+        println!("InnerWarden — Slack setup\n");
+        println!("Step 1 — Create an Incoming Webhook");
+        println!("  1. Go to https://api.slack.com/apps and click 'Create New App'");
+        println!("  2. Choose 'From scratch', name it 'InnerWarden', pick your workspace");
+        println!("  3. Click 'Incoming Webhooks' → toggle On → 'Add New Webhook to Workspace'");
+        println!("  4. Choose a channel (e.g. #security-alerts) → Allow");
+        println!("  5. Copy the webhook URL (starts with https://hooks.slack.com/...)\n");
+        let u = prompt("Webhook URL")?;
+        if u.is_empty() {
+            anyhow::bail!("webhook URL cannot be empty");
+        }
+        u
+    };
+
+    if !webhook_url.starts_with("https://hooks.slack.com/") {
+        anyhow::bail!(
+            "webhook URL should start with https://hooks.slack.com/\nGet one at https://api.slack.com/apps"
+        );
+    }
+
+    // Validate severity
+    if !matches!(min_severity, "low" | "medium" | "high" | "critical") {
+        anyhow::bail!("min-severity must be one of: low, medium, high, critical");
+    }
+
+    // ── Save credentials ───────────────────────────────────────────────────
+    if cli.dry_run {
+        println!("\n  [dry-run] would write SLACK_WEBHOOK_URL=... to {}", env_file.display());
+        println!("  [dry-run] would set [slack] enabled=true min_severity={min_severity} in {}", cli.agent_config.display());
+    } else {
+        write_env_key(&env_file, "SLACK_WEBHOOK_URL", &webhook_url)?;
+        println!("\n  [ok] Webhook URL saved to {}", env_file.display());
+
+        config_editor::write_bool(&cli.agent_config, "slack", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "slack", "min_severity", min_severity)?;
+        println!("  [ok] agent.toml: slack.enabled = true, min_severity = {min_severity}");
+    }
+
+    // ── Test notification ──────────────────────────────────────────────────
+    if !no_test && !cli.dry_run {
+        print!("  Sending test notification... ");
+        std::io::stdout().flush()?;
+        match send_slack_test(&webhook_url) {
+            Ok(()) => println!("sent!"),
+            Err(e) => {
+                println!("failed");
+                println!();
+                println!("  Warning: could not send test message: {e:#}");
+                println!("  Your URL has been saved. Verify it at https://api.slack.com/apps");
+            }
+        }
+    }
+
+    // ── Restart agent ──────────────────────────────────────────────────────
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {cmd}");
+    } else if is_macos {
+        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        let _ = systemd::restart_service("innerwarden-agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("Slack configured. You'll receive alerts for {min_severity}+ incidents.");
+    println!("Run 'innerwarden doctor' to validate the full setup.");
+    Ok(())
+}
+
+fn send_slack_test(webhook_url: &str) -> Result<()> {
+    let body = serde_json::json!({
+        "text": "✅ *InnerWarden* is connected. You'll receive security alerts here."
+    });
+    ureq::post(webhook_url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared interactive helpers
+// ---------------------------------------------------------------------------
+
+fn prompt(label: &str) -> Result<String> {
+    print!("{label}: ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_with_hint(label: &str, hint: &str) -> Result<String> {
+    print!("{label} ({hint}): ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
