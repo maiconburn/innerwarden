@@ -11,6 +11,20 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.8] — 2026-03-16
+
+### Control plane (`innerwarden` / `innerwarden-ctl`)
+
+**Bug fixes**
+- `upgrade` now starts `innerwarden-agent` if its unit file is installed but the service was stopped — previously only already-running services were restarted, so a stopped agent was silently skipped every upgrade
+- `test-alert` permission detection now works correctly when `/etc/innerwarden/` is not readable by the current user — the previous check used `Path::exists()` which returns false for inaccessible directories, causing the permission error to be swallowed silently
+
+### Test coverage
+
+502 tests across three crates (185 sensor + 178 agent + 139 ctl).
+
+---
+
 ## [0.1.7] — 2026-03-16
 
 ### Agent (`innerwarden-agent`)

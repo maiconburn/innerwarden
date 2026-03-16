@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ctl"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-sensor"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden_core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "serde",

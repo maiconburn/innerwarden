@@ -2447,12 +2447,23 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
         }
     }
 
-    // Restart running services
+    // Restart running services; also start the agent if it has a unit file but is stopped
     println!();
     for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+        let unit_path = format!("/etc/systemd/system/{unit}.service");
+        let unit_exists = std::path::Path::new(&unit_path).exists();
         if systemd::is_service_active(unit) {
             systemd::restart_service(unit, false)?;
             println!("  [done] Restarted {unit}");
+        } else if unit_exists {
+            // Unit is installed but stopped — try to start it
+            match systemd::restart_service(unit, false) {
+                Ok(()) => println!("  [done] Started {unit}"),
+                Err(e) => {
+                    println!("  [warn] Could not start {unit}: {e}");
+                    println!("         Check logs: journalctl -u {unit} -n 30");
+                }
+            }
         }
     }
 
@@ -4217,20 +4228,20 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
         .map(|p| p.join("agent.env"))
         .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
 
-    // Detect permission-denied early so the user gets a useful hint
-    if env_file.exists() {
-        if let Err(e) = std::fs::read_to_string(&env_file) {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                eprintln!("Permission denied reading {}", env_file.display());
-                eprintln!("Credentials are stored in a protected file.");
-                eprintln!();
-                let args: Vec<String> = std::env::args().collect();
-                let cmd_args = args[1..].join(" ");
-                eprintln!("Run with sudo:");
-                eprintln!("  sudo innerwarden {cmd_args}");
-                std::process::exit(1);
-            }
+    // Detect permission-denied early — don't check exists() first because
+    // the directory itself may be inaccessible, making exists() return false.
+    if let Err(e) = std::fs::read_to_string(&env_file) {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            eprintln!("Permission denied reading {}", env_file.display());
+            eprintln!("Credentials are stored in a protected file.");
+            eprintln!();
+            let args: Vec<String> = std::env::args().collect();
+            let cmd_args = args[1..].join(" ");
+            eprintln!("Run with sudo:");
+            eprintln!("  sudo innerwarden {cmd_args}");
+            std::process::exit(1);
         }
+        // File not found or other error — fine, load_env_file will return empty map
     }
 
     // Load agent.env for credentials
