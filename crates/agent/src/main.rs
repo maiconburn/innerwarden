@@ -692,6 +692,8 @@ async fn main() -> Result<()> {
         // Activate approval channel and start Telegram polling task
         state.approval_rx = Some(approval_rx_for_state);
         if let Some(ref tg) = state.telegram_client {
+            // Register persistent command menu (fire-and-forget)
+            tg.set_commands().await;
             let tg_clone = tg.clone();
             tokio::spawn(async move { tg_clone.run_polling(approval_tx).await });
             info!("Telegram polling task started (T.2 approvals enabled)");
@@ -2000,6 +2002,10 @@ async fn process_telegram_approval(
                 let ai = ai.clone();
                 let tg = state.telegram_client.clone();
                 tokio::spawn(async move {
+                    // Keep showing "typing..." while AI processes
+                    if let Some(ref tg) = tg {
+                        tg.send_typing().await;
+                    }
                     match ai.chat(&system_prompt, &question).await {
                         Ok(reply) => {
                             if let Some(ref tg) = tg {

@@ -262,6 +262,41 @@ impl TelegramClient {
         self.post_json("sendMessage", &body).await
     }
 
+    /// React to a message with 👀 (processing indicator).
+    pub async fn react_eyes(&self, chat_id: i64, message_id: i64) {
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{ "type": "emoji", "emoji": "👀" }]
+        });
+        let _ = self.post_json("setMessageReaction", &body).await;
+    }
+
+    /// Show "typing..." indicator in the chat.
+    pub async fn send_typing(&self) {
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "action": "typing"
+        });
+        let _ = self.post_json("sendChatAction", &body).await;
+    }
+
+    /// Register the bot's persistent command menu (shown in the text input).
+    /// Called once at startup.
+    pub async fn set_commands(&self) {
+        let body = serde_json::json!({
+            "commands": [
+                { "command": "menu",      "description": "Interactive button menu" },
+                { "command": "status",    "description": "System overview" },
+                { "command": "incidents", "description": "Last 5 incidents" },
+                { "command": "decisions", "description": "Last 5 decisions" },
+                { "command": "ask",       "description": "Ask the AI a question" },
+                { "command": "help",      "description": "Available commands" }
+            ]
+        });
+        let _ = self.post_json("setMyCommands", &body).await;
+    }
+
     // -----------------------------------------------------------------------
     // Polling loop (background task)
     // -----------------------------------------------------------------------
@@ -320,6 +355,13 @@ impl TelegramClient {
                                     .and_then(|f| f.first_name.clone())
                                     .unwrap_or_default();
                                 info!(text = %text, operator = %operator, "Telegram: text message received");
+
+                                // Visual feedback: react with 👀 and show typing
+                                let chat_id = msg.chat.as_ref().map(|c| c.id).unwrap_or(0);
+                                if chat_id != 0 {
+                                    self.react_eyes(chat_id, msg.message_id).await;
+                                }
+                                self.send_typing().await;
 
                                 let incident_id = if text == "/status"
                                     || text.starts_with("/status ")
@@ -463,9 +505,18 @@ struct Update {
 #[derive(Debug, Deserialize)]
 struct Message {
     #[serde(default)]
+    message_id: i64,
+    #[serde(default)]
     text: Option<String>,
     #[serde(default)]
     from: Option<User>,
+    #[serde(default)]
+    chat: Option<Chat>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Chat {
+    id: i64,
 }
 
 #[derive(Debug, Deserialize)]
