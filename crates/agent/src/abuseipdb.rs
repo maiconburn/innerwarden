@@ -34,7 +34,7 @@ pub struct AbuseIpDbResponse {
 pub struct AbuseIpDbData {
     #[allow(dead_code)]
     pub ip_address: String,
-    pub abuse_confidence_score: u8,   // 0–100
+    pub abuse_confidence_score: u8, // 0–100
     pub total_reports: u32,
     pub num_distinct_users: u32,
     pub country_code: Option<String>,

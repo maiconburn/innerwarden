@@ -221,12 +221,7 @@ fn parse_docker_event(line: &str, host: &str) -> Option<(String, Event)> {
 
 /// Run `docker inspect <container_id>` and return security risk events.
 /// Returns an empty Vec if the container is safe or inspect fails (fail-open).
-async fn inspect_for_risks(
-    container_id: &str,
-    name: &str,
-    image: &str,
-    host: &str,
-) -> Vec<Event> {
+async fn inspect_for_risks(container_id: &str, name: &str, image: &str, host: &str) -> Vec<Event> {
     let output = match Command::new("docker")
         .args(["inspect", container_id])
         .output()
@@ -237,7 +232,10 @@ async fn inspect_for_risks(
             warn!(
                 container_id,
                 "docker inspect returned non-zero: {}",
-                String::from_utf8_lossy(&o.stderr).chars().take(200).collect::<String>()
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
             );
             return vec![];
         }
@@ -518,7 +516,11 @@ mod tests {
 
     #[test]
     fn multiple_risks_emit_multiple_events() {
-        let info = make_inspect_json(true, &["/var/run/docker.sock:/var/run/docker.sock"], &["SYS_ADMIN"]);
+        let info = make_inspect_json(
+            true,
+            &["/var/run/docker.sock:/var/run/docker.sock"],
+            &["SYS_ADMIN"],
+        );
         let events = parse_inspect_risks(&info, "abc123", "rogue", "rogue:v1", "host");
         assert_eq!(events.len(), 3);
         let kinds: Vec<_> = events.iter().map(|e| e.kind.as_str()).collect();

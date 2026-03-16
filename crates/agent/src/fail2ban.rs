@@ -309,17 +309,16 @@ pub async fn sync_tick(
 
             let execution_result = match skill {
                 Some(skill) => {
-                    use innerwarden_core::{entities::EntityRef, event::Severity, incident::Incident};
+                    use innerwarden_core::{
+                        entities::EntityRef, event::Severity, incident::Incident,
+                    };
                     let synthetic_incident = Incident {
                         ts: chrono::Utc::now(),
                         host: host.to_string(),
                         incident_id: format!("fail2ban:{}:{}", jail, ip),
                         severity: Severity::High,
                         title: format!("fail2ban ban [{}]: {}", jail, ip),
-                        summary: format!(
-                            "fail2ban banned {} in jail '{}'",
-                            ip, jail
-                        ),
+                        summary: format!("fail2ban banned {} in jail '{}'", ip, jail),
                         evidence: serde_json::json!({
                             "source": "fail2ban",
                             "jail": jail,
@@ -378,7 +377,10 @@ pub async fn sync_tick(
     }
 
     if new_blocks > 0 {
-        info!(count = new_blocks, "fail2ban: blocked {} new IP(s)", new_blocks);
+        info!(
+            count = new_blocks,
+            "fail2ban: blocked {} new IP(s)", new_blocks
+        );
     }
 
     new_blocks

@@ -62,7 +62,10 @@ impl WebScanDetector {
 
         self.alerted.insert(ip.clone(), now);
 
-        let level = event.details["level"].as_str().unwrap_or("error").to_string();
+        let level = event.details["level"]
+            .as_str()
+            .unwrap_or("error")
+            .to_string();
         let last_request = event
             .details
             .get("request")
@@ -139,7 +142,9 @@ mod tests {
         let mut det = WebScanDetector::new("host", 5, 60);
         let base = Utc::now();
         for i in 0..4 {
-            assert!(det.process(&error_event("1.2.3.4", base + Duration::seconds(i))).is_none());
+            assert!(det
+                .process(&error_event("1.2.3.4", base + Duration::seconds(i)))
+                .is_none());
         }
     }
 
@@ -164,7 +169,9 @@ mod tests {
         for i in 0..3 {
             det.process(&error_event("1.2.3.4", base + Duration::seconds(i)));
         }
-        assert!(det.process(&error_event("1.2.3.4", base + Duration::seconds(3))).is_none());
+        assert!(det
+            .process(&error_event("1.2.3.4", base + Duration::seconds(3)))
+            .is_none());
     }
 
     #[test]
@@ -195,7 +202,9 @@ mod tests {
             det.process(&error_event("1.1.1.1", base + Duration::seconds(i)));
         }
         for i in 0..2 {
-            assert!(det.process(&error_event("2.2.2.2", base + Duration::seconds(i))).is_none());
+            assert!(det
+                .process(&error_event("2.2.2.2", base + Duration::seconds(i)))
+                .is_none());
         }
     }
 
@@ -207,7 +216,9 @@ mod tests {
         det.process(&error_event("1.2.3.4", base - Duration::seconds(15)));
         // Both old — only 1 new event → below threshold
         assert!(det.process(&error_event("1.2.3.4", base)).is_none());
-        assert!(det.process(&error_event("1.2.3.4", base + Duration::seconds(1))).is_none());
+        assert!(det
+            .process(&error_event("1.2.3.4", base + Duration::seconds(1)))
+            .is_none());
         // Third new event hits threshold
         let inc = det.process(&error_event("1.2.3.4", base + Duration::seconds(2)));
         assert!(inc.is_some());

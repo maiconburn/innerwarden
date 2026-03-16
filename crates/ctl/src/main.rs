@@ -1116,7 +1116,11 @@ fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
             enables: get_vec("enables"),
             install_url: {
                 let u = get("install_url");
-                if u.is_empty() { None } else { Some(u) }
+                if u.is_empty() {
+                    None
+                } else {
+                    Some(u)
+                }
             },
         });
     }
@@ -1165,7 +1169,11 @@ fn cmd_module_search(query: Option<&str>) -> Result<()> {
 
     println!();
     for m in &filtered {
-        let tier_badge = if m.tier == "premium" { " [premium]" } else { "" };
+        let tier_badge = if m.tier == "premium" {
+            " [premium]"
+        } else {
+            ""
+        };
         let builtin_note = if m.builtin { " (built-in)" } else { "" };
         println!("  {}  v{}{}{}", m.id, m.version, tier_badge, builtin_note);
         println!("    {}", m.description);
@@ -1198,36 +1206,46 @@ fn cmd_module_install(
     use module_package::*;
 
     let is_url = source.starts_with("https://") || source.starts_with("http://");
-    let is_path = source.starts_with('/') || source.starts_with('.') || std::path::Path::new(source).exists();
+    let is_path =
+        source.starts_with('/') || source.starts_with('.') || std::path::Path::new(source).exists();
 
     // ── Registry lookup: short module name (e.g. "ssh-protection") ────────
     if !is_url && !is_path {
         let name = source;
         println!("Looking up '{}' in the InnerWarden registry...", name);
         let registry = fetch_registry();
-        let entry = registry
-            .into_iter()
-            .find(|m| m.id == name)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Module '{}' not found in registry.\n\
+        let entry = registry.into_iter().find(|m| m.id == name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Module '{}' not found in registry.\n\
                      Run 'innerwarden module search' to see available modules.\n\
                      You can also pass a URL or local path directly.",
-                    name
-                )
-            })?;
+                name
+            )
+        })?;
 
-        println!("Found: {} v{} — {}", entry.name, entry.version, entry.description);
+        println!(
+            "Found: {} v{} — {}",
+            entry.name, entry.version, entry.description
+        );
         println!();
 
         // Built-in modules ship with the binary; enable the underlying capabilities.
         if entry.builtin {
             if entry.enables.is_empty() {
-                println!("'{}' is a built-in module configured via sensor config.", entry.id);
-                println!("See modules/{}/docs/README.md for setup instructions.", entry.id);
+                println!(
+                    "'{}' is a built-in module configured via sensor config.",
+                    entry.id
+                );
+                println!(
+                    "See modules/{}/docs/README.md for setup instructions.",
+                    entry.id
+                );
                 return Ok(());
             }
-            println!("'{}' is a built-in module. Enabling its capabilities:", entry.id);
+            println!(
+                "'{}' is a built-in module. Enabling its capabilities:",
+                entry.id
+            );
             for cap in &entry.enables {
                 println!("  innerwarden enable {cap}");
             }
@@ -1254,9 +1272,9 @@ fn cmd_module_install(
         }
 
         // External module — install from registry URL.
-        let url = entry.install_url.ok_or_else(|| {
-            anyhow::anyhow!("Registry entry for '{}' has no install_url", name)
-        })?;
+        let url = entry
+            .install_url
+            .ok_or_else(|| anyhow::anyhow!("Registry entry for '{}' has no install_url", name))?;
         println!("Downloading from registry...");
         return cmd_module_install(cli, &url, modules_dir, enable_after, force, yes);
     }
@@ -1823,7 +1841,11 @@ fn cmd_configure_ai(
         })?;
 
         if cli.dry_run {
-            println!("  [dry-run] would write {}=... to {}", var, env_file.display());
+            println!(
+                "  [dry-run] would write {}=... to {}",
+                var,
+                env_file.display()
+            );
         } else {
             write_env_key(&env_file, var, k)?;
             println!("  [ok] {}=... written to {}", var, env_file.display());
@@ -1832,7 +1854,10 @@ fn cmd_configure_ai(
 
     // Patch agent.toml
     if cli.dry_run {
-        println!("  [dry-run] would set [ai] enabled=true provider={provider} model={model} in {}", cli.agent_config.display());
+        println!(
+            "  [dry-run] would set [ai] enabled=true provider={provider} model={model} in {}",
+            cli.agent_config.display()
+        );
     } else {
         config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
         config_editor::write_str(&cli.agent_config, "ai", "provider", provider)?;
@@ -1883,7 +1908,10 @@ fn cmd_configure_responder(
     if enable || disable {
         let value = enable;
         if cli.dry_run {
-            println!("  [dry-run] would set [responder] enabled={value} in {}", cli.agent_config.display());
+            println!(
+                "  [dry-run] would set [responder] enabled={value} in {}",
+                cli.agent_config.display()
+            );
         } else {
             config_editor::write_bool(&cli.agent_config, "responder", "enabled", value)?;
             println!("  [ok] responder.enabled = {value}");
@@ -1893,7 +1921,10 @@ fn cmd_configure_responder(
     // Apply responder.dry_run
     if let Some(dr) = dry_run_flag {
         if cli.dry_run {
-            println!("  [dry-run] would set [responder] dry_run={dr} in {}", cli.agent_config.display());
+            println!(
+                "  [dry-run] would set [responder] dry_run={dr} in {}",
+                cli.agent_config.display()
+            );
         } else {
             config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
             println!("  [ok] responder.dry_run = {dr}");
@@ -1975,7 +2006,12 @@ fn cmd_ai_install(cli: &Cli, model: &str, api_key_arg: Option<&str>, yes: bool) 
         config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
         config_editor::write_str(&cli.agent_config, "ai", "provider", "ollama")?;
         config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
-        config_editor::write_str(&cli.agent_config, "ai", "base_url", "https://api.ollama.com")?;
+        config_editor::write_str(
+            &cli.agent_config,
+            "ai",
+            "base_url",
+            "https://api.ollama.com",
+        )?;
         config_editor::write_str(&cli.agent_config, "ai", "api_key", &api_key)?;
         println!("  [ok] agent.toml updated");
     }
@@ -2429,9 +2465,7 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     "AbuseIPDB API keys are typically 80 characters.\n\
                      Get a fresh key at https://www.abuseipdb.com/account/api",
                 ),
-                Some(_) => Check::ok(
-                    "ABUSEIPDB_API_KEY is set (free tier: 1,000 checks/day)",
-                ),
+                Some(_) => Check::ok("ABUSEIPDB_API_KEY is set (free tier: 1,000 checks/day)"),
             });
         }
     }
@@ -2690,8 +2724,8 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                     ));
                 }
                 Some(url) => {
-                    let looks_valid = url.starts_with("https://hooks.slack.com/services/")
-                        && url.len() > 50;
+                    let looks_valid =
+                        url.starts_with("https://hooks.slack.com/services/") && url.len() > 50;
                     sl.push(if looks_valid {
                         Check::ok("SLACK_WEBHOOK_URL is set and format looks correct")
                     } else {
@@ -3038,18 +3072,11 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
                 nginx_err.push(if nginx_bin {
                     Check::ok("nginx binary found")
                 } else {
-                    Check::fail(
-                        "nginx binary not found",
-                        "sudo apt-get install nginx",
-                    )
+                    Check::fail("nginx binary not found", "sudo apt-get install nginx")
                 });
 
                 // error log path
-                let err_log = collector_str(
-                    "nginx_error",
-                    "path",
-                    "/var/log/nginx/error.log",
-                );
+                let err_log = collector_str("nginx_error", "path", "/var/log/nginx/error.log");
                 let log_exists = std::path::Path::new(&err_log).exists();
                 nginx_err.push(if log_exists {
                     Check::ok(format!("nginx error log exists ({})", err_log))

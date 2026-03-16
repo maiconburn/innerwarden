@@ -426,7 +426,10 @@ mod tests {
         let fake_hash_new = "b".repeat(64);
         let path = Path::new("/home/carol/.ssh/authorized_keys");
         let ev = make_change_event(path, &fake_hash_new, &fake_hash_old, "host");
-        let has_user_entity = ev.entities.iter().any(|e| e.r#type == EntityType::User && e.value == "carol");
+        let has_user_entity = ev
+            .entities
+            .iter()
+            .any(|e| e.r#type == EntityType::User && e.value == "carol");
         assert!(has_user_entity);
     }
 

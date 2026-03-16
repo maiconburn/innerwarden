@@ -180,12 +180,13 @@ pub fn parse_wazuh_alert(line: &str, host: &str) -> Option<Event> {
     let severity = map_level(alert.rule.level);
 
     // kind: first group prefixed with "wazuh.", or fallback to rule id
-    let kind_slug = alert
-        .rule
-        .groups
-        .first()
-        .cloned()
-        .unwrap_or_else(|| alert.rule.id.clone().unwrap_or_else(|| "unknown".to_string()));
+    let kind_slug = alert.rule.groups.first().cloned().unwrap_or_else(|| {
+        alert
+            .rule
+            .id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
+    });
     let kind = format!("wazuh.{kind_slug}");
 
     let summary = alert.rule.description.clone();
@@ -420,7 +421,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e.r#type, EntityType::Service))
             .collect();
-        assert!(!services.is_empty(), "expected service entity from agent.name");
+        assert!(
+            !services.is_empty(),
+            "expected service entity from agent.name"
+        );
         assert_eq!(services[0].value, "web-server-01");
     }
 

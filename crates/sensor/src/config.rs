@@ -521,7 +521,6 @@ pub struct UserAgentScannerConfig {
     pub enabled: bool,
 }
 
-
 fn default_nginx_error_path() -> String {
     "/var/log/nginx/error.log".to_string()
 }

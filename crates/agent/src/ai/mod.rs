@@ -214,7 +214,11 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
         )),
         "ollama" => {
             let api_key = cfg.resolved_api_key();
-            let api_key = if api_key.is_empty() { None } else { Some(api_key) };
+            let api_key = if api_key.is_empty() {
+                None
+            } else {
+                Some(api_key)
+            };
 
             let base_url = if !cfg.base_url.is_empty() {
                 cfg.base_url.clone()

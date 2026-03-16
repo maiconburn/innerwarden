@@ -37,8 +37,8 @@ pub struct CrowdSecDecision {
     pub r#type: String,
     #[allow(dead_code)]
     pub scope: String,
-    pub value: String,       // the IP address
-    pub duration: String,    // e.g. "87599.956744792s"
+    pub value: String,    // the IP address
+    pub duration: String, // e.g. "87599.956744792s"
     #[serde(rename = "simulated")]
     pub simulated: Option<bool>,
 }
@@ -107,7 +107,10 @@ impl CrowdSecClient {
                      Find your key in: /etc/crowdsec/local_api_credentials.yaml"
                 );
             }
-            anyhow::bail!("CrowdSec LAPI returned {status}: {}", body.chars().take(200).collect::<String>());
+            anyhow::bail!(
+                "CrowdSec LAPI returned {status}: {}",
+                body.chars().take(200).collect::<String>()
+            );
         }
 
         // 200 with body = list of decisions (may be null if empty)
@@ -276,7 +279,10 @@ pub async fn sync_tick(
     }
 
     if new_blocks > 0 {
-        info!(count = new_blocks, "CrowdSec: blocked {} new IP(s)", new_blocks);
+        info!(
+            count = new_blocks,
+            "CrowdSec: blocked {} new IP(s)", new_blocks
+        );
     }
 
     new_blocks

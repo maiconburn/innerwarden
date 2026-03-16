@@ -18,7 +18,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
-use innerwarden_core::{entities::EntityRef, event::{Event, Severity}};
+use innerwarden_core::{
+    entities::EntityRef,
+    event::{Event, Severity},
+};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -148,7 +151,11 @@ fn extract_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let rest = &line[start..];
     let end = rest.find(' ').unwrap_or(rest.len());
     let value = &rest[..end];
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn build_event(drop: FirewallDrop, host: &str) -> Event {
@@ -169,7 +176,11 @@ fn build_event(drop: FirewallDrop, host: &str) -> Event {
             "proto":    drop.proto,
             "in_iface": drop.in_iface,
         }),
-        tags: vec!["network".to_string(), "firewall".to_string(), "drop".to_string()],
+        tags: vec![
+            "network".to_string(),
+            "firewall".to_string(),
+            "drop".to_string(),
+        ],
         entities: vec![EntityRef::ip(&drop.src_ip)],
     }
 }

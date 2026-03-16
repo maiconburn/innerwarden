@@ -89,11 +89,7 @@ impl NginxErrorCollector {
                                     "message": entry.message,
                                 }),
                                 tags: vec!["http".to_string(), "nginx".to_string()],
-                                entities: entry
-                                    .client_ip
-                                    .iter()
-                                    .map(EntityRef::ip)
-                                    .collect(),
+                                entities: entry.client_ip.iter().map(EntityRef::ip).collect(),
                             };
                             if tx.send(event).await.is_err() {
                                 return Ok(());
@@ -242,7 +238,8 @@ mod tests {
 
     #[test]
     fn skips_debug_and_notice() {
-        let debug_line = r#"2024/01/15 12:00:00 [debug] 100#100: *1 some debug message, client: 1.2.3.4"#;
+        let debug_line =
+            r#"2024/01/15 12:00:00 [debug] 100#100: *1 some debug message, client: 1.2.3.4"#;
         assert!(parse_line(debug_line).is_none());
 
         let notice_line = r#"2024/01/15 12:00:00 [notice] 100#100: start worker processes"#;
@@ -258,8 +255,7 @@ mod tests {
 
     #[test]
     fn emits_crit_without_client() {
-        let line =
-            r#"2024/01/15 12:00:00 [crit] 100#100: *1 SSL_do_handshake() failed while SSL handshaking"#;
+        let line = r#"2024/01/15 12:00:00 [crit] 100#100: *1 SSL_do_handshake() failed while SSL handshaking"#;
         let entry = parse_line(line).unwrap();
         assert_eq!(entry.level, "crit");
         assert!(entry.client_ip.is_none());
@@ -281,7 +277,8 @@ mod tests {
 
     #[test]
     fn extract_field_handles_quoted_values() {
-        let body = r#"some message, client: 1.2.3.4, server: example.com, request: "GET /path HTTP/1.1""#;
+        let body =
+            r#"some message, client: 1.2.3.4, server: example.com, request: "GET /path HTTP/1.1""#;
         assert_eq!(extract_field(body, "client: ").as_deref(), Some("1.2.3.4"));
         assert_eq!(
             extract_field(body, "request: ").as_deref(),

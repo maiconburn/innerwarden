@@ -10,7 +10,11 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, Utc};
-use innerwarden_core::{entities::EntityRef, event::{Event, Severity}, incident::Incident};
+use innerwarden_core::{
+    entities::EntityRef,
+    event::{Event, Severity},
+    incident::Incident,
+};
 
 const SCANNER_SIGNATURES: &[(&str, &str)] = &[
     ("nikto", "Nikto"),
@@ -60,7 +64,10 @@ impl UserAgentScannerDetector {
             return None;
         }
 
-        let ua = event.details["user_agent"].as_str().unwrap_or("").to_lowercase();
+        let ua = event.details["user_agent"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase();
         if ua.is_empty() {
             return None;
         }
@@ -69,7 +76,9 @@ impl UserAgentScannerDetector {
         let now = event.ts;
 
         // Find matching scanner signature
-        let (_, scanner_name) = SCANNER_SIGNATURES.iter().find(|(sig, _)| ua.contains(sig))?;
+        let (_, scanner_name) = SCANNER_SIGNATURES
+            .iter()
+            .find(|(sig, _)| ua.contains(sig))?;
         let scanner_name = scanner_name.to_string();
 
         // Dedup: skip if same IP + scanner alerted recently
@@ -168,7 +177,11 @@ mod tests {
     #[test]
     fn known_scanner_sqlmap_emits_incident() {
         let mut det = UserAgentScannerDetector::new("host");
-        let ev = http_request_event("1.2.3.4", "sqlmap/1.7.2#stable (https://sqlmap.org)", Utc::now());
+        let ev = http_request_event(
+            "1.2.3.4",
+            "sqlmap/1.7.2#stable (https://sqlmap.org)",
+            Utc::now(),
+        );
         let inc = det.process(&ev).unwrap();
         assert!(inc.title.contains("sqlmap"));
         assert!(inc.incident_id.starts_with("scanner_ua:sqlmap:"));
@@ -177,7 +190,11 @@ mod tests {
     #[test]
     fn known_scanner_nuclei_emits_incident() {
         let mut det = UserAgentScannerDetector::new("host");
-        let ev = http_request_event("5.6.7.8", "Nuclei - Open-source project (github.com/projectdiscovery/nuclei)", Utc::now());
+        let ev = http_request_event(
+            "5.6.7.8",
+            "Nuclei - Open-source project (github.com/projectdiscovery/nuclei)",
+            Utc::now(),
+        );
         let inc = det.process(&ev).unwrap();
         assert!(inc.title.contains("Nuclei"));
         assert_eq!(inc.entities[0].value, "5.6.7.8");

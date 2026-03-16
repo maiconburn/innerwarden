@@ -351,7 +351,11 @@ fn append_trust_rule(
 }
 
 /// Returns true if a (detector, action) pair has been trusted by the operator.
-fn is_trusted(trust_rules: &std::collections::HashSet<String>, detector: &str, action: &str) -> bool {
+fn is_trusted(
+    trust_rules: &std::collections::HashSet<String>,
+    detector: &str,
+    action: &str,
+) -> bool {
     trust_rules.contains(&format!("{detector}:{action}"))
         || trust_rules.contains(&format!("*:{action}"))
         || trust_rules.contains(&format!("{detector}:*"))
@@ -613,8 +617,14 @@ async fn main() -> Result<()> {
                 warn!("abuseipdb.enabled=true but no API key found — disabling enrichment");
                 None
             } else {
-                info!("AbuseIPDB enrichment enabled (max_age_days={})", cfg.abuseipdb.max_age_days);
-                Some(abuseipdb::AbuseIpDbClient::new(key, cfg.abuseipdb.max_age_days))
+                info!(
+                    "AbuseIPDB enrichment enabled (max_age_days={})",
+                    cfg.abuseipdb.max_age_days
+                );
+                Some(abuseipdb::AbuseIpDbClient::new(
+                    key,
+                    cfg.abuseipdb.max_age_days,
+                ))
             }
         } else {
             None
@@ -635,7 +645,9 @@ async fn main() -> Result<()> {
         cloudflare_client: if cfg.cloudflare.enabled {
             let token = cloudflare::resolve_api_token(&cfg.cloudflare.api_token);
             if token.is_empty() || cfg.cloudflare.zone_id.is_empty() {
-                warn!("cloudflare.enabled=true but api_token or zone_id not configured — disabling");
+                warn!(
+                    "cloudflare.enabled=true but api_token or zone_id not configured — disabling"
+                );
                 None
             } else {
                 info!(zone_id = %cfg.cloudflare.zone_id, "Cloudflare IP block push enabled");
@@ -1233,7 +1245,10 @@ async fn process_incidents(
                     );
                     let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
                     let auto_decision = ai::AiDecision {
-                        action: ai::AiAction::BlockIp { ip: ip.clone(), skill_id },
+                        action: ai::AiAction::BlockIp {
+                            ip: ip.clone(),
+                            skill_id,
+                        },
                         confidence: 1.0,
                         auto_execute: true,
                         reason: format!(
@@ -1245,7 +1260,8 @@ async fn process_incidents(
                     };
                     blocked_set.insert(ip.clone());
                     state.blocklist.insert(ip.clone());
-                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision) {
+                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
+                    {
                         state.decision_cooldowns.insert(key, chrono::Utc::now());
                     }
                     let execution_result = if cfg.responder.enabled {
@@ -1577,7 +1593,13 @@ async fn execute_decision(
             if let Some(tg) = tg {
                 let ttl = cfg.telegram.approval_ttl_secs;
                 match tg
-                    .send_confirmation_request(incident, summary, req_action, decision.confidence, ttl)
+                    .send_confirmation_request(
+                        incident,
+                        summary,
+                        req_action,
+                        decision.confidence,
+                        ttl,
+                    )
                     .await
                 {
                     Ok(msg_id) => {
@@ -1868,7 +1890,12 @@ async fn process_telegram_approval(
             operator = %result.operator_name,
             "operator added trust rule via Telegram"
         );
-        append_trust_rule(data_dir, &mut state.trust_rules, &pending.detector, &pending.action_name);
+        append_trust_rule(
+            data_dir,
+            &mut state.trust_rules,
+            &pending.detector,
+            &pending.action_name,
+        );
     }
 
     // Acknowledge in Telegram: remove inline keyboard and add follow-up message

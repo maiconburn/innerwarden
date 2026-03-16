@@ -191,9 +191,15 @@ impl TelegramClient {
         let text = if always {
             format!("🔁 Got it, {operator}. I'll handle this automatically from now on. No need to ask.", operator = escape_html(operator))
         } else if approved {
-            format!("✅ Done. Executed on {operator}'s orders. They won't bother us again.", operator = escape_html(operator))
+            format!(
+                "✅ Done. Executed on {operator}'s orders. They won't bother us again.",
+                operator = escape_html(operator)
+            )
         } else {
-            format!("❌ Standing down. {operator} said let it slide. I'll keep watching.", operator = escape_html(operator))
+            format!(
+                "❌ Standing down. {operator} said let it slide. I'll keep watching.",
+                operator = escape_html(operator)
+            )
         };
         let body2 = serde_json::json!({
             "chat_id": self.chat_id,

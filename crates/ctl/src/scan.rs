@@ -329,12 +329,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     false,
                 )
             } else {
-                (
-                    Tier::NotAvailable,
-                    "Docker not found.".to_string(),
-                    1,
-                    true,
-                )
+                (Tier::NotAvailable, "Docker not found.".to_string(), 1, true)
             };
             ModuleRec {
                 id: "container-security",
@@ -357,7 +352,11 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     3,
                 )
             } else {
-                (Tier::NotAvailable, "nginx access log not found.".to_string(), 1)
+                (
+                    Tier::NotAvailable,
+                    "nginx access log not found.".to_string(),
+                    1,
+                )
             };
             ModuleRec {
                 id: "search-protection",
@@ -385,7 +384,11 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     3,
                 )
             } else {
-                (Tier::NotAvailable, "nginx error log not found.".to_string(), 1)
+                (
+                    Tier::NotAvailable,
+                    "nginx error log not found.".to_string(),
+                    1,
+                )
             };
             ModuleRec {
                 id: "nginx-error-monitor",
@@ -415,14 +418,16 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             } else {
                 (
                     Tier::Optional,
-                    "Provides AST-based shell command analysis (requires auditd on Linux).".to_string(),
+                    "Provides AST-based shell command analysis (requires auditd on Linux)."
+                        .to_string(),
                     2,
                 )
             };
             ModuleRec {
                 id: "execution-guard",
                 name: "Shell Execution Guard",
-                description: "AST analysis of shell commands; detects download→chmod→execute chains.",
+                description:
+                    "AST analysis of shell commands; detects download→chmod→execute chains.",
                 why,
                 enable_hint: "innerwarden enable shell-audit",
                 stars: s,
@@ -474,7 +479,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             id: "geoip-enrichment",
             name: "IP Geolocation Enrichment",
             description: "Adds country/ISP context to AI decisions — free, no API key needed.",
-            why: "Free enrichment layer. Adds country/ISP context to every AI decision.".to_string(),
+            why: "Free enrichment layer. Adds country/ISP context to every AI decision."
+                .to_string(),
             enable_hint: "innerwarden module install geoip-enrichment",
             stars: 2,
             tier: Tier::Optional,
@@ -485,9 +491,11 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
         ModuleRec {
             id: "abuseipdb-enrichment",
             name: "AbuseIPDB Reputation Scoring",
-            description: "Queries AbuseIPDB for IP reputation; raises AI confidence on known-bad IPs.",
-            why: "Requires a free API key at abuseipdb.com. Raises AI confidence for known-bad IPs."
-                .to_string(),
+            description:
+                "Queries AbuseIPDB for IP reputation; raises AI confidence on known-bad IPs.",
+            why:
+                "Requires a free API key at abuseipdb.com. Raises AI confidence for known-bad IPs."
+                    .to_string(),
             enable_hint: "innerwarden module install abuseipdb-enrichment",
             stars: 2,
             tier: Tier::Optional,
@@ -505,12 +513,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     false,
                 )
             } else {
-                (
-                    Tier::NotAvailable,
-                    "Falco not found.".to_string(),
-                    1,
-                    true,
-                )
+                (Tier::NotAvailable, "Falco not found.".to_string(), 1, true)
             };
             ModuleRec {
                 id: "falco-integration",
@@ -607,12 +610,7 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                     false,
                 )
             } else {
-                (
-                    Tier::NotAvailable,
-                    "Wazuh not found.".to_string(),
-                    1,
-                    true,
-                )
+                (Tier::NotAvailable, "Wazuh not found.".to_string(), 1, true)
             };
             ModuleRec {
                 id: "wazuh-integration",
@@ -682,7 +680,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             id: "slack-notify",
             name: "Slack Notifications",
             description: "Sends High/Critical incident alerts to a Slack channel.",
-            why: "Optional: push notifications to Slack for any High/Critical incident.".to_string(),
+            why: "Optional: push notifications to Slack for any High/Critical incident."
+                .to_string(),
             enable_hint: "innerwarden module install slack-notify",
             stars: 2,
             tier: Tier::Optional,
@@ -714,8 +713,14 @@ fn print_recommendations(recs: &[ModuleRec]) {
     let mut idx = 1usize;
 
     // First pass: print available modules grouped by tier.
-    let available: Vec<_> = recs.iter().filter(|r| r.tier != Tier::NotAvailable).collect();
-    let not_available: Vec<_> = recs.iter().filter(|r| r.tier == Tier::NotAvailable).collect();
+    let available: Vec<_> = recs
+        .iter()
+        .filter(|r| r.tier != Tier::NotAvailable)
+        .collect();
+    let not_available: Vec<_> = recs
+        .iter()
+        .filter(|r| r.tier == Tier::NotAvailable)
+        .collect();
 
     for rec in &available {
         if current_tier.as_ref().map(|t| t.order()) != Some(rec.tier.order()) {
@@ -796,7 +801,10 @@ fn show_module_info(module_id: &str, modules_dir: &Path) {
 // ---------------------------------------------------------------------------
 
 fn interactive_loop(recs: &[ModuleRec], modules_dir: &Path) {
-    let available: Vec<_> = recs.iter().filter(|r| r.tier != Tier::NotAvailable).collect();
+    let available: Vec<_> = recs
+        .iter()
+        .filter(|r| r.tier != Tier::NotAvailable)
+        .collect();
 
     loop {
         print!("> ");
@@ -947,7 +955,10 @@ mod tests {
     fn fail2ban_essential_when_found() {
         let p = probes_with_fail2ban();
         let recs = score_modules(&p);
-        let fb = recs.iter().find(|r| r.id == "fail2ban-integration").unwrap();
+        let fb = recs
+            .iter()
+            .find(|r| r.id == "fail2ban-integration")
+            .unwrap();
         assert_eq!(fb.tier, Tier::Essential);
     }
 
@@ -968,7 +979,10 @@ mod tests {
     fn crowdsec_not_available_when_missing() {
         let p = probes_all_false();
         let recs = score_modules(&p);
-        let cs = recs.iter().find(|r| r.id == "crowdsec-integration").unwrap();
+        let cs = recs
+            .iter()
+            .find(|r| r.id == "crowdsec-integration")
+            .unwrap();
         assert_eq!(cs.tier, Tier::NotAvailable);
     }
 
@@ -976,7 +990,10 @@ mod tests {
     fn crowdsec_essential_when_found() {
         let p = probes_with_crowdsec();
         let recs = score_modules(&p);
-        let cs = recs.iter().find(|r| r.id == "crowdsec-integration").unwrap();
+        let cs = recs
+            .iter()
+            .find(|r| r.id == "crowdsec-integration")
+            .unwrap();
         assert_eq!(cs.tier, Tier::Essential);
     }
 }

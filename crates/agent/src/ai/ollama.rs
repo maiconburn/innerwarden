@@ -81,19 +81,16 @@ impl AiProvider for OllamaProvider {
             req = req.bearer_auth(key);
         }
 
-        let resp = req
-            .send()
-            .await
-            .with_context(|| {
-                if self.api_key.is_some() {
-                    format!("Ollama cloud request to {url} failed — check network connectivity")
-                } else {
-                    format!(
-                        "Ollama request to {url} failed — is Ollama running? \
+        let resp = req.send().await.with_context(|| {
+            if self.api_key.is_some() {
+                format!("Ollama cloud request to {url} failed — check network connectivity")
+            } else {
+                format!(
+                    "Ollama request to {url} failed — is Ollama running? \
                          Start it with: ollama serve"
-                    )
-                }
-            })?;
+                )
+            }
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
