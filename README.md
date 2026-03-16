@@ -279,7 +279,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test    # 511 tests
+make test    # 502 tests
 make build   # debug build (sensor + agent + ctl)
 ```
 

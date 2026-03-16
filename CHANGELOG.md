@@ -9,6 +9,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.1.4] — 2026-03-16
+
 ### Sensor (`innerwarden-sensor`)
 
 **New collectors**
@@ -22,32 +26,48 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `user_agent_scanner` — stateless User-Agent matching against 20 scanner signatures (Nikto, sqlmap, Nuclei, Masscan, Gobuster, ffuf, Burp Suite, Metasploit, and more); emits `http.scanner_ua` (High) on first match; dedup by `(ip, scanner)` in 10-minute window; MITRE T1595 / T1595.002
 
 **Enhanced integrity detection**
-- SSH `authorized_keys` tampering: changes to `authorized_keys` files emit `ssh.authorized_keys_changed` (High) instead of generic `file.changed`; extracts username from path; MITRE T1098.004; user entity attached
-- Cron tampering: changes to `/etc/crontab`, `/etc/cron.d/*`, `/etc/cron.{hourly,daily,weekly,monthly}/*`, `/var/spool/cron/crontabs/<user>` emit `cron.tampering` (High); username extracted from user crontab paths; MITRE T1053.003
+- SSH `authorized_keys` tampering: changes to `authorized_keys` files emit `ssh.authorized_keys_changed` (High) instead of generic `file.changed`; extracts username from path; MITRE T1098.004
+- Cron tampering: changes to crontab files emit `cron.tampering` (High); MITRE T1053.003
 
 **Docker privilege escalation detection**
-- On `container.start`, spawns `docker inspect` in background (non-blocking); detects `--privileged` flag, docker.sock mount, and dangerous capabilities (`SYS_ADMIN`, `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`); emits `container.privileged` (High), `container.sock_mount` (High), `container.dangerous_cap` (Medium)
+- On `container.start`, detects `--privileged` flag, docker.sock mount, and dangerous capabilities; emits `container.privileged`, `container.sock_mount`, `container.dangerous_cap`
 
 ### Agent (`innerwarden-agent`)
 
 **New integrations**
-- Slack notifications: `SlackClient` posts Block Kit messages via Incoming Webhook; severity emoji + coloured sidebar + optional deep-link button; configured via `[slack]` in `agent.toml` or `SLACK_WEBHOOK_URL`; no OAuth or API token needed
-- Fail2ban integration: polls `fail2ban-client banned` output; enforces active bans via block skills; unified audit trail
-- GeoIP enrichment: enriches AI triage context with country, city, ISP, and ASN via ip-api.com; no API key; free tier 45 req/min
-- CrowdSec integration: polls CrowdSec Local API for crowd-sourced ban decisions; enforces them via block skills
-- Cloudflare integration: `CloudflareClient` pushes every `block_ip` decision to Cloudflare's edge via IP Access Rules API; attacking IPs are blocked at the CDN before reaching the host; configured via `[cloudflare]` in `agent.toml` or `CLOUDFLARE_API_TOKEN`; fail-silent; 5 tests
+- Slack notifications via Incoming Webhook (Block Kit, severity colours, optional dashboard deep-link)
+- Fail2ban integration: syncs active bans into InnerWarden blocklist
+- GeoIP enrichment via ip-api.com (no API key; 45 req/min free)
+- CrowdSec integration: enforces crowd-sourced bans via block skills
+- Cloudflare integration: pushes `block_ip` decisions to Cloudflare edge via IP Access Rules API
 
 **Response skills**
-- `block-ip-pf` — IP block via macOS Packet Filter (`pfctl -t innerwarden-blocked -T add`); Open tier
+- `block-ip-pf` — IP block via macOS Packet Filter (`pfctl`); Open tier
 
 **DDoS and AI overload protection**
-- `abuseipdb.auto_block_threshold` — if AbuseIPDB confidence score ≥ threshold, IP is blocked immediately without an AI API call; eliminates AI cost for known-malicious botnet IPs; `ai_provider: "abuseipdb"` in audit trail
-- `ai.max_ai_calls_per_tick` — caps AI calls per incident tick (default 5); excess incidents deferred to next tick; prevents API bill spikes during attacks with many unique IPs
-- `ai.circuit_breaker_threshold` — if new incidents per tick ≥ threshold, suspends AI analysis entirely for the tick and logs a warning; `ai.circuit_breaker_cooldown_secs` controls reset delay (default 60s); 0 = disabled (default)
+- `abuseipdb.auto_block_threshold` — skip AI for known-malicious IPs (AbuseIPDB confidence ≥ threshold)
+- `ai.max_ai_calls_per_tick` — cap AI calls per tick (default 5); prevents API bill spikes
+- `ai.circuit_breaker_threshold` — suspend AI for the tick if incident burst ≥ threshold
 
 ### Control plane (`innerwarden` / `innerwarden-ctl`)
 
-- `innerwarden scan` — probes the local machine (sshd, Docker, nginx, fail2ban, Falco, Suricata, osquery, Wazuh, pf, ufw, iptables, auditd); scores and ranks all built-in modules by relevance; interactive Q&A loop reads module README files for in-terminal documentation
+**New commands**
+- `innerwarden setup` — onboarding wizard: scans machine, configures AI, Telegram, responder, and enables essential modules
+- `innerwarden incidents` — lists recent incidents with severity, IP, and time
+- `innerwarden decisions` — shows agent decisions (block, suspend, ignore) with confidence and dry-run status
+- `innerwarden entity <ip|user>` — full chronological timeline for one IP or user across events, incidents, and decisions
+- `innerwarden block / unblock` — manual firewall control with audit trail
+- `innerwarden sensor-status` — reads telemetry snapshot; shows collector and detector event counts
+- `innerwarden export` — exports events, incidents, or decisions to JSON or CSV
+- `innerwarden tail` — streams new entries in real time (like `tail -f`)
+- `innerwarden report` — prints the daily Markdown summary to the terminal
+- `innerwarden watchdog` — checks agent health against telemetry mtime; `--status` shows cron schedule
+- `innerwarden tune` — analyses noise/signal per detector and suggests threshold adjustments
+- `innerwarden test-alert` — sends a test message to all configured notification channels
+- `innerwarden completions bash|zsh|fish` — generates shell tab-completion scripts
+- `innerwarden configure` — interactive menu for all integrations; sub-commands for AI, Telegram, Slack, webhook, dashboard, AbuseIPDB, GeoIP, fail2ban, watchdog
+- `innerwarden scan` — probes the machine and scores all built-in modules by relevance
+- `innerwarden ai install` — configures Ollama cloud as AI provider (free tier, no GPU)
 
 ### Module system
 
@@ -55,7 +75,7 @@ New built-in modules: `wazuh-integration`, `nginx-error-monitor`, `falco-integra
 
 ### Test coverage
 
-511 tests across three crates (185 sensor + 178 agent + 148 ctl).
+502 tests across three crates (185 sensor + 178 agent + 139 ctl).
 
 ---
 
