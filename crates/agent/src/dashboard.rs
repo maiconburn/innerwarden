@@ -546,6 +546,8 @@ pub async fn serve(
         .route("/api/export", get(api_export))
         .route("/api/report", get(api_report))
         .route("/api/report/dates", get(api_report_dates))
+        // E6 — system status
+        .route("/api/status", get(api_status))
         // D3 — operator-initiated actions (POST, require auth, respect dry_run)
         .route("/api/action/block-ip", post(api_action_block_ip))
         .route("/api/action/suspend-user", post(api_action_suspend_user))
@@ -1081,6 +1083,43 @@ async fn api_action_config(State(state): State<DashboardState>) -> Json<serde_js
         "dry_run": state.action_cfg.dry_run,
         "block_backend": state.action_cfg.block_backend,
         "allowed_skills": state.action_cfg.allowed_skills,
+    }))
+}
+
+/// GET /api/status — E6: system status including data files and responder config.
+async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let data_dir = &state.data_dir;
+
+    let file_exists = |name: &str| data_dir.join(name).exists();
+    let file_size = |name: &str| {
+        std::fs::metadata(data_dir.join(name))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+
+    let events_file = format!("events-{today}.jsonl");
+    let incidents_file = format!("incidents-{today}.jsonl");
+    let decisions_file = format!("decisions-{today}.jsonl");
+    let telemetry_file = format!("telemetry-{today}.jsonl");
+
+    let action_cfg = &state.action_cfg;
+
+    Json(serde_json::json!({
+        "date": today,
+        "data_dir": data_dir.display().to_string(),
+        "files": {
+            "events": { "exists": file_exists(&events_file), "size_bytes": file_size(&events_file) },
+            "incidents": { "exists": file_exists(&incidents_file), "size_bytes": file_size(&incidents_file) },
+            "decisions": { "exists": file_exists(&decisions_file), "size_bytes": file_size(&decisions_file) },
+            "telemetry": { "exists": file_exists(&telemetry_file), "size_bytes": file_size(&telemetry_file) }
+        },
+        "responder": {
+            "enabled": action_cfg.enabled,
+            "dry_run": action_cfg.dry_run,
+            "block_backend": action_cfg.block_backend,
+            "allowed_skills": action_cfg.allowed_skills
+        }
     }))
 }
 
@@ -2747,7 +2786,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <title>Inner Warden</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     :root {
       /* ── Site-matched palette (innerwarden.com D4) ─────────────── */
@@ -2755,8 +2794,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       --bg1: #091121;
       --card: rgba(9, 17, 33, 0.96);
       --card-hover: rgba(15, 26, 49, 0.99);
-      --line: rgba(255, 255, 255, 0.07);
-      --line2: rgba(255, 255, 255, 0.14);
+      --line: #1a2943;
+      --line2: #263554;
       --text: #edf6ff;
       --muted: #8b9db8;
       --ok: #3ac27e;
@@ -2764,6 +2803,32 @@ const INDEX_HTML: &str = r##"<!doctype html>
       --danger: #f43f5e;
       --accent: #78e5ff;
       --orange: #ff8c42;
+    }
+    /* Ambient cyber grid — matches site's cyber-shell */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(120,229,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120,229,255,0.025) 1px, transparent 1px);
+      background-size: 48px 48px;
+      animation: grid-drift 26s linear infinite;
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, rgba(120,229,255,0.04) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .app { position: relative; z-index: 1; }
+    @keyframes grid-drift {
+      from { background-position: 0 0; }
+      to   { background-position: 48px 48px; }
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
@@ -2780,7 +2845,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     /* ── App shell ───────────────────────────────────────────────── */
-    .app { display: flex; flex-direction: column; height: 100vh; }
+    .app { display: flex; flex-direction: column; height: 100vh; position: relative; z-index: 1; }
 
     .app-header {
       display: flex; align-items: center; gap: 10px;
@@ -2838,6 +2903,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .kpi-card {
       background: var(--card); border: 1px solid var(--line); border-radius: 9px;
       padding: 8px 4px; text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .kpi-card:hover {
+      border-color: rgba(120,229,255,0.2);
+      box-shadow: 0 2px 12px rgba(0,0,0,0.4), 0 0 0 1px rgba(120,229,255,0.06);
     }
     .kpi-label {
       font-size: 0.58rem; letter-spacing: 0.05em; color: var(--muted);
@@ -2858,7 +2929,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       border-radius: 8px;
       font-size: 0.72rem;
       padding: 7px 8px;
-      font-family: "IBM Plex Mono", monospace;
+      font-family: "JetBrains Mono", monospace;
     }
     .filters button {
       cursor: pointer;
@@ -2867,6 +2938,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       color: var(--accent);
       font-family: "Space Grotesk", sans-serif;
       font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 0.73rem;
     }
     .filters button:hover {
       background: rgba(120, 229, 255, 0.20);
@@ -2908,27 +2981,32 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     /* Section header */
     .section-title {
-      font-size: 0.65rem; letter-spacing: 0.07em; color: var(--muted);
-      text-transform: uppercase; margin: 10px 0 5px; padding: 0 2px;
+      font-size: 0.6rem; letter-spacing: 0.1em; color: var(--muted);
+      text-transform: uppercase; margin: 12px 0 6px; padding: 0 2px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section-title::after {
+      content: ""; flex: 1; height: 1px; background: var(--line);
     }
 
     /* Attacker card */
     .attacker-card {
       background: var(--card); border: 1px solid var(--line); border-radius: 10px;
       padding: 10px 11px; margin-bottom: 5px; cursor: pointer;
-      transition: border-color 0.15s, background 0.15s;
+      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.35);
     }
-    .attacker-card:hover { border-color: var(--line2); background: var(--card-hover); }
+    .attacker-card:hover { border-color: var(--line2); background: var(--card-hover); box-shadow: 0 4px 20px rgba(0,0,0,0.45), 0 0 0 1px rgba(120,229,255,0.08); }
     .attacker-card.active { border-color: var(--accent); background: var(--card-hover); }
     .card-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 3px; }
     .card-ip {
-      font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 0.82rem;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-family: "JetBrains Mono", monospace; font-weight: 600; font-size: 0.82rem;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px;
     }
     .card-detectors { font-size: 0.7rem; color: var(--muted); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .card-meta { display: flex; gap: 6px; font-size: 0.7rem; margin-bottom: 2px; align-items: center; }
     .card-counts { color: var(--muted); }
-    .card-time { font-size: 0.65rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
+    .card-time { font-size: 0.65rem; color: var(--muted); font-family: "JetBrains Mono", monospace; }
 
     .cluster-card {
       background: rgba(120, 229, 255, 0.07);
@@ -2937,12 +3015,13 @@ const INDEX_HTML: &str = r##"<!doctype html>
       padding: 9px 11px;
       margin-bottom: 5px;
       cursor: pointer;
-      transition: background 0.15s;
+      transition: background 0.15s, box-shadow 0.15s;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.35);
     }
-    .cluster-card:hover { background: rgba(120, 229, 255, 0.12); }
+    .cluster-card:hover { background: rgba(120, 229, 255, 0.12); box-shadow: 0 4px 20px rgba(0,0,0,0.45), 0 0 0 1px rgba(120,229,255,0.08); }
     .cluster-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
     .cluster-id { font-size: 0.66rem; color: var(--accent); letter-spacing: 0.04em; text-transform: uppercase; }
-    .cluster-pivot { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--text); }
+    .cluster-pivot { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--text); }
     .cluster-meta { font-size: 0.67rem; color: var(--muted); margin-top: 3px; }
     .cluster-dets { font-size: 0.65rem; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -2971,7 +3050,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       margin-bottom: 6px; flex-wrap: wrap;
     }
     .journey-ip {
-      font-family: "IBM Plex Mono", monospace; font-size: 1.3rem; font-weight: 700;
+      font-family: "JetBrains Mono", monospace; font-size: 1.3rem; font-weight: 700;
     }
     .journey-time { font-size: 0.75rem; color: var(--muted); }
     .journey-subtitle { font-size: 0.78rem; color: var(--muted); margin-bottom: 18px; }
@@ -3009,6 +3088,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 12px 13px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+      transition: box-shadow 0.2s;
+    }
+    .guided-card:hover {
+      box-shadow: 0 4px 20px rgba(0,0,0,0.45), 0 0 0 1px rgba(120,229,255,0.08);
     }
     .guided-title {
       font-size: 0.64rem;
@@ -3035,7 +3119,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       letter-spacing: 0.05em;
     }
     .summary-value {
-      font-family: "IBM Plex Mono", monospace;
+      font-family: "JetBrains Mono", monospace;
       font-size: 0.8rem;
       margin-top: 2px;
     }
@@ -3070,7 +3154,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       border-radius: 999px;
       padding: 4px 10px;
       font-size: 0.64rem;
-      font-family: "IBM Plex Mono", monospace;
+      font-family: "JetBrains Mono", monospace;
       cursor: pointer;
       min-height: 28px;
     }
@@ -3122,7 +3206,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .tl-header:hover { border-color: var(--line2); background: var(--card-hover); }
     .tl-ts {
-      font-family: "IBM Plex Mono", monospace; font-size: 0.7rem; color: var(--muted);
+      font-family: "JetBrains Mono", monospace; font-size: 0.7rem; color: var(--muted);
       flex-shrink: 0; margin-top: 1px;
     }
     .tl-summary {
@@ -3135,7 +3219,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       background: rgba(0,0,0,0.32); border: 1px solid var(--line);
       border-top: none; border-radius: 0 0 9px 9px;
       padding: 11px 13px; font-size: 0.72rem;
-      font-family: "IBM Plex Mono", monospace;
+      font-family: "JetBrains Mono", monospace;
       color: #9ab8d0; overflow-x: auto; white-space: pre;
       line-height: 1.55; margin: 0;
     }
@@ -3185,6 +3269,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
       border-radius: 10px;
       padding: 13px 14px;
       margin-bottom: 10px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+      transition: box-shadow 0.2s;
+    }
+    .verdict-card:hover {
+      box-shadow: 0 4px 20px rgba(0,0,0,0.45), 0 0 0 1px rgba(120,229,255,0.08);
     }
     .verdict-title {
       font-size: 0.62rem; letter-spacing: 0.07em; text-transform: uppercase;
@@ -3207,7 +3296,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .verdict-value {
       font-size: 0.78rem; margin-top: 3px; font-weight: 600;
-      font-family: "IBM Plex Mono", monospace;
+      font-family: "JetBrains Mono", monospace;
     }
     .verdict-value.v-ok      { color: var(--ok); }
     .verdict-value.v-danger  { color: var(--danger); }
@@ -3296,7 +3385,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       background: rgba(0,0,0,0.3);
       border-top: 1px solid var(--line);
       margin-top: 6px; padding: 8px;
-      font-family: "IBM Plex Mono", monospace;
+      font-family: "JetBrains Mono", monospace;
       font-size: 0.65rem; color: #9ab8d0;
       white-space: pre; overflow-x: auto;
       border-radius: 0 0 6px 6px;
@@ -3649,6 +3738,158 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .card-new  { animation: cardSlideIn 0.4s ease forwards; }
     .kpi-flash { animation: kpiFlash 0.8s ease forwards; }
+
+    @keyframes pulse-dot {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(244,63,94,0.5); }
+      50%       { box-shadow: 0 0 0 4px rgba(244,63,94,0); }
+    }
+    .pulse-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--danger); animation: pulse-dot 1.8s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .pulse-dot.ok { background: var(--ok); animation: none; }
+    .pulse-dot.warn { background: var(--warn); animation: none; }
+    @keyframes breathe {
+      0%,100% { opacity:0.6; transform: scale(1); }
+      50%      { opacity:1;   transform: scale(1.15); }
+    }
+    .live-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--ok); animation: breathe 2.5s ease-in-out infinite;
+    }
+
+    /* ── Card badges ────────────────────────────────────────────── */
+    .card-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .card-badge {
+      font-size: 0.56rem; font-weight: 700; letter-spacing: 0.04em;
+      border-radius: 3px; padding: 1px 5px; text-transform: uppercase;
+    }
+    .badge-blocked  { background: rgba(58,194,126,0.15);  color: var(--ok);     border: 1px solid rgba(58,194,126,0.25); }
+    .badge-active   { background: rgba(244,63,94,0.12);   color: var(--danger); border: 1px solid rgba(244,63,94,0.22); }
+    .badge-monitor  { background: rgba(120,229,255,0.10); color: var(--accent); border: 1px solid rgba(120,229,255,0.20); }
+    .badge-honeypot { background: rgba(255,140,66,0.12);  color: var(--orange); border: 1px solid rgba(255,140,66,0.22); }
+    .badge-abuse { background: rgba(244,63,94,0.10); color: #ff8080; border: 1px solid rgba(244,63,94,0.18); }
+    .badge-geo { background: rgba(139,157,184,0.10); color: var(--muted); border: 1px solid var(--line); }
+    .badge-ai { background: rgba(120,229,255,0.08); color: var(--accent); border: 1px solid rgba(120,229,255,0.15); }
+    .badge-f2b { background: rgba(255,140,66,0.08); color: var(--orange); border: 1px solid rgba(255,140,66,0.15); }
+    .badge-cs { background: rgba(58,194,126,0.08); color: var(--ok); border: 1px solid rgba(58,194,126,0.15); }
+    .badge-op { background: rgba(139,157,184,0.12); color: var(--text); border: 1px solid var(--line); }
+
+    /* ── E2 — Home state ─────────────────────────────────────────── */
+    #homeState { padding: 0; }
+    .home-kpi-row {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+      margin-bottom: 16px;
+    }
+    .home-kpi-card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px 12px; text-align: center;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .home-kpi-card:hover {
+      border-color: rgba(120,229,255,0.2);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 0 1px rgba(120,229,255,0.06);
+    }
+    .home-kpi-icon { font-size: 1.1rem; margin-bottom: 4px; }
+    .home-kpi-label { font-size: 0.6rem; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    .home-kpi-val { font-size: 1.6rem; font-weight: 700; color: var(--text); line-height: 1; }
+    .home-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+      margin-bottom: 0;
+    }
+    .home-card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    }
+    .home-card-title {
+      font-size: 0.63rem; letter-spacing: 0.09em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 10px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .home-threat-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 0; border-bottom: 1px solid var(--line);
+      cursor: pointer; transition: background 0.15s;
+    }
+    .home-threat-row:last-child { border-bottom: none; }
+    .home-threat-row:hover { background: rgba(120,229,255,0.04); border-radius: 6px; }
+    .home-threat-ip { font-family: "JetBrains Mono", monospace; font-size: 0.77rem; font-weight: 600; flex: 1; }
+    .home-threat-meta { font-size: 0.65rem; color: var(--muted); }
+    .home-decision-row {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 6px 0; border-bottom: 1px solid var(--line);
+    }
+    .home-decision-row:last-child { border-bottom: none; }
+    .home-decision-action { font-size: 0.72rem; font-weight: 600; flex: 1; }
+    .home-decision-meta { font-size: 0.65rem; color: var(--muted); margin-top: 1px; }
+    .home-decision-conf { font-size: 0.65rem; color: var(--accent); font-family: "JetBrains Mono", monospace; }
+    .home-det-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 0; border-bottom: 1px solid var(--line);
+    }
+    .home-det-row:last-child { border-bottom: none; }
+    .home-det-name { font-size: 0.75rem; flex: 1; }
+    .home-det-bar-wrap { width: 80px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+    .home-det-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
+    .home-det-count { font-size: 0.7rem; color: var(--accent); font-weight: 600; min-width: 24px; text-align: right; }
+    .home-footer { margin-top: 14px; padding: 10px 0; text-align: center; }
+    @media (max-width: 860px) {
+      .home-kpi-row { grid-template-columns: repeat(2, 1fr); }
+      .home-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 480px) {
+      .home-kpi-row { grid-template-columns: 1fr 1fr; gap: 7px; }
+      .home-kpi-val { font-size: 1.3rem; }
+    }
+
+    /* ── E4 — Journey sticky footer ──────────────────────────────── */
+    .journey-sticky-footer {
+      position: sticky; bottom: 0; z-index: 10;
+      background: linear-gradient(to top, var(--bg0) 60%, transparent);
+      padding: 16px 0 0; margin-top: 20px;
+      display: flex; gap: 8px;
+    }
+    .action-btn-large {
+      flex: 1; padding: 10px 16px; border-radius: 10px;
+      font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      transition: background 0.15s, border-color 0.15s;
+      min-height: 40px; letter-spacing: 0.02em;
+    }
+    .action-btn-block {
+      background: rgba(244,63,94,0.10); border: 1px solid rgba(244,63,94,0.30);
+      color: var(--danger);
+    }
+    .action-btn-block:hover { background: rgba(244,63,94,0.18); border-color: rgba(244,63,94,0.45); }
+    .action-btn-suspend {
+      background: rgba(255,184,77,0.10); border: 1px solid rgba(255,184,77,0.30);
+      color: var(--warn);
+    }
+    .action-btn-suspend:hover { background: rgba(255,184,77,0.18); border-color: rgba(255,184,77,0.45); }
+    .action-btn-export {
+      background: rgba(120,229,255,0.08); border: 1px solid rgba(120,229,255,0.25);
+      color: var(--accent);
+    }
+    .action-btn-export:hover { background: rgba(120,229,255,0.15); border-color: rgba(120,229,255,0.4); }
+
+    /* ── E5 — Report nav/export buttons ──────────────────────────── */
+    .report-nav-btn {
+      padding: 5px 10px; background: rgba(139,157,184,0.08);
+      border: 1px solid var(--line); color: var(--muted);
+      border-radius: 8px; font-size: 0.8rem; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .report-nav-btn:hover { background: rgba(120,229,255,0.08); color: var(--accent); border-color: rgba(120,229,255,0.25); }
+    .report-export-btn {
+      padding: 5px 14px; background: rgba(139,157,184,0.08);
+      border: 1px solid var(--line); color: var(--muted);
+      border-radius: 8px; font-size: 0.73rem; font-weight: 600; cursor: pointer;
+      transition: color 0.15s, background 0.15s, border-color 0.15s;
+    }
+    .report-export-btn:hover { background: rgba(120,229,255,0.1); color: var(--accent); border-color: rgba(120,229,255,0.28); }
   </style>
 </head>
 <body>
@@ -3688,6 +3929,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     <div class="main-nav">
       <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Investigate</button>
       <button type="button" class="main-nav-btn" id="navReport" onclick="showView('report')">Report</button>
+      <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Status</button>
     </div>
     <button type="button" class="panel-toggle-btn" id="panelToggleBtn" onclick="toggleLeftPanel()" aria-label="Toggle panel">
       <span id="panelToggleIcon">▲</span> List
@@ -3758,12 +4000,42 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     <!-- Right panel: journey timeline -->
     <main class="right-panel" id="rightPanel">
-      <div class="right-placeholder">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-        </svg>
-        <p>Select an item on the left<br>to view its investigation timeline.</p>
+      <div id="homeState">
+        <div class="home-kpi-row" id="homeKpiRow">
+          <div class="home-kpi-card"><div class="home-kpi-icon">⚡</div><div class="home-kpi-label">Events Today</div><div class="home-kpi-val" id="h-events">—</div></div>
+          <div class="home-kpi-card"><div class="home-kpi-icon">🚨</div><div class="home-kpi-label">Incidents</div><div class="home-kpi-val" id="h-incidents">—</div></div>
+          <div class="home-kpi-card"><div class="home-kpi-icon">🤖</div><div class="home-kpi-label">AI Decisions</div><div class="home-kpi-val" id="h-decisions">—</div></div>
+          <div class="home-kpi-card"><div class="home-kpi-icon">🚫</div><div class="home-kpi-label">Blocked IPs</div><div class="home-kpi-val" id="h-blocks">—</div></div>
+        </div>
+
+        <div class="home-grid">
+          <!-- Recent Threats -->
+          <div class="home-card">
+            <div class="home-card-title">
+              <span class="live-dot"></span>
+              Recent Threats
+            </div>
+            <div id="homeRecentThreats"><div class="empty">Loading…</div></div>
+          </div>
+
+          <!-- Recent Decisions -->
+          <div class="home-card">
+            <div class="home-card-title">AI Decisions</div>
+            <div id="homeRecentDecisions"><div class="empty">Loading…</div></div>
+          </div>
+        </div>
+
+        <div class="home-card" style="margin-top:12px">
+          <div class="home-card-title">Top Active Detectors</div>
+          <div id="homeDetectors"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="home-footer">
+          <span style="color:var(--muted);font-size:0.7rem">Select an entity on the left to investigate its full attack timeline →</span>
+        </div>
       </div>
+
+      <div id="journeyContent" style="display:none"></div>
     </main>
 
   </div>
@@ -3772,12 +4044,26 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <div class="report-view" id="viewReport" style="display:none">
     <div class="report-toolbar">
       <label class="report-label">Date</label>
+      <button type="button" class="report-nav-btn" id="reportPrev" onclick="navigateReport(-1)" title="Previous day">←</button>
       <select id="reportDateSelect" onchange="loadReport()"><option value="">latest</option></select>
+      <button type="button" class="report-nav-btn" id="reportNext" onclick="navigateReport(1)" title="Next day">→</button>
       <button type="button" class="report-refresh-btn" onclick="loadReport()">↻ Refresh</button>
+      <button type="button" class="report-export-btn" onclick="exportReport()" title="Export as Markdown">↓ Export</button>
       <span id="reportStatus" class="report-status"></span>
     </div>
     <div id="reportContent" class="report-content">
       <div class="empty" style="padding:40px;text-align:center">Loading report…</div>
+    </div>
+  </div>
+
+  <!-- E6 — Status view -->
+  <div class="report-view" id="viewStatus" style="display:none">
+    <div class="report-toolbar">
+      <button type="button" class="report-refresh-btn" onclick="loadStatus()">↻ Refresh</button>
+      <span id="statusViewStatus" class="report-status"></span>
+    </div>
+    <div id="statusContent" class="report-content">
+      <div class="empty" style="padding:40px;text-align:center">Loading…</div>
     </div>
   </div>
 
@@ -3822,25 +4108,135 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // ── D10 — View switcher ──────────────────────────────────────────────────
   function showView(name) {
-    const investigate = document.getElementById('viewInvestigate');
-    const report = document.getElementById('viewReport');
-    const btnI = document.getElementById('navInvestigate');
-    const btnR = document.getElementById('navReport');
+    const views = { investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus' };
+    const btns  = { investigate: 'navInvestigate', report: 'navReport', status: 'navStatus' };
+    Object.keys(views).forEach(k => {
+      const el = document.getElementById(views[k]);
+      const btn = document.getElementById(btns[k]);
+      if (el) el.style.display = k === name ? 'flex' : 'none';
+      if (btn) btn.classList.toggle('active', k === name);
+    });
     const toggleBtn = document.getElementById('panelToggleBtn');
-    if (name === 'report') {
-      investigate.style.display = 'none';
-      report.style.display = 'flex';
-      btnI.classList.remove('active');
-      btnR.classList.add('active');
-      if (toggleBtn) toggleBtn.style.display = 'none';
-      loadReport();
-    } else {
-      report.style.display = 'none';
-      investigate.style.display = 'flex';
-      btnI.classList.add('active');
-      btnR.classList.remove('active');
-      if (toggleBtn) toggleBtn.style.display = '';
+    if (toggleBtn) toggleBtn.style.display = name === 'investigate' ? '' : 'none';
+    if (name === 'report') loadReport();
+    if (name === 'status') loadStatus();
+  }
+
+  // ── E2 — Home state ─────────────────────────────────────────────────────
+  async function loadHomeState() {
+    try {
+      const [overview, decisions, pivots] = await Promise.all([
+        loadJson('/api/overview'),
+        loadJson('/api/decisions?limit=5'),
+        loadJson('/api/pivots?group_by=ip&limit=5')
+      ]);
+
+      // KPIs
+      const blockCount = (decisions.items || []).filter(d => d.action_type === 'block_ip' && d.auto_executed).length;
+      setHomeKpi('h-events', overview.events_count ?? 0);
+      setHomeKpi('h-incidents', overview.incidents_count ?? 0);
+      setHomeKpi('h-decisions', overview.decisions_count ?? 0);
+      setHomeKpi('h-blocks', blockCount);
+
+      // Recent threats (top IPs)
+      const threats = document.getElementById('homeRecentThreats');
+      if (threats) {
+        const items = pivots.items || [];
+        if (items.length === 0) {
+          threats.innerHTML = '<div class="empty">No threats detected today.</div>';
+        } else {
+          threats.innerHTML = items.slice(0,5).map(item => {
+            const sev = item.max_severity || 'unknown';
+            const ago = timeAgo(item.last_seen);
+            return '<div class="home-threat-row" onclick="handleCardClickByValue(\'ip\',\'' + esc(item.value || item.ip || '') + '\')">' +
+              '<div class="home-threat-ip">' + esc(item.value || item.ip || '?') + '</div>' +
+              '<span class="' + sevCls(sev) + '" style="font-size:0.62rem;font-weight:700">' + esc(sev.toUpperCase()) + '</span>' +
+              '<div class="home-threat-meta">' + (item.incident_count || 0) + ' inc · ' + ago + '</div>' +
+              '</div>';
+          }).join('');
+        }
+      }
+
+      // Recent decisions
+      const decs = document.getElementById('homeRecentDecisions');
+      if (decs) {
+        const items = decisions.items || [];
+        if (items.length === 0) {
+          decs.innerHTML = '<div class="empty">No decisions today.</div>';
+        } else {
+          const actionLabels = { block_ip: '🚫 Block IP', monitor_ip: '🔍 Monitor', honeypot: '🍯 Honeypot', suspend_user_sudo: '🔒 Suspend', ignore: '— Ignore' };
+          decs.innerHTML = items.slice(0,5).map(d => {
+            const label = actionLabels[d.action_type] || d.action_type;
+            const conf = ((d.confidence || 0) * 100).toFixed(0) + '%';
+            const mode = d.dry_run ? ' (dry)' : d.auto_executed ? '' : ' (skipped)';
+            return '<div class="home-decision-row">' +
+              '<div style="flex:1">' +
+              '<div class="home-decision-action">' + esc(label) + (mode ? '<span style="color:var(--muted);font-weight:400;font-size:0.65rem">' + esc(mode) + '</span>' : '') + '</div>' +
+              '<div class="home-decision-meta">' + esc(d.target_ip || d.incident_id || '—') + '</div>' +
+              '</div>' +
+              '<div class="home-decision-conf">' + conf + '</div>' +
+              '</div>';
+          }).join('');
+        }
+      }
+
+      // Top detectors
+      const detsEl = document.getElementById('homeDetectors');
+      if (detsEl) {
+        const dets = overview.top_detectors || [];
+        if (dets.length === 0) {
+          detsEl.innerHTML = '<div class="empty">No detector data.</div>';
+        } else {
+          const maxCount = Math.max(...dets.map(d => d.count), 1);
+          detsEl.innerHTML = '<div style="display:grid;gap:2px">' + dets.slice(0,8).map(d => {
+            const pct = Math.round((d.count / maxCount) * 100);
+            return '<div class="home-det-row">' +
+              '<div class="home-det-name">' + esc(d.detector) + '</div>' +
+              '<div class="home-det-bar-wrap"><div class="home-det-bar" style="width:' + pct + '%"></div></div>' +
+              '<div class="home-det-count">' + d.count + '</div>' +
+              '</div>';
+          }).join('') + '</div>';
+        }
+      }
+    } catch(e) {
+      console.warn('Home state load error:', e);
     }
+  }
+
+  function setHomeKpi(id, val) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = val; }
+  }
+
+  function timeAgo(ts) {
+    if (!ts) return '';
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+    return Math.floor(diff/86400) + 'd ago';
+  }
+
+  function handleCardClickByValue(type, value) {
+    // Find the card with this value and click it, or load journey directly
+    const cards = document.querySelectorAll('.attacker-card');
+    for (const card of cards) {
+      if (card.dataset.subjectValue === value && card.dataset.subjectType === type) {
+        card.click();
+        return;
+      }
+    }
+    // Direct load
+    loadJourney(type, value);
+  }
+
+  function showHomeState() {
+    document.getElementById('homeState').style.display = '';
+    document.getElementById('journeyContent').style.display = 'none';
+    document.getElementById('journeyContent').innerHTML = '';
+    // Deselect active card
+    document.querySelectorAll('.attacker-card.active').forEach(c => c.classList.remove('active'));
+    state.currentSubject = null;
   }
 
   // ── D10 — Report tab ────────────────────────────────────────────────────
@@ -3874,7 +4270,45 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
   }
 
+  function navigateReport(dir) {
+    const sel = document.getElementById('reportDateSelect');
+    const opts = Array.from(sel.options).filter(o => o.value);
+    if (!opts.length) return;
+    const cur = sel.value;
+    const idx = opts.findIndex(o => o.value === cur);
+    const nextIdx = idx === -1 ? (dir < 0 ? opts.length - 1 : 0) : Math.max(0, Math.min(opts.length - 1, idx - dir));
+    sel.value = opts[nextIdx]?.value || '';
+    loadReport();
+  }
+
+  async function exportReport() {
+    const date = document.getElementById('reportDateSelect')?.value || '';
+    try {
+      const url = '/api/export?format=markdown' + (date ? '&date=' + encodeURIComponent(date) : '');
+      const text = await loadText(url);
+      const fname = 'innerwarden-report-' + (date || new Date().toISOString().slice(0,10)) + '.md';
+      downloadBlob(fname, 'text/markdown', text);
+    } catch(e) {
+      showToast('Export failed: ' + e.message, 'err');
+    }
+  }
+
   function renderReport(r) {
+    function sparkline(values, color) {
+      if (!values || values.length < 2) return '';
+      const max = Math.max(...values, 1);
+      const w = 80, h = 28, pad = 2;
+      const pts = values.map((v, i) => {
+        const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+        const y = h - pad - ((v / max) * (h - pad * 2));
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+      const lastPt = pts.split(' ').pop().split(',');
+      return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="display:block;overflow:visible">' +
+        '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>' +
+        '<circle cx="' + lastPt[0] + '" cy="' + lastPt[1] + '" r="2.5" fill="' + color + '"/>' +
+        '</svg>';
+    }
     const ds = r.detection_summary || {};
     const ai = r.agent_ai_summary || {};
     const rw = r.recent_window || {};
@@ -4007,6 +4441,56 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     return html;
   }
+  async function loadStatus() {
+    const status = document.getElementById('statusViewStatus');
+    const content = document.getElementById('statusContent');
+    if (!status || !content) return;
+    status.textContent = 'Loading…';
+    content.innerHTML = '<div class="empty" style="padding:40px;text-align:center">Loading…</div>';
+    try {
+      const s = await loadJson('/api/status');
+      status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      content.innerHTML = renderStatus(s);
+    } catch(e) {
+      status.textContent = 'error';
+      content.innerHTML = '<div class="empty" style="padding:40px;color:var(--danger)">Failed: ' + esc(String(e.message)) + '</div>';
+    }
+  }
+
+  function renderStatus(s) {
+    const files = s.files || {};
+    const resp = s.responder || {};
+    const fmt = (bytes) => bytes > 1048576 ? (bytes/1048576).toFixed(1)+'MB' : bytes > 1024 ? (bytes/1024).toFixed(1)+'KB' : bytes+'B';
+
+    let html = '<div class="report-section"><div class="report-section-title">Data Files — ' + esc(s.date || '—') + '</div>' +
+      '<table class="report-table"><thead><tr><th>File</th><th>Status</th><th>Size</th></tr></thead><tbody>';
+    Object.entries(files).forEach(([k, v]) => {
+      const exists = v.exists;
+      html += '<tr>' +
+        '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.72rem">' + esc(k) + '.jsonl</td>' +
+        '<td>' + (exists ? '<span class="health-ok">✓ Present</span>' : '<span style="color:var(--muted)">— Absent</span>') + '</td>' +
+        '<td style="color:var(--muted)">' + (exists ? fmt(v.size_bytes) : '—') + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+
+    html += '<div class="report-section"><div class="report-section-title">Responder</div>' +
+      '<div class="report-kpi-row">' +
+      '<div class="report-kpi"><div class="report-kpi-label">Actions</div><div class="report-kpi-value ' + (resp.enabled ? 'good' : '') + '">' + (resp.enabled ? 'ENABLED' : 'DISABLED') + '</div></div>' +
+      '<div class="report-kpi"><div class="report-kpi-label">Mode</div><div class="report-kpi-value ' + (resp.dry_run ? 'warn' : 'bad') + '">' + (resp.dry_run ? 'DRY RUN' : 'LIVE') + '</div></div>' +
+      '<div class="report-kpi"><div class="report-kpi-label">Backend</div><div class="report-kpi-value">' + esc(resp.block_backend || '—') + '</div></div>' +
+      '</div>' +
+      '<div style="margin-top:8px;font-size:0.72rem;color:var(--muted)">Allowed skills:</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">' +
+      (resp.allowed_skills || []).map(sk => '<span class="card-badge badge-ai">' + esc(sk) + '</span>').join('') +
+      '</div></div>';
+
+    html += '<div class="report-section"><div class="report-section-title">Data Directory</div>' +
+      '<div style="font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;color:var(--muted);padding:4px 0">' + esc(s.data_dir || '—') + '</div></div>';
+
+    return html;
+  }
+
   // On mobile: auto-collapse the list when a journey is opened, re-open via button
   function collapseLeftOnMobile() {
     if (window.innerWidth <= 860 && leftPanelOpen) {
@@ -4314,14 +4798,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     if (type === 'block_ip') {
       document.getElementById('modalTitle').innerHTML =
-        'Block IP: <span style="font-family:\'IBM Plex Mono\',monospace">' + esc(ip) + '</span>' + drLabel;
+        'Block IP: <span style="font-family:\'JetBrains Mono\',monospace">' + esc(ip) + '</span>' + drLabel;
       document.getElementById('modalSubtitle').textContent =
         'Executes ' + esc(actionCfg.block_backend) + ' deny rule. Logged to the audit trail.';
       document.getElementById('modalDurationField').style.display = 'none';
       document.getElementById('modalConfirm').textContent = actionCfg.dry_run ? 'Simulate Block' : 'Block IP';
     } else {
       document.getElementById('modalTitle').innerHTML =
-        'Suspend sudo: <span style="font-family:\'IBM Plex Mono\',monospace">' + esc(user) + '</span>' + drLabel;
+        'Suspend sudo: <span style="font-family:\'JetBrains Mono\',monospace">' + esc(user) + '</span>' + drLabel;
       document.getElementById('modalSubtitle').textContent =
         'Temporarily revokes sudo access for the specified duration. Logged to the audit trail.';
       document.getElementById('modalDurationField').style.display = 'block';
@@ -4550,8 +5034,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
     }
 
+    document.getElementById('homeState').style.display = 'none';
+    document.getElementById('journeyContent').style.display = 'block';
+    document.getElementById('journeyContent').innerHTML = '<div class="loading" style="padding:40px">Loading timeline…</div>';
+
     const panel = document.getElementById('rightPanel');
-    panel.innerHTML = '<div class="loading">Loading journey for ' + esc(subjectValue) + '…</div>';
 
     try {
       const baseQs = buildQuery({
@@ -4620,6 +5107,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
       window._journeyData = j;
 
       let html = `
+        <div style="margin-bottom:12px">
+          <button type="button" class="journey-btn" onclick="showHomeState()" style="font-size:0.68rem">← Back to Overview</button>
+        </div>
         <div class="journey-header">
           <span class="journey-ip">${esc(j.subject || subjectValue)}</span>
           <span class="${outcomeCls(j.outcome)}">${outcomeLabel(j.outcome)}</span>
@@ -4685,17 +5175,37 @@ const INDEX_HTML: &str = r##"<!doctype html>
       }
 
       html += '</div>';
-      panel.innerHTML = html;
+      document.getElementById('journeyContent').innerHTML = html;
     } catch (e) {
-      panel.innerHTML = '<div class="err">Failed to load journey: ' + esc(e.message) + '</div>';
+      document.getElementById('journeyContent').innerHTML = '<div class="err">Failed to load journey: ' + esc(e.message) + '</div>';
     }
   }
 
   function renderCard(item) {
     const value = item.value;
     const active = state.selected.type === state.pivot && state.selected.value === value ? ' active' : '';
-    const detectors = (item.detectors || []).map(esc).join(', ') || '—';
+    const sev = item.max_severity || 'unknown';
+    const sevCss = sevCls(sev);
     const outcome = item.outcome || 'unknown';
+    const dets = (item.detectors || []).join(', ') || '—';
+
+    // Build badges
+    let badges = '';
+    const outMap = { blocked:'badge-blocked', active:'badge-active', monitoring:'badge-monitor', honeypot:'badge-honeypot' };
+    const outBadge = outMap[outcome] || '';
+    if (outBadge) badges += `<span class="card-badge ${outBadge}">${outcomeLabel(outcome)}</span>`;
+
+    const ago = (ts) => {
+      if (!ts) return '';
+      const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+      if (diff < 60) return diff + 's ago';
+      if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+      return Math.floor(diff/86400) + 'd ago';
+    };
+
+    const isRecent = item.last_seen && (Date.now() - new Date(item.last_seen).getTime()) < 300000;
+    const recentDot = isRecent ? '<span class="pulse-dot" title="Active in last 5 min"></span>' : '';
 
     return `
       <div class="attacker-card${active}"
@@ -4703,15 +5213,15 @@ const INDEX_HTML: &str = r##"<!doctype html>
            data-subject-value="${esc(value)}"
            onclick="loadJourney('${esc(state.pivot)}','${esc(value)}')">
         <div class="card-row">
-          <span class="card-ip">${esc(value)}</span>
-          <span class="${outcomeCls(outcome)}">${outcomeLabel(outcome)}</span>
+          <div class="card-ip">${recentDot} ${esc(value)}</div>
+          <span class="${sevCss}" style="font-size:0.65rem;font-weight:700">${esc(sev.toUpperCase())}</span>
         </div>
-        <div class="card-detectors">${detectors}</div>
+        <div class="card-detectors">${esc(dets)}</div>
         <div class="card-meta">
-          <span class="${sevCls(item.max_severity)}">${esc((item.max_severity || 'unknown').toUpperCase())}</span>
-          <span class="card-counts">${item.incident_count} inc · ${item.event_count} ev</span>
+          <span class="card-counts">${item.incident_count || 0} inc · ${item.event_count || 0} evt</span>
+          <span class="card-time">${ago(item.last_seen)}</span>
         </div>
-        <div class="card-time">${esc(fmtTime(item.first_seen))} → ${esc(fmtTime(item.last_seen))}</div>
+        ${badges ? `<div class="card-badges">${badges}</div>` : ''}
       </div>`;
   }
 
@@ -4914,13 +5424,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
           items.some((it) => it.value === state.selected.value);
         if (!stillExists) {
           state.selected = { type: state.pivot, value: null };
-          document.getElementById('rightPanel').innerHTML = `
-            <div class="right-placeholder">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-              </svg>
-              <p>Current selection no longer matches filters.<br>Select another item to continue.</p>
-            </div>`;
+          showHomeState();
         } else if (forceRefreshJourney) {
           await loadJourney(state.selected.type, state.selected.value);
         }
@@ -4945,6 +5449,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   updatePivotUi();
   loadActionConfig();
   loadReportDates();
+  loadHomeState();
 
   // Close modal on Escape key
   document.addEventListener('keydown', (ev) => {
@@ -4983,6 +5488,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (state.selected.value) {
       loadJourney(state.selected.type, state.selected.value);
     }
+    loadHomeState();
   });
   // D6 — SSE live update client (replaces 5 s setInterval).
   // Uses fetch() + ReadableStream so Basic auth credentials flow correctly.
