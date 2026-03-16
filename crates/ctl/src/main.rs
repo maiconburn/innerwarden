@@ -3444,7 +3444,7 @@ fn cmd_configure_telegram(
 fn discover_telegram_chat_id(token: &str) -> Option<String> {
     let url = format!("https://api.telegram.org/bot{token}/getUpdates?limit=1&timeout=0");
     let resp = ureq::get(&url).call().ok()?;
-    let json: serde_json::Value = resp.into_json().ok()?;
+    let json: serde_json::Value = resp.into_body().read_json().ok()?;
     json["result"]
         .as_array()?
         .last()?
@@ -3464,10 +3464,10 @@ fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
         "parse_mode": "HTML"
     });
     let resp = ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let json: serde_json::Value = resp.into_json()?;
+    let json: serde_json::Value = resp.into_body().read_json()?;
     if json["ok"].as_bool() != Some(true) {
         anyhow::bail!(
             "{}",
@@ -3587,8 +3587,8 @@ fn send_slack_test(webhook_url: &str) -> Result<()> {
         "text": "✅ *InnerWarden* is connected. You'll receive security alerts here."
     });
     ureq::post(webhook_url)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
 }
@@ -3687,11 +3687,11 @@ fn send_webhook_test(url: &str) -> Result<u16> {
         "host": hostname()
     });
     let resp = ureq::post(url)
-        .set("Content-Type", "application/json")
-        .set("User-Agent", "innerwarden-ctl/1.0")
-        .send_string(&body.to_string())
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "innerwarden-ctl/1.0")
+        .send(body.to_string())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(resp.status())
+    Ok(resp.status().as_u16())
 }
 
 // ---------------------------------------------------------------------------
@@ -3966,7 +3966,9 @@ fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
     print!("  Checking ip-api.com connectivity... ");
     std::io::stdout().flush()?;
     match ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
-        .timeout(std::time::Duration::from_secs(5))
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .build()
         .call()
     {
         Ok(_) => println!("ok"),
@@ -4349,8 +4351,8 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
                     "text": "🔔 *Test alert from InnerWarden* — Slack notifications are working correctly."
                 });
                 match ureq::post(&url)
-                    .set("Content-Type", "application/json")
-                    .send_string(&payload.to_string())
+                    .header("Content-Type", "application/json")
+                    .send(payload.to_string())
                 {
                     Ok(_) => println!("ok"),
                     Err(e) => {
@@ -4404,9 +4406,11 @@ fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
                     "message": "Test alert from InnerWarden — webhook notifications are working correctly."
                 });
                 match ureq::post(&url)
-                    .set("Content-Type", "application/json")
-                    .timeout(std::time::Duration::from_secs(10))
-                    .send_string(&payload.to_string())
+                    .header("Content-Type", "application/json")
+                    .config()
+                    .timeout_global(Some(std::time::Duration::from_secs(10)))
+                    .build()
+                    .send(payload.to_string())
                 {
                     Ok(_) => println!("ok"),
                     Err(e) => {
@@ -4465,10 +4469,10 @@ fn send_telegram_message_md(token: &str, chat_id: &str, text: &str) -> Result<()
         "parse_mode": "MarkdownV2"
     });
     let resp = ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let json: serde_json::Value = resp.into_json()?;
+    let json: serde_json::Value = resp.into_body().read_json()?;
     if json["ok"].as_bool() != Some(true) {
         anyhow::bail!(
             "{}",
@@ -5067,8 +5071,8 @@ fn maybe_send_watchdog_alert(cli: &Cli, message: &str) {
                 "text": message,
             });
             let _ = ureq::post(&url)
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string());
+                .header("Content-Type", "application/json")
+                .send(body.to_string());
         }
     }
 }
@@ -6889,7 +6893,9 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
         // Check if the dashboard is actually reachable
         let dashboard_up = ureq::get("http://127.0.0.1:8787/api/status")
-            .timeout(std::time::Duration::from_secs(2))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(2)))
+            .build()
             .call()
             .is_ok();
         if dashboard_up {
@@ -6922,7 +6928,9 @@ fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
 
             // Quick connectivity check
             let reachable = ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
-                .timeout(std::time::Duration::from_secs(3))
+                .config()
+                .timeout_global(Some(std::time::Duration::from_secs(3)))
+                .build()
                 .call()
                 .is_ok();
 

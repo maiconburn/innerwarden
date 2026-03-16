@@ -32,7 +32,7 @@ pub fn download(url: &str, tmp_dir: &Path) -> Result<PathBuf> {
     let dest = tmp_dir.join(filename);
 
     let resp = ureq::get(url)
-        .set("User-Agent", USER_AGENT)
+        .header("User-Agent", USER_AGENT)
         .call()
         .with_context(|| format!("failed to download {url}"))?;
 
@@ -40,7 +40,7 @@ pub fn download(url: &str, tmp_dir: &Path) -> Result<PathBuf> {
         .with_context(|| format!("cannot create {}", dest.display()))?;
 
     let mut buf = [0u8; 65_536];
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     loop {
         let n = reader
             .read(&mut buf)
@@ -60,10 +60,10 @@ pub fn download(url: &str, tmp_dir: &Path) -> Result<PathBuf> {
 pub fn fetch_sha256_sidecar(url: &str) -> Option<String> {
     let sha_url = format!("{url}.sha256");
     let resp = ureq::get(&sha_url)
-        .set("User-Agent", USER_AGENT)
+        .header("User-Agent", USER_AGENT)
         .call()
         .ok()?;
-    let text = resp.into_string().ok()?;
+    let text = resp.into_body().read_to_string().ok()?;
     let hash = text.split_whitespace().next()?.to_ascii_lowercase();
     if hash.len() == 64 {
         Some(hash)

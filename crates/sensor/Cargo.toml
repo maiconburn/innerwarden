@@ -23,7 +23,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Structural command analysis (AST) for execution-guard detector
-tree-sitter = "0.25"
+tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
 
 [dev-dependencies]

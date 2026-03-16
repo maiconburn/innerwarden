@@ -322,7 +322,7 @@ fn extract_command_name(node: tree_sitter::Node, source: &[u8]) -> Option<String
     }
     // Fallback: first named child
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             if child.is_named() {
                 return Some(basename(&node_text(child, source)));
             }

@@ -781,7 +781,7 @@ async fn api_events_stream(
     State(state): State<DashboardState>,
 ) -> Sse<impl futures_core::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let rx = state.event_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| {
+    let stream = BroadcastStream::new(rx).filter_map(|msg: Result<SsePayload, _>| {
         let payload = msg.ok()?;
         let data = serde_json::to_string(&payload).unwrap_or_default();
         Some(Ok(SseEvent::default().event(&payload.kind).data(data)))

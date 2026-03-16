@@ -115,13 +115,13 @@ pub const TARGETS: &[UpgradeTarget] = &[
 /// Build a ureq request with common headers. If `GITHUB_TOKEN` is set in the
 /// environment, adds an `Authorization: Bearer <token>` header so that private
 /// repository releases and assets are accessible.
-fn github_get(url: &str) -> ureq::Request {
+fn github_get(url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
     let mut req = ureq::get(url)
-        .set("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
-        .set("Accept", "application/vnd.github+json");
+        .header("User-Agent", &format!("innerwarden-ctl/{CURRENT_VERSION}"))
+        .header("Accept", "application/vnd.github+json");
     if let Ok(tok) = std::env::var("GITHUB_TOKEN") {
         if !tok.is_empty() {
-            req = req.set("Authorization", &format!("Bearer {tok}"));
+            req = req.header("Authorization", &format!("Bearer {tok}"));
         }
     }
     req
@@ -135,7 +135,7 @@ pub fn fetch_latest_release() -> Result<GithubRelease> {
         .call()
         .context("failed to reach GitHub API — check network connectivity")?;
 
-    resp.into_json::<GithubRelease>()
+    resp.into_body().read_json::<GithubRelease>()
         .context("failed to parse GitHub release JSON")
 }
 
@@ -177,7 +177,7 @@ pub fn find_asset<'a>(release: &'a GithubRelease, name: &str) -> Option<&'a Gith
 pub fn download(url: &str, dest: &Path) -> Result<u64> {
     let resp = github_get(url).call().context("download request failed")?;
 
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     let mut file =
         std::fs::File::create(dest).with_context(|| format!("cannot create {}", dest.display()))?;
 
@@ -202,7 +202,7 @@ pub fn fetch_expected_hash(url: &str) -> Result<String> {
     let resp = github_get(url)
         .call()
         .context("sha256 sidecar download failed")?;
-    let text = resp.into_string().context("sha256 sidecar is not UTF-8")?;
+    let text = resp.into_body().read_to_string().context("sha256 sidecar is not UTF-8")?;
     let hash = text
         .split_whitespace()
         .next()

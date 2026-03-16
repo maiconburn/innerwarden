@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use russh::keys::key::KeyPair;
+use russh::keys::{PrivateKey, PublicKey, Algorithm};
 use russh::server::{self, Auth, Config, Handler, Session};
 use serde::Serialize;
 use tracing::debug;
@@ -68,8 +68,7 @@ impl HoneypotSshHandler {
     }
 }
 
-// The Handler trait in russh 0.46 uses async-trait style.
-#[async_trait::async_trait]
+// russh 0.57 Handler uses RPITIT (impl Future in trait), no async_trait needed.
 impl Handler for HoneypotSshHandler {
     type Error = anyhow::Error;
 
@@ -78,6 +77,7 @@ impl Handler for HoneypotSshHandler {
         self.record("none", user, None, None);
         Ok(Auth::Reject {
             proceed_with_methods: None,
+            partial_success: false,
         })
     }
 
@@ -86,31 +86,39 @@ impl Handler for HoneypotSshHandler {
         self.record("password", user, Some(password.to_string()), None);
         Ok(Auth::Reject {
             proceed_with_methods: None,
+            partial_success: false,
         })
     }
 
     async fn auth_publickey(
         &mut self,
         user: &str,
-        key: &russh::keys::key::PublicKey,
+        key: &PublicKey,
     ) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_publickey");
-        self.record("publickey", user, None, Some(key.name().to_string()));
+        self.record(
+            "publickey",
+            user,
+            None,
+            Some(key.algorithm().as_str().to_string()),
+        );
         Ok(Auth::Reject {
             proceed_with_methods: None,
+            partial_success: false,
         })
     }
 
-    async fn auth_keyboard_interactive(
-        &mut self,
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
         user: &str,
         _submethods: &str,
-        _response: Option<server::Response<'async_trait>>,
+        _response: Option<server::Response<'a>>,
     ) -> Result<Auth, Self::Error> {
         debug!(user, "honeypot SSH auth_keyboard_interactive");
         self.record("keyboard-interactive", user, None, None);
         Ok(Auth::Reject {
             proceed_with_methods: None,
+            partial_success: false,
         })
     }
 
@@ -130,8 +138,9 @@ impl Handler for HoneypotSshHandler {
 
 /// Build an ephemeral russh server config with an Ed25519 key.
 pub(crate) fn build_ssh_config(max_auth_attempts: usize) -> Arc<Config> {
-    // generate_ed25519() is infallible in russh 0.46 — returns KeyPair directly.
-    let key = KeyPair::generate_ed25519();
+    // ssh_key::PrivateKey::random requires a CSPRNG.
+    let key = PrivateKey::random(&mut rand_core::OsRng, Algorithm::Ed25519)
+        .expect("Ed25519 key generation should not fail");
     Arc::new(Config {
         keys: vec![key],
         max_auth_attempts,
