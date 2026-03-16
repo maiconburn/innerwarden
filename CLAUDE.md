@@ -248,7 +248,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 499 testes (185 sensor + 178 agent + 136 ctl)
+make test             # 502 testes (185 sensor + 178 agent + 139 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -695,7 +695,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 499 testes (185 sensor + 178 agent + 136 ctl) — todos devem passar
+make test   # 502 testes (185 sensor + 178 agent + 139 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:
@@ -847,6 +847,8 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **`innerwarden decisions`:** ✅ lista decisões do agent (block_ip, suspend_user_sudo, ignore, monitor, honeypot, dry-run) com ação, alvo, confidence, provider e status; `--days N`, `--action block_ip` para filtrar; 3 testes
 - **`innerwarden entity <ip|user>`:** ✅ timeline completa de uma entidade (IP ou usuário) atravessando events + incidents + decisions; detecta IP vs username por heurística; exibe tipo de entrada, severidade e resumo cronológico; 3 testes
 - **`innerwarden completions <bash|zsh|fish>`:** ✅ gera scripts de autocompletion via `clap_complete`; redirecionamento direto para `~/.bashrc`, `~/.zshrc` ou fish completions dir; 2 testes
+- **`innerwarden watchdog --status`:** ✅ mostra se o cron do watchdog está instalado (lê `crontab -l`), schedule configurado, intervalo em minutos e age da última telemetria; tip para configurar se ausente; 1 teste
+- **`innerwarden tune`:** ✅ analisa eventos + incidentes dos últimos N dias; calcula noise/signal ratio por detector; sugere ajuste de threshold em sensor.toml; `--yes` aplica sem prompt; `--dry-run` simula; patch via `toml_edit`; reinicia sensor ao finalizar; 3 testes
 
 Próximas direções:
 - **Q.2 — VM end-to-end:** subir Ubuntu 22.04 + Falco + Suricata + osquery + InnerWarden, gerar tráfego simulado, validar UC-1 a UC-4 (user-side)

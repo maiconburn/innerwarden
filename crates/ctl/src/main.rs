@@ -179,10 +179,14 @@ enum Command {
     /// Add to cron for continuous monitoring:
     ///   */10 * * * * innerwarden watchdog
     ///
+    /// Use --status to show the cron schedule and last-run time without
+    /// running a health check.
+    ///
     /// Examples:
     ///   innerwarden watchdog
     ///   innerwarden watchdog --threshold 600
     ///   innerwarden watchdog --notify
+    ///   innerwarden watchdog --status
     Watchdog {
         /// How many seconds of silence before reporting unhealthy (default: 300)
         #[arg(long, default_value = "300")]
@@ -191,6 +195,34 @@ enum Command {
         /// Send a Telegram alert when the agent appears unhealthy
         #[arg(long)]
         notify: bool,
+
+        /// Show watchdog cron schedule and last-run info instead of running a check
+        #[arg(long)]
+        status: bool,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Interactively tune detector thresholds based on recent noise and signal.
+    ///
+    /// Reads telemetry + incidents from the last 7 days, computes noise/signal
+    /// ratio per detector, and suggests adjusted thresholds.  Applies changes
+    /// to sensor.toml on confirmation.
+    ///
+    /// Examples:
+    ///   innerwarden tune
+    ///   innerwarden tune --days 14
+    ///   innerwarden tune --yes        # apply suggestions without prompting
+    Tune {
+        /// How many days of history to analyse (default: 7)
+        #[arg(long, default_value = "7")]
+        days: u64,
+
+        /// Apply suggested changes without interactive prompts
+        #[arg(long)]
+        yes: bool,
 
         /// Directory where InnerWarden data files are stored
         #[arg(long, default_value = "/var/lib/innerwarden")]
@@ -872,8 +904,20 @@ fn main() -> Result<()> {
         Command::Watchdog {
             threshold,
             notify,
+            status,
             ref data_dir,
-        } => cmd_watchdog(&cli, threshold, notify, data_dir),
+        } => {
+            if status {
+                cmd_watchdog_status(&cli, data_dir)
+            } else {
+                cmd_watchdog(&cli, threshold, notify, data_dir)
+            }
+        }
+        Command::Tune {
+            days,
+            yes,
+            ref data_dir,
+        } => cmd_tune(&cli, days, yes, data_dir),
         Command::SensorStatus { ref data_dir } => cmd_sensor_status(&cli, data_dir),
         Command::Export {
             ref kind,
@@ -4333,6 +4377,316 @@ fn cmd_watchdog(cli: &Cli, threshold_secs: u64, notify: bool, data_dir: &std::pa
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// innerwarden watchdog --status
+// ---------------------------------------------------------------------------
+
+fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
+    println!("Watchdog Status");
+    println!("{}", "─".repeat(56));
+
+    // ── Cron entry ────────────────────────────────────────
+    println!("\nCron schedule");
+    let crontab = std::process::Command::new("crontab")
+        .arg("-l")
+        .output();
+
+    match crontab {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let entry = text
+                .lines()
+                .find(|l| l.contains("innerwarden watchdog") && !l.trim_start().starts_with('#'));
+            match entry {
+                Some(line) => {
+                    println!("  ✅ Installed: {line}");
+                    // Parse interval from */N prefix
+                    if let Some(interval) = line.split_whitespace().next()
+                        .and_then(|s| s.strip_prefix("*/"))
+                        .and_then(|n| n.parse::<u64>().ok())
+                    {
+                        println!("     Runs every {interval} minute(s)");
+                    }
+                }
+                None => {
+                    println!("  ○ Not installed");
+                    println!("    Run 'innerwarden configure watchdog' to set up automatic monitoring.");
+                }
+            }
+        }
+        Ok(_) => {
+            println!("  ○ No crontab for current user");
+            println!("    Run 'innerwarden configure watchdog' to set up automatic monitoring.");
+        }
+        Err(_) => {
+            println!("  ○ crontab command not available");
+            println!("    On macOS you may need to configure launchd manually.");
+            println!("    See: innerwarden configure watchdog");
+        }
+    }
+
+    // ── Last agent activity ───────────────────────────────
+    println!("\nAgent health");
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today = epoch_secs_to_date(now_secs);
+    let yesterday = epoch_secs_to_date(now_secs.saturating_sub(86400));
+
+    let telemetry_path = {
+        let today_p = effective_dir.join(format!("telemetry-{today}.jsonl"));
+        let yest_p = effective_dir.join(format!("telemetry-{yesterday}.jsonl"));
+        if today_p.exists() { Some(today_p) }
+        else if yest_p.exists() { Some(yest_p) }
+        else { None }
+    };
+
+    match telemetry_path {
+        None => {
+            println!("  ⚠️  No telemetry file found — agent may not be running");
+            println!("     Run 'innerwarden status' to check.");
+        }
+        Some(ref path) => {
+            let mtime_secs = std::fs::metadata(path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+
+            match mtime_secs {
+                None => println!("  ⚠️  Could not read telemetry file mtime"),
+                Some(ts) => {
+                    let age = now_secs.saturating_sub(ts);
+                    if age < 120 {
+                        println!("  ✅ Agent is healthy — last write {age}s ago");
+                    } else if age < 300 {
+                        println!("  ✅ Agent last wrote telemetry {age}s ago");
+                    } else {
+                        println!("  ⚠️  Agent last wrote telemetry {age}s ago — may be stuck");
+                        println!("     Run 'innerwarden watchdog' to run a full health check.");
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Quick tip ─────────────────────────────────────────
+    println!("\nUseful commands");
+    println!("  innerwarden watchdog            — run a health check now");
+    println!("  innerwarden watchdog --notify   — check and alert via Telegram if unhealthy");
+    println!("  innerwarden configure watchdog  — set up or change the cron schedule");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden tune
+// ---------------------------------------------------------------------------
+
+fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    println!("InnerWarden Tune — analysing last {days} day(s) of data");
+    println!("{}", "─".repeat(56));
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // ── Collect per-detector event counts and incident counts ──
+    // Detectors we know how to tune
+    let detectors = [
+        ("ssh_bruteforce",    "ssh.login_failed",         "detectors.ssh_bruteforce.threshold"),
+        ("credential_stuffing","ssh.invalid_user",        "detectors.credential_stuffing.threshold"),
+        ("sudo_abuse",        "sudo.command",             "detectors.sudo_abuse.threshold"),
+        ("search_abuse",      "http.request",             "detectors.search_abuse.threshold"),
+        ("web_scan",          "http.error",               "detectors.web_scan.threshold"),
+        ("port_scan",         "network.connection_blocked","detectors.port_scan.threshold"),
+    ];
+
+    // Events per kind over the window
+    let mut event_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    // Incidents per detector
+    let mut incident_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
+    for i in 0..days {
+        let date = epoch_secs_to_date(now_secs.saturating_sub(i * 86400));
+
+        let events_path = effective_dir.join(format!("events-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&events_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                if let Some(kind) = v["kind"].as_str() {
+                    *event_counts.entry(kind.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&incidents_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                if let Some(id) = v["incident_id"].as_str() {
+                    // incident_id format: detector:entity:seq
+                    let detector = id.split(':').next().unwrap_or("");
+                    if !detector.is_empty() {
+                        *incident_counts.entry(detector.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Read current thresholds from sensor config ─────────
+    let sensor_content = std::fs::read_to_string(&cli.sensor_config).unwrap_or_default();
+    let sensor_toml: Option<toml_edit::DocumentMut> = sensor_content.parse().ok();
+
+    let current_threshold = |config_path: &str| -> Option<i64> {
+        let parts: Vec<&str> = config_path.split('.').collect();
+        // e.g. ["detectors", "ssh_bruteforce", "threshold"]
+        if parts.len() != 3 {
+            return None;
+        }
+        sensor_toml.as_ref()
+            .and_then(|doc| doc.get(parts[0]))
+            .and_then(|t| t.get(parts[1]))
+            .and_then(|d| d.get(parts[2]))
+            .and_then(|v| v.as_integer())
+    };
+
+    // ── Compute suggestions ────────────────────────────────
+    struct Suggestion {
+        detector: &'static str,
+        current: Option<i64>,
+        suggested: i64,
+        reason: String,
+    }
+
+    let mut suggestions: Vec<Suggestion> = Vec::new();
+    let mut has_data = false;
+
+    for (detector, event_kind, config_path) in &detectors {
+        let events = *event_counts.get(*event_kind).unwrap_or(&0);
+        let incidents = *incident_counts.get(*detector).unwrap_or(&0);
+        let current = current_threshold(config_path);
+
+        if events == 0 {
+            continue;
+        }
+        has_data = true;
+
+        let events_per_day = (events as f64 / days as f64).ceil() as i64;
+        let current_val = current.unwrap_or(8);
+
+        // Heuristic: if daily noise >> threshold → suggest raising it
+        // If incident rate is very high (> 5/day) → suggest lowering threshold
+        let incidents_per_day = (incidents as f64 / days as f64);
+        let suggested = if incidents_per_day > 10.0 && current_val > 3 {
+            // Very noisy — lower threshold so we catch earlier
+            (current_val - 1).max(2)
+        } else if events_per_day > (current_val * 20) && incidents == 0 {
+            // Extremely noisy with zero incidents → raise threshold
+            (current_val + 2).min(50)
+        } else if events_per_day > (current_val * 5) && incidents_per_day < 1.0 {
+            // Moderately noisy with few incidents → raise slightly
+            (current_val + 1).min(30)
+        } else {
+            current_val // no change
+        };
+
+        if suggested == current_val {
+            continue; // no suggestion needed
+        }
+
+        let direction = if suggested > current_val { "raise" } else { "lower" };
+        let reason = format!(
+            "{} events/day, {} incidents in {days} days — {direction} to reduce noise",
+            events_per_day, incidents
+        );
+        suggestions.push(Suggestion { detector, current, suggested, reason });
+    }
+
+    if !has_data {
+        println!("\nNo event data found in {}.", effective_dir.display());
+        println!("Run the sensor for a few days first, then re-run tune.");
+        return Ok(());
+    }
+
+    if suggestions.is_empty() {
+        println!("\n✅ All detector thresholds look well-calibrated for this host.");
+        println!("   Events/day are within expected range relative to current thresholds.");
+        println!("   Re-run after more data accumulates: --days 14");
+        return Ok(());
+    }
+
+    println!("\nSuggested threshold changes:\n");
+    println!("  {:<22}  {:>8}  {:>9}  Reason", "Detector", "Current", "Suggested");
+    println!("  {}", "─".repeat(72));
+    for s in &suggestions {
+        let cur_str = s.current.map(|v| v.to_string()).unwrap_or_else(|| "default".to_string());
+        println!("  {:<22}  {:>8}  {:>9}  {}", s.detector, cur_str, s.suggested, s.reason);
+    }
+
+    // ── Apply if confirmed ─────────────────────────────────
+    let apply = if yes {
+        true
+    } else {
+        print!("\nApply these changes to {}? [y/N] ", cli.sensor_config.display());
+        let _ = std::io::stdout().flush();
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+    };
+
+    if !apply {
+        println!("No changes made. Re-run with --yes to apply.");
+        return Ok(());
+    }
+
+    if cli.dry_run {
+        println!("[dry-run] Would patch {} with {} change(s)", cli.sensor_config.display(), suggestions.len());
+        return Ok(());
+    }
+
+    // Patch sensor.toml
+    let mut doc: toml_edit::DocumentMut = sensor_content.parse()
+        .with_context(|| format!("failed to parse {}", cli.sensor_config.display()))?;
+
+    for s in &suggestions {
+        // config_path is "detectors.ssh_bruteforce.threshold"
+        // Walk: doc["detectors"]["ssh_bruteforce"]["threshold"]
+        let parts: Vec<&str> = detectors
+            .iter()
+            .find(|(d, _, _)| *d == s.detector)
+            .map(|(_, _, p)| p.split('.').collect())
+            .unwrap_or_default();
+        if parts.len() == 3 {
+            if let Some(section) = doc.get_mut(parts[0])
+                .and_then(|t| t.as_table_mut())
+                .and_then(|t| t.get_mut(parts[1]))
+                .and_then(|t| t.as_table_mut())
+            {
+                section.insert(parts[2], toml_edit::value(s.suggested));
+            }
+        }
+    }
+
+    std::fs::write(&cli.sensor_config, doc.to_string())
+        .with_context(|| format!("failed to write {}", cli.sensor_config.display()))?;
+
+    println!(
+        "✅ Applied {} change(s) to {}",
+        suggestions.len(),
+        cli.sensor_config.display()
+    );
+    println!("Restart the sensor to apply: sudo systemctl restart innerwarden-sensor");
+
+    Ok(())
+}
+
 fn maybe_send_watchdog_alert(cli: &Cli, message: &str) {
     let env_file = cli
         .agent_config
@@ -6660,6 +7014,40 @@ mod tests {
         ).unwrap();
         let cli = make_cli(dir.path());
         let result = cmd_entity(&cli, "alice", 1, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn watchdog_status_no_data() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        // Should return Ok even with no telemetry files
+        let result = cmd_watchdog_status(&cli, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tune_no_data() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        // No JSONL files — should return Ok with a "no data" message
+        let result = cmd_tune(&cli, 7, true, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tune_no_suggestions_when_calibrated() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // Write a modest event count that matches default thresholds — no suggestion expected
+        let events_path = dir.path().join(format!("events-{today}.jsonl"));
+        let mut content = String::new();
+        for _ in 0..5 {
+            content.push_str("{\"ts\":\"2026-03-16T10:00:00Z\",\"kind\":\"ssh.login_failed\",\"severity\":\"Low\",\"summary\":\"failed\",\"source\":\"auth_log\",\"host\":\"h\",\"entities\":[],\"tags\":[]}\n");
+        }
+        std::fs::write(&events_path, &content).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_tune(&cli, 1, true, dir.path());
         assert!(result.is_ok());
     }
 
