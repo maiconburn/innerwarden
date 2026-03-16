@@ -1654,14 +1654,22 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
     let current = CURRENT_VERSION;
     let latest = strip_v(&release.tag_name);
 
+    let date_suffix = release
+        .release_date()
+        .map(|d| format!("  [{d}]"))
+        .unwrap_or_default();
+
     println!("  Current version:  {current}");
 
     if !is_newer(current, &release.tag_name) {
-        println!("  Latest release:   {latest} — already up to date.");
+        println!("  Latest release:   {latest}{date_suffix} — already up to date.");
         return Ok(());
     }
 
-    println!("  Latest release:   {latest}  ({})", release.html_url);
+    println!(
+        "  Latest release:   {latest}{date_suffix}  ({})",
+        release.html_url
+    );
 
     if check_only {
         println!("\nRun 'innerwarden upgrade' to install.");
@@ -1772,10 +1780,29 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
         }
     }
 
+    let date_display = release
+        .release_date()
+        .map(|d| format!(" ({d})"))
+        .unwrap_or_default();
+
     println!(
-        "\nInnerWarden upgraded to {} successfully.",
-        release.tag_name
+        "\nInnerWarden upgraded to {}{} successfully.",
+        release.tag_name, date_display
     );
+
+    // Show what's new in this release
+    if let Some(preview) = release.changelog_preview() {
+        println!("\nWhat's new in {}:", release.tag_name);
+        println!("─────────────────────────────────────────────────");
+        for line in preview.lines() {
+            println!("  {line}");
+        }
+        println!("─────────────────────────────────────────────────");
+        println!("  Full release notes: {}", release.html_url);
+    } else {
+        println!("  Release notes: {}", release.html_url);
+    }
+
     Ok(())
 }
 

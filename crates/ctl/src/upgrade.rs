@@ -27,6 +27,53 @@ pub struct GithubRelease {
     pub tag_name: String,
     pub html_url: String,
     pub assets: Vec<GithubAsset>,
+    /// ISO 8601 publish date from GitHub API (e.g. "2026-03-16T01:40:05Z").
+    pub published_at: Option<String>,
+    /// Release description body (Markdown). May be null for empty releases.
+    pub body: Option<String>,
+}
+
+impl GithubRelease {
+    /// Returns the release date as a short YYYY-MM-DD string, if available.
+    pub fn release_date(&self) -> Option<&str> {
+        self.published_at.as_deref()?.get(..10)
+    }
+
+    /// Returns a trimmed changelog preview (first 1200 chars, up to 18 lines).
+    /// Strips GitHub auto-generated PR link noise from the top if present.
+    pub fn changelog_preview(&self) -> Option<String> {
+        let body = self.body.as_deref()?.trim();
+        if body.is_empty() {
+            return None;
+        }
+        // Skip the auto-generated "What's Changed" header block if present
+        let content = if body.starts_with("## What's Changed") {
+            // Try to find a user-written section after the PR list
+            body.lines()
+                .skip_while(|l| {
+                    l.starts_with("## What's Changed") || l.starts_with("* ") || l.trim().is_empty()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            body.to_string()
+        };
+
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // Cap at 18 lines or 1200 chars
+        let preview: String = trimmed.lines().take(18).collect::<Vec<_>>().join("\n");
+        let preview = if preview.len() > 1200 {
+            format!("{}…", &preview[..1200])
+        } else {
+            preview
+        };
+
+        Some(preview)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -304,6 +351,8 @@ mod tests {
         let release = GithubRelease {
             tag_name: "v0.2.0".to_string(),
             html_url: "https://github.com/...".to_string(),
+            published_at: None,
+            body: None,
             assets: vec![
                 GithubAsset {
                     name: "innerwarden-sensor-linux-aarch64".to_string(),
@@ -330,6 +379,8 @@ mod tests {
         let release = GithubRelease {
             tag_name: "v0.2.0".to_string(),
             html_url: String::new(),
+            published_at: None,
+            body: None,
             assets: vec![],
         };
         assert!(find_asset(&release, "innerwarden-sensor-linux-aarch64").is_none());
@@ -340,6 +391,8 @@ mod tests {
         let release = GithubRelease {
             tag_name: "v0.2.0".to_string(),
             html_url: String::new(),
+            published_at: None,
+            body: None,
             assets: vec![],
         };
         let plan = build_plan(&release, "aarch64");
@@ -359,6 +412,8 @@ mod tests {
         let release = GithubRelease {
             tag_name: "v0.2.0".to_string(),
             html_url: String::new(),
+            published_at: None,
+            body: None,
             assets,
         };
         let plan = build_plan(&release, "x86_64");
@@ -405,5 +460,69 @@ mod tests {
             .unwrap();
         assert!(ctl.install_as.contains(&"innerwarden-ctl"));
         assert!(ctl.install_as.contains(&"innerwarden"));
+    }
+
+    #[test]
+    fn release_date_parses_iso8601() {
+        let r = GithubRelease {
+            tag_name: "v0.1.3".to_string(),
+            html_url: String::new(),
+            published_at: Some("2026-03-16T01:40:05Z".to_string()),
+            body: None,
+            assets: vec![],
+        };
+        assert_eq!(r.release_date(), Some("2026-03-16"));
+    }
+
+    #[test]
+    fn release_date_returns_none_when_absent() {
+        let r = GithubRelease {
+            tag_name: "v0.1.3".to_string(),
+            html_url: String::new(),
+            published_at: None,
+            body: None,
+            assets: vec![],
+        };
+        assert!(r.release_date().is_none());
+    }
+
+    #[test]
+    fn changelog_preview_skips_whats_changed_header() {
+        let r = GithubRelease {
+            tag_name: "v0.1.3".to_string(),
+            html_url: String::new(),
+            published_at: None,
+            body: Some("## What's Changed\n* fix(dashboard): add cache header by @bot\n\n## Full Changelog\nhttps://github.com/...".to_string()),
+            assets: vec![],
+        };
+        let preview = r.changelog_preview().unwrap_or_default();
+        assert!(!preview.contains("What's Changed"));
+        assert!(preview.contains("Full Changelog"));
+    }
+
+    #[test]
+    fn changelog_preview_returns_none_for_empty_body() {
+        let r = GithubRelease {
+            tag_name: "v0.1.3".to_string(),
+            html_url: String::new(),
+            published_at: None,
+            body: Some(String::new()),
+            assets: vec![],
+        };
+        assert!(r.changelog_preview().is_none());
+    }
+
+    #[test]
+    fn changelog_preview_caps_at_18_lines() {
+        let long_body: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let r = GithubRelease {
+            tag_name: "v0.1.3".to_string(),
+            html_url: String::new(),
+            published_at: None,
+            body: Some(long_body),
+            assets: vec![],
+        };
+        let preview = r.changelog_preview().unwrap_or_default();
+        assert!(preview.lines().count() <= 18);
     }
 }
