@@ -765,8 +765,14 @@ async fn api_events_stream(
 // Route handlers
 // ---------------------------------------------------------------------------
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store, no-cache, must-revalidate"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Html(INDEX_HTML),
+    )
 }
 
 async fn api_overview(
