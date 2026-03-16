@@ -1,1 +1,0 @@
-{"ts":"2026-03-13T04:52:57.000000Z","tick":"fast","events_by_collector":{"auth.log":20},"incidents_by_detector":{"ssh_bruteforce":2},"gate_pass_count":2,"ai_sent_count":2,"ai_decision_count":2,"avg_decision_latency_ms":184.5,"errors_by_component":{},"decisions_by_action":{"block_ip":1,"monitor":1},"dry_run_execution_count":1,"real_execution_count":0}

@@ -77,7 +77,7 @@ HOST ?= user@your-server
 # Usage: make update HOST=ubuntu@1.2.3.4
 #
 # Steps:
-#   1. make test      — all 157 tests must pass (fails fast if any break)
+#   1. make test      — all tests must pass (fails fast if any break)
 #   2. make build-linux — cross-compile release binaries for arm64 Linux
 #   3. Stop agent + sensor gracefully (sensor last so no events are lost)
 #   4. SCP both binaries to /tmp, install to /usr/local/bin atomically

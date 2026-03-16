@@ -4,21 +4,9 @@
 *.swo
 .DS_Store
 .env
-
 .claude/
 trial-report-*.md
 trial-report-*.json
-
-# Private planning documents — never publish
-docs/vc-analysis.md
-docs/launch-plan.md
-docs/development-plan.md
-docs/dashboard-roadmap.md
-docs/public-readiness-checklist.md
-
-# Operational data from server trials — never publish
+/local/
 /reports/
 /reports-innerwarden/
-# local/ folder: README.md and .gitkeep are tracked; report files are not
-local/benchmark-reports/*.json
-local/benchmark-reports/*.md

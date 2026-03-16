@@ -774,7 +774,7 @@ Documentação pública do repositório:
 
 ## Próximos passos
 
-Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8): ver `docs/archive/` e histórico de commits.
+Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8): ver histórico de commits.
 
 - **Fase M.1–M.8:** ✅ sistema de módulos completo — manifest, validação, enable/disable, install/uninstall/publish/update-all, `module_package.rs` (download+SHA-256+tarball), `upgrade.rs` (GitHub API + semver)
 - **Fase C.2–C.5:** ✅ `innerwarden disable`, `status` global, `doctor` (diagnóstico + fix hints + exit 1), `upgrade` (GitHub API + SHA-256 + install atômico + restart)
