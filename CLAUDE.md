@@ -249,6 +249,7 @@ integrations/                      — integration recipes (declarative specs fo
 ```bash
 # Build e teste (cargo não está no PATH padrão)
 make test             # 486 testes (185 sensor + 178 agent + 123 ctl)
+make consistency-check # verifica sincronia entre todos os artefatos (README, CHANGELOG, CLAUDE.md, code)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -729,16 +730,61 @@ innerwarden-agent --data-dir ./data --config agent-test.toml
 
 ```
 1. implementar
-2. make test         ← todos os testes devem passar antes de commitar
-3. atualizar CLAUDE.md ← obrigatório: capabilities, workspace, config, próximos passos
-4. git commit (inglês)
-5. git push
+2. make test                ← todos os testes devem passar antes de commitar
+3. make consistency-check   ← verificar sincronia entre artefatos (ver regras abaixo)
+4. corrigir falhas do consistency-check
+5. atualizar CLAUDE.md      ← obrigatório: capabilities, workspace, config, próximos passos
+6. git commit (inglês)
+7. git push
 ```
 
 > **Regra de manutenção**: para mantenedores, o CLAUDE.md continua sendo a
 > referência operacional mais detalhada do projeto. Mudanças relevantes de
 > comportamento, artefatos, configuração ou dependências devem ser refletidas
 > aqui no mesmo commit para preservar contexto de continuidade.
+
+### Consistency check — regra obrigatória
+
+Após cada feature, rodar `make consistency-check` (ou `./scripts/consistency_check.sh`).
+O script verifica automaticamente:
+
+| Check | O que verifica |
+|-------|---------------|
+| Test count | Contagem de `#[test]` em código = número citado em README, CHANGELOG, CLAUDE.md |
+| Modules | Todo módulo em `modules/` está listado em README e CHANGELOG |
+| Detectors | Todo detector em `crates/sensor/src/detectors/` está listado em README |
+| Skills | Toda skill em `crates/agent/src/skills/builtin/` está representada em README |
+| Collectors | Todo collector em `crates/sensor/src/collectors/` está citado em CLAUDE.md |
+| File links | Links locais em README e docs/index.md apontam para arquivos existentes |
+| Recipes | Cada integration recipe tem módulo correspondente |
+| Personas | `.claude/personas.md` existe e tem personas definidas |
+| Roadmap | ROADMAP.md existe e marca v0.1.0 como shipped |
+| Required files | Todos os arquivos obrigatórios existem |
+
+**Regra: commit só é permitido quando `make consistency-check` retorna exit 0 (zero falhas).**
+
+### Artifact cascade — o que atualizar por tipo de mudança
+
+Quando uma feature é adicionada, ela gera um efeito cascata. Use esta tabela para saber
+quais artefatos precisam ser atualizados:
+
+| Mudança | README | CLAUDE.md | CHANGELOG | ROADMAP | Site personas |
+|---------|--------|-----------|-----------|---------|---------------|
+| Novo detector | ✅ tabela "What it detects" | ✅ seção detectors | ✅ [Unreleased] | — | Checar P1-P4 |
+| Nova skill | ✅ tabela "The arsenal" | ✅ seção skills | ✅ [Unreleased] | — | Checar P1-P3 |
+| Novo collector | — | ✅ seção collectors | ✅ [Unreleased] | — | Checar P2, P5 |
+| Novo módulo | ✅ tabela "Modules" | ✅ seção workspace | ✅ [Unreleased] | — | Checar P2, P4 |
+| Nova integração | ✅ se relevante | ✅ seção agent | ✅ [Unreleased] | — | Checar P2, P5 |
+| AI provider | ✅ seção Configure AI | ✅ seção multi-provider | ✅ [Unreleased] | — | Checar P2-P4 |
+| Telegram/Slack | ✅ seção Operator | ✅ seção agent | ✅ [Unreleased] | — | Checar P1, P5 |
+| Dashboard | — | ✅ seção dashboard | ✅ [Unreleased] | — | Checar P1, P4 |
+| CLI (ctl) | ✅ control plane ref | ✅ seção ctl | ✅ [Unreleased] | — | Checar P4 |
+| Test count muda | ✅ `make test # N tests` | ✅ `make test # N testes` | ✅ [Unreleased] totais | — | — |
+| Novo release | ✅ se versão muda | ✅ se relevante | ✅ mover [Unreleased] → [X.Y.Z] | ✅ marcar shipped | Site: atualizar |
+
+> **Referência de personas**: `.claude/personas.md` define 5 personas-alvo (Solo Founder,
+> SRE/DevOps, Security Engineer, SMB Sysadmin, Platform Engineer) com feature-to-persona
+> mapping. Consultar quando adicionar features para avaliar impacto no site.
 
 Documentação pública do repositório:
 - `README.md`

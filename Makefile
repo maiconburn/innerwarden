@@ -181,6 +181,12 @@ logs-agent:
 status:
 	ssh $(HOST) "sudo systemctl status innerwarden-sensor innerwarden-agent --no-pager"
 
+# ─── Consistency ──────────────────────────────────────────────────────────────
+
+.PHONY: consistency-check
+consistency-check:
+	./scripts/consistency_check.sh
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 .PHONY: clean
