@@ -60,8 +60,10 @@ impl TelegramClient {
         chat_id: impl Into<String>,
         dashboard_url: Option<String>,
     ) -> Result<Self> {
+        // Long-poll timeout is 25 s; give a 10 s buffer so the HTTP layer
+        // never fires before the Telegram timeout parameter expires.
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(35))
             .build()
             .context("failed to build Telegram HTTP client")?;
         Ok(Self {
@@ -238,6 +240,28 @@ impl TelegramClient {
         self.post_json("sendMessage", &body).await
     }
 
+    /// Send the interactive menu with inline keyboard buttons.
+    pub async fn send_menu(&self) -> Result<()> {
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": "🛡 <b>InnerWarden</b> — what would you like?",
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        { "text": "📊 Status",    "callback_data": "menu:status"    },
+                        { "text": "🚨 Incidents", "callback_data": "menu:incidents" }
+                    ],
+                    [
+                        { "text": "⚖️ Decisions", "callback_data": "menu:decisions" },
+                        { "text": "❓ Help",       "callback_data": "menu:help"      }
+                    ]
+                ]
+            }
+        });
+        self.post_json("sendMessage", &body).await
+    }
+
     // -----------------------------------------------------------------------
     // Polling loop (background task)
     // -----------------------------------------------------------------------
@@ -271,9 +295,9 @@ impl TelegramClient {
                                 .unwrap_or_else(|| "unknown".to_string());
 
                             if let Some(data) = &callback.data {
+                                // Answer the callback immediately to remove the spinner
+                                let _ = self.answer_callback(&callback.id).await;
                                 if let Some(result) = parse_callback(data, &operator) {
-                                    // Answer the callback to remove the "loading" state
-                                    let _ = self.answer_callback(&callback.id).await;
                                     if approval_tx.send(result).await.is_err() {
                                         return;
                                     }
@@ -298,6 +322,8 @@ impl TelegramClient {
                                     "__status__".to_string()
                                 } else if text == "/help" || text.starts_with("/help ") {
                                     "__help__".to_string()
+                                } else if text == "/menu" || text.starts_with("/menu ") {
+                                    "__menu__".to_string()
                                 } else if text == "/incidents" || text.starts_with("/incidents ") {
                                     "__incidents__".to_string()
                                 } else if text == "/decisions" || text.starts_with("/decisions ") {
@@ -606,7 +632,7 @@ fn first_ip_entity(incident: &Incident) -> Option<String> {
 }
 
 /// Parse a Telegram callback_data string into an ApprovalResult.
-/// Format: "approve:{incident_id}" or "reject:{incident_id}"
+/// Format: "approve:{incident_id}", "reject:{incident_id}", or "menu:{command}"
 fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
     if let Some(id) = data.strip_prefix("approve:") {
         return Some(ApprovalResult {
@@ -628,6 +654,22 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
         return Some(ApprovalResult {
             incident_id: id.to_string(),
             approved: false,
+            always: false,
+            operator_name: operator.to_string(),
+        });
+    }
+    // Inline-keyboard menu buttons: "menu:status", "menu:incidents", etc.
+    if let Some(cmd) = data.strip_prefix("menu:") {
+        let incident_id = match cmd {
+            "status" => "__status__",
+            "incidents" => "__incidents__",
+            "decisions" => "__decisions__",
+            "help" => "__help__",
+            _ => "__unknown_cmd__",
+        };
+        return Some(ApprovalResult {
+            incident_id: incident_id.to_string(),
+            approved: true,
             always: false,
             operator_name: operator.to_string(),
         });
@@ -725,6 +767,26 @@ mod tests {
     fn parse_callback_unknown_returns_none() {
         assert!(parse_callback("unknown:foo", "user").is_none());
         assert!(parse_callback("", "user").is_none());
+    }
+
+    #[test]
+    fn parse_callback_menu_routes_to_sentinels() {
+        let r = parse_callback("menu:status", "Alice").unwrap();
+        assert_eq!(r.incident_id, "__status__");
+        assert!(r.approved);
+
+        let r = parse_callback("menu:incidents", "Alice").unwrap();
+        assert_eq!(r.incident_id, "__incidents__");
+
+        let r = parse_callback("menu:decisions", "Alice").unwrap();
+        assert_eq!(r.incident_id, "__decisions__");
+
+        let r = parse_callback("menu:help", "Alice").unwrap();
+        assert_eq!(r.incident_id, "__help__");
+
+        // Unknown menu command → unknown cmd sentinel
+        let r = parse_callback("menu:bogus", "Alice").unwrap();
+        assert_eq!(r.incident_id, "__unknown_cmd__");
     }
 
     #[test]

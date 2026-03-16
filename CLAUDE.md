@@ -786,7 +786,8 @@ Fases concluídas (1–8.8, D1–D9, robustez produção, C.1–C.5, M.1–M.8):
 - **Fase D9:** ✅ busca inline — `<input type="search">` filtra cards client-side por qualquer texto visível; sem round-trip; re-aplicado após refreshLeft/refreshLeftLive
 - **Anthropic provider real:** ✅ POST `/v1/messages`, modelo padrão `claude-haiku-4-5-20251001`, troca automática do default OpenAI, `extract_json()` tolerante a prose, reutiliza `parse_decision` do openai.rs; 5 testes
 
-- **Telegram T.1 + T.2:** ✅ notificações High/Critical + aprovação inline keyboard; `telegram.rs` + config `[telegram]`; polling task em modo contínuo; 11 testes
+- **Telegram T.1 + T.2:** ✅ notificações High/Critical + aprovação inline keyboard; `telegram.rs` + config `[telegram]`; polling task em modo contínuo
+- **Telegram T.3 — bot conversacional + menu:** ✅ `/status`, `/help`, `/incidents`, `/decisions`, `/ask <question>`, free-text→AI; `/menu` envia inline keyboard com botões Status/Incidents/Decisions/Help; fix crítico: HTTP client timeout 15s→35s (bug onde long-poll de 25s expirava antes do retorno, bot nunca respondia); `menu:` callbacks roteados para sentinels `__xxx__`; 10 testes
 - **Ollama provider real:** ✅ POST `/api/chat`, `format: "json"`, `message.content`, `extract_json()` para prose, 120s timeout; 5 testes
 - **doctor provider-aware:** ✅ lê `[ai] provider` do agent.toml; valida OPENAI_API_KEY / ANTHROPIC_API_KEY / Ollama por provider; hints de rotação de chave + journalctl
 - **doctor Telegram:** ✅ section só quando `telegram.enabled = true`; valida formato bot token + chat_id; hints @BotFather / @userinfobot para iniciantes

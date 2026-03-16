@@ -1917,6 +1917,7 @@ async fn process_telegram_approval(
         info!(operator = %result.operator_name, "Telegram /help command received");
         if cfg.telegram.bot.enabled {
             let text = "🤖 InnerWarden Bot Commands\n\n\
+                /menu — interactive button menu\n\
                 /status — system overview\n\
                 /incidents — last 5 incidents\n\
                 /decisions — last 5 decisions\n\
@@ -1954,10 +1955,23 @@ async fn process_telegram_approval(
         return;
     }
 
+    if result.incident_id == "__menu__" {
+        info!(operator = %result.operator_name, "Telegram /menu command received");
+        if cfg.telegram.bot.enabled {
+            if let Some(ref tg) = state.telegram_client {
+                let tg = tg.clone();
+                tokio::spawn(async move {
+                    let _ = tg.send_menu().await;
+                });
+            }
+        }
+        return;
+    }
+
     if result.incident_id == "__unknown_cmd__" {
         info!(operator = %result.operator_name, "Telegram unknown command received");
         if cfg.telegram.bot.enabled {
-            tg_reply!("Unknown command. Use /help to see available commands.");
+            tg_reply!("Unknown command. Use /help to see available commands or /menu for buttons.");
         }
         return;
     }
