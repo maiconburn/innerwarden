@@ -328,6 +328,66 @@ enum Command {
         #[arg(long, default_value = "/var/lib/innerwarden")]
         data_dir: PathBuf,
     },
+
+    /// Show recent decisions made by InnerWarden (blocks, suspensions, ignores).
+    ///
+    /// Shows what the agent decided and whether it executed or was in dry-run mode.
+    /// Useful for auditing: "what did InnerWarden actually do?"
+    ///
+    /// Examples:
+    ///   innerwarden decisions
+    ///   innerwarden decisions --days 7
+    ///   innerwarden decisions --action block_ip
+    Decisions {
+        /// How many days back to look (default: 1 = today only)
+        #[arg(long, default_value = "1")]
+        days: u64,
+
+        /// Filter by action: block_ip, suspend_user_sudo, ignore, monitor, honeypot
+        #[arg(long)]
+        action: Option<String>,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Show the full activity history for an IP or user.
+    ///
+    /// Scans events, incidents, and decisions linked to one entity and prints
+    /// a chronological timeline — the terminal equivalent of the dashboard
+    /// journey panel.
+    ///
+    /// Examples:
+    ///   innerwarden entity 203.0.113.10
+    ///   innerwarden entity root
+    ///   innerwarden entity 203.0.113.10 --days 7
+    Entity {
+        /// IP address or username to look up
+        target: String,
+
+        /// How many days back to search (default: 3)
+        #[arg(long, default_value = "3")]
+        days: u64,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Generate shell completions for bash, zsh, or fish.
+    ///
+    /// Prints the completion script to stdout. Source it in your shell config
+    /// to get tab-completion for all innerwarden commands and flags.
+    ///
+    /// Examples:
+    ///   innerwarden completions bash >> ~/.bashrc
+    ///   innerwarden completions zsh  >> ~/.zshrc
+    ///   innerwarden completions fish > ~/.config/fish/completions/innerwarden.fish
+    Completions {
+        /// Shell to generate completions for: bash, zsh, or fish
+        shell: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -828,6 +888,17 @@ fn main() -> Result<()> {
             interval,
             ref data_dir,
         } => cmd_tail(&cli, r#type, interval, data_dir),
+        Command::Decisions {
+            days,
+            ref action,
+            ref data_dir,
+        } => cmd_decisions(&cli, days, action.as_deref(), data_dir),
+        Command::Entity {
+            ref target,
+            days,
+            ref data_dir,
+        } => cmd_entity(&cli, target, days, data_dir),
+        Command::Completions { ref shell } => cmd_completions(shell),
     }
 }
 
@@ -4930,6 +5001,301 @@ fn print_tail_entry(v: &serde_json::Value, kind: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// innerwarden decisions
+// ---------------------------------------------------------------------------
+
+fn cmd_decisions(cli: &Cli, days: u64, action_filter: Option<&str>, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut dates = Vec::new();
+    for i in 0..days {
+        dates.push(epoch_secs_to_date(now_secs.saturating_sub(i * 86400)));
+    }
+
+    let mut total = 0usize;
+    for date in &dates {
+        let path = effective_dir.join(format!("decisions-{date}.jsonl"));
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.is_empty() {
+            continue;
+        }
+
+        println!("── {date} ─────────────────────────────────────────────");
+
+        for line in &lines {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let action = v["action"].as_str().unwrap_or("unknown");
+            if let Some(f) = action_filter {
+                if !action.eq_ignore_ascii_case(f) {
+                    continue;
+                }
+            }
+            let ts = v["ts"].as_str().unwrap_or("");
+            let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
+            let target_ip = v["target_ip"].as_str().unwrap_or("");
+            let target_user = v["target_user"].as_str().unwrap_or("");
+            let confidence = v["confidence"].as_f64().unwrap_or(0.0);
+            let dry_run = v["dry_run"].as_bool().unwrap_or(false);
+            let provider = v["ai_provider"].as_str().unwrap_or("");
+
+            let target = if !target_ip.is_empty() {
+                target_ip.to_string()
+            } else if !target_user.is_empty() {
+                format!("user:{target_user}")
+            } else {
+                String::new()
+            };
+
+            let dry_tag = if dry_run { " [dry-run]" } else { "" };
+            let conf_tag = if confidence > 0.0 {
+                format!("  conf:{:.2}", confidence)
+            } else {
+                String::new()
+            };
+            let provider_tag = if !provider.is_empty() {
+                format!("  via:{provider}")
+            } else {
+                String::new()
+            };
+            let target_part = if target.is_empty() { String::new() } else { format!("  {target}") };
+
+            let action_tag = match action {
+                "block_ip"           => "[BLOCK]      ",
+                "suspend_user_sudo"  => "[SUSPEND]    ",
+                "ignore"             => "[IGNORE]     ",
+                "monitor"            => "[MONITOR]    ",
+                "honeypot"           => "[HONEYPOT]   ",
+                "request_confirmation" => "[PENDING]    ",
+                _                    => "[UNKNOWN]    ",
+            };
+
+            println!("  {time}  {action_tag}{target_part}{conf_tag}{provider_tag}{dry_tag}");
+            total += 1;
+        }
+        println!();
+    }
+
+    if total == 0 {
+        if let Some(f) = action_filter {
+            println!("No '{f}' decisions found in the last {days} day(s).");
+        } else {
+            println!("No decisions recorded in the last {days} day(s).");
+            println!("The agent may be in observe-only mode or not running.");
+            println!("Run 'innerwarden status' to check.");
+        }
+    } else {
+        println!("{total} decision(s) shown.  Full audit trail: {}/decisions-*.jsonl", effective_dir.display());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden entity
+// ---------------------------------------------------------------------------
+
+fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    // Determine if target looks like an IP or a username
+    let is_ip = looks_like_ip(target);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut dates = Vec::new();
+    for i in 0..days {
+        dates.push(epoch_secs_to_date(now_secs.saturating_sub(i * 86400)));
+    }
+
+    // Collect all matching entries across events, incidents, and decisions
+    #[derive(Debug)]
+    struct Entry {
+        ts: String,
+        kind: &'static str, // "event", "incident", "decision"
+        severity: String,
+        summary: String,
+        extra: String,
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+
+    for date in &dates {
+        // ── events ──────────────────────────────────────
+        let events_path = effective_dir.join(format!("events-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&events_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let matched = if is_ip {
+                    v["entities"].as_array().map(|arr| {
+                        arr.iter().any(|e| {
+                            e["type"].as_str() == Some("Ip") && e["value"].as_str() == Some(target)
+                        })
+                    }).unwrap_or(false)
+                } else {
+                    v["entities"].as_array().map(|arr| {
+                        arr.iter().any(|e| {
+                            e["type"].as_str() == Some("User") && e["value"].as_str() == Some(target)
+                        })
+                    }).unwrap_or(false)
+                };
+                if matched {
+                    entries.push(Entry {
+                        ts: v["ts"].as_str().unwrap_or("").to_string(),
+                        kind: "event",
+                        severity: v["severity"].as_str().unwrap_or("Info").to_string(),
+                        summary: v["summary"].as_str().unwrap_or("").to_string(),
+                        extra: v["kind"].as_str().unwrap_or("").to_string(),
+                    });
+                }
+            }
+        }
+
+        // ── incidents ────────────────────────────────────
+        let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&incidents_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let matched = if is_ip {
+                    v["entities"].as_array().map(|arr| {
+                        arr.iter().any(|e| {
+                            e["type"].as_str() == Some("Ip") && e["value"].as_str() == Some(target)
+                        })
+                    }).unwrap_or(false)
+                } else {
+                    v["entities"].as_array().map(|arr| {
+                        arr.iter().any(|e| {
+                            e["type"].as_str() == Some("User") && e["value"].as_str() == Some(target)
+                        })
+                    }).unwrap_or(false)
+                };
+                if matched {
+                    entries.push(Entry {
+                        ts: v["ts"].as_str().unwrap_or("").to_string(),
+                        kind: "incident",
+                        severity: v["severity"].as_str().unwrap_or("Info").to_string(),
+                        summary: v["title"].as_str().unwrap_or("").to_string(),
+                        extra: v["summary"].as_str().unwrap_or("").to_string(),
+                    });
+                }
+            }
+        }
+
+        // ── decisions ────────────────────────────────────
+        let decisions_path = effective_dir.join(format!("decisions-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let ip_match = is_ip && v["target_ip"].as_str() == Some(target);
+                let user_match = !is_ip && v["target_user"].as_str() == Some(target);
+                if ip_match || user_match {
+                    let action = v["action"].as_str().unwrap_or("unknown");
+                    let dry_run = v["dry_run"].as_bool().unwrap_or(false);
+                    let dry_tag = if dry_run { " [dry-run]" } else { "" };
+                    entries.push(Entry {
+                        ts: v["ts"].as_str().unwrap_or("").to_string(),
+                        kind: "decision",
+                        severity: String::new(),
+                        summary: format!("Action: {action}{dry_tag}"),
+                        extra: format!(
+                            "conf:{:.2}  via:{}",
+                            v["confidence"].as_f64().unwrap_or(0.0),
+                            v["ai_provider"].as_str().unwrap_or("?")
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        let entity_type = if is_ip { "IP" } else { "user" };
+        println!("No activity found for {entity_type} '{target}' in the last {days} day(s).");
+        println!("Try --days 7 to search further back.");
+        return Ok(());
+    }
+
+    // Sort by timestamp ascending
+    entries.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+    let entity_type = if is_ip { "IP" } else { "User" };
+    let event_count   = entries.iter().filter(|e| e.kind == "event").count();
+    let incident_count = entries.iter().filter(|e| e.kind == "incident").count();
+    let decision_count = entries.iter().filter(|e| e.kind == "decision").count();
+
+    println!("Entity: {entity_type} {target}");
+    println!("Period: last {days} day(s)");
+    println!("Found:  {event_count} event(s)  {incident_count} incident(s)  {decision_count} decision(s)");
+    println!("{}", "─".repeat(72));
+
+    for entry in &entries {
+        let time = if entry.ts.len() >= 16 { &entry.ts[..16] } else { &entry.ts };
+        let kind_tag = match entry.kind {
+            "incident" => "[INCIDENT]  ",
+            "decision" => "[DECISION]  ",
+            _          => "[event]     ",
+        };
+        let sev_tag = if entry.kind == "event" || entry.kind == "incident" {
+            match entry.severity.as_str() {
+                "Critical" => " CRITICAL",
+                "High"     => " HIGH    ",
+                "Medium"   => " MEDIUM  ",
+                "Low"      => " LOW     ",
+                _          => "         ",
+            }
+        } else {
+            "         "
+        };
+        println!("{time}  {kind_tag}{sev_tag}  {}", entry.summary);
+        if !entry.extra.is_empty() && entry.kind != "event" {
+            println!("                                     {}", entry.extra);
+        }
+    }
+
+    println!("{}", "─".repeat(72));
+    println!("Open dashboard for full details: innerwarden status");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden completions
+// ---------------------------------------------------------------------------
+
+fn cmd_completions(shell: &str) -> Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::Shell;
+
+    let mut cmd = Cli::command();
+    let shell_enum = match shell.to_lowercase().as_str() {
+        "bash" => Shell::Bash,
+        "zsh"  => Shell::Zsh,
+        "fish" => Shell::Fish,
+        other  => {
+            anyhow::bail!(
+                "unsupported shell '{}' — supported: bash, zsh, fish",
+                other
+            )
+        }
+    };
+
+    clap_complete::generate(shell_enum, &mut cmd, "innerwarden", &mut std::io::stdout());
+    Ok(())
+}
+
 // C.4 — Doctor
 // ---------------------------------------------------------------------------
 
@@ -6199,4 +6565,115 @@ fn unknown_cap_error(id: &str) -> anyhow::Error {
         "unknown capability '{}' — run 'innerwarden list' to see available capabilities",
         id
     )
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_cli(data_dir: &std::path::Path) -> Cli {
+        Cli {
+            sensor_config: data_dir.join("config.toml"),
+            agent_config: data_dir.join("agent.toml"),
+            dry_run: false,
+            command: Command::Decisions {
+                days: 1,
+                action: None,
+                data_dir: data_dir.to_path_buf(),
+            },
+        }
+    }
+
+    #[test]
+    fn decisions_empty_data_dir() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        // Should return Ok even with no JSONL files present
+        let result = cmd_decisions(&cli, 1, None, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decisions_reads_jsonl() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"1.2.3.4\",\"confidence\":0.95,\"dry_run\":false,\"ai_provider\":\"openai\"}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_decisions(&cli, 1, None, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decisions_action_filter() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"ignore\",\"target_ip\":\"1.2.3.4\",\"confidence\":0.3,\"dry_run\":false,\"ai_provider\":\"openai\"}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        // Filter for block_ip — should return Ok (0 matching)
+        let result = cmd_decisions(&cli, 1, Some("block_ip"), dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn entity_no_data() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_entity(&cli, "1.2.3.4", 3, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn entity_finds_ip_in_incident() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("incidents-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"title\":\"SSH Brute Force\",\"severity\":\"High\",\"summary\":\"8 failures\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.6.7.8\"}]}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_entity(&cli, "5.6.7.8", 1, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn entity_finds_user_in_decision() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"suspend_user_sudo\",\"target_user\":\"alice\",\"confidence\":0.9,\"dry_run\":true,\"ai_provider\":\"openai\"}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_entity(&cli, "alice", 1, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn completions_invalid_shell_errors() {
+        let result = cmd_completions("powershell");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported shell"));
+    }
+
+    #[test]
+    fn completions_bash_succeeds() {
+        // Just verify it doesn't panic/error — output goes to stdout
+        let result = cmd_completions("bash");
+        assert!(result.is_ok());
+    }
 }

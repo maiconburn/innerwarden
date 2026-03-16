@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 tempfile = "3"
 toml_edit = "0.22"
 ureq = { version = "2", features = ["json"] }
