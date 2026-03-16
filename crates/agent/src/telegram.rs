@@ -310,8 +310,10 @@ impl TelegramClient {
 
                         // Handle text commands and free-form messages
                         if let Some(msg) = update.message {
-                            if let Some(text) = &msg.text {
-                                let text = text.trim().to_string();
+                            if let Some(raw_text) = &msg.text {
+                                // Strip @BotUsername suffix that Telegram appends
+                                // (e.g. "/help@InnerWardenBot" → "/help")
+                                let text = strip_bot_suffix(raw_text.trim());
                                 let operator = msg
                                     .from
                                     .as_ref()
@@ -332,6 +334,9 @@ impl TelegramClient {
                                     "__incidents__".to_string()
                                 } else if text == "/decisions" || text.starts_with("/decisions ") {
                                     "__decisions__".to_string()
+                                } else if text == "/start" || text.starts_with("/start ") {
+                                    // Telegram sends /start when user first opens the bot
+                                    "__menu__".to_string()
                                 } else if !text.starts_with('/') || text.starts_with("/ask ") {
                                     // Free-form text or /ask <question> — route to AI
                                     let question =
@@ -688,6 +693,24 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
     None
 }
 
+/// Strip `@BotUsername` suffix from Telegram commands.
+/// "/help@InnerWardenBot" → "/help", "/status" → "/status", "hello" → "hello"
+fn strip_bot_suffix(text: &str) -> String {
+    if text.starts_with('/') {
+        if let Some(at_pos) = text.find('@') {
+            // Check if @bot comes right after the command (before any space)
+            let space_pos = text.find(' ').unwrap_or(text.len());
+            if at_pos < space_pos {
+                // "/help@Bot args" → "/help args"
+                let cmd = &text[..at_pos];
+                let rest = &text[space_pos..];
+                return format!("{cmd}{rest}");
+            }
+        }
+    }
+    text.to_string()
+}
+
 /// Escape HTML special characters for Telegram HTML parse mode.
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -798,6 +821,16 @@ mod tests {
         // Unknown menu command → unknown cmd sentinel
         let r = parse_callback("menu:bogus", "Alice").unwrap();
         assert_eq!(r.incident_id, "__unknown_cmd__");
+    }
+
+    #[test]
+    fn strip_bot_suffix_removes_at_username() {
+        assert_eq!(strip_bot_suffix("/help@InnerWardenBot"), "/help");
+        assert_eq!(strip_bot_suffix("/status@Bot"), "/status");
+        assert_eq!(strip_bot_suffix("/ask@Bot question here"), "/ask question here");
+        assert_eq!(strip_bot_suffix("/status"), "/status");
+        assert_eq!(strip_bot_suffix("hello"), "hello");
+        assert_eq!(strip_bot_suffix("text with @mention"), "text with @mention");
     }
 
     #[test]
