@@ -4986,8 +4986,27 @@ const INDEX_HTML: &str = r##"<!doctype html>
     toast._timer = setTimeout(() => toast.classList.remove('visible'), 4500);
   }
 
+  // D8b — browser tab title badge: shows unseen incident count when tab is not focused.
+  let _unseenAlerts = 0;
+  const _baseTitle = document.title;
+  function updateTabBadge(delta) {
+    _unseenAlerts = Math.max(0, _unseenAlerts + delta);
+    if (_unseenAlerts > 0) {
+      document.title = '(' + _unseenAlerts + ' 🔴) ' + _baseTitle;
+    } else {
+      document.title = _baseTitle;
+    }
+  }
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') {
+      _unseenAlerts = 0;
+      document.title = _baseTitle;
+    }
+  });
+
   // D8 — rich push alert toast for High/Critical incidents arriving via SSE.
   function showAlertToast(alert) {
+    if (document.hidden) updateTabBadge(1);
     const sev = (alert.severity || 'high').toUpperCase();
     const title = alert.title || 'Incident detected';
     const evalue = alert.entity_value || '';

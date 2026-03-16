@@ -248,7 +248,7 @@ integrations/                      — integration recipes (declarative specs fo
 
 ```bash
 # Build e teste (cargo não está no PATH padrão)
-make test             # 486 testes (185 sensor + 178 agent + 123 ctl)
+make test             # 491 testes (185 sensor + 178 agent + 128 ctl)
 make build            # debug build de todos (sensor + agent + ctl)
 make build-sensor     # só o sensor
 make build-agent      # só o agent
@@ -695,7 +695,7 @@ Ver `docs/format.md` para schema completo de Event e Incident.
 ## Testes
 
 ```bash
-make test   # 486 testes (185 sensor + 178 agent + 123 ctl) — todos devem passar
+make test   # 491 testes (185 sensor + 178 agent + 128 ctl) — todos devem passar
 ```
 
 Fixtures em `testdata/`:

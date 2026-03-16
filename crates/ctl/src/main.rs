@@ -197,6 +197,75 @@ enum Command {
         data_dir: PathBuf,
     },
 
+    /// Show which collectors are active and their event counts today.
+    ///
+    /// Reads the latest telemetry snapshot to show how many events each
+    /// data source has contributed today. Useful to verify collectors are working.
+    ///
+    /// Examples:
+    ///   innerwarden sensor-status
+    #[clap(name = "sensor-status")]
+    SensorStatus {
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Export events, incidents, or decisions to CSV or JSON.
+    ///
+    /// Examples:
+    ///   innerwarden export incidents
+    ///   innerwarden export decisions --from 2026-03-01 --to 2026-03-15
+    ///   innerwarden export events --format csv --output /tmp/events.csv
+    Export {
+        /// What to export: events, incidents, or decisions
+        #[arg(default_value = "incidents")]
+        kind: String,
+
+        /// Start date (YYYY-MM-DD, default: today)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// End date inclusive (YYYY-MM-DD, default: today)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Output format: json or csv (default: json)
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// Output file (default: stdout)
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
+    /// Stream new incidents and events in real time (like tail -f).
+    ///
+    /// Polls the JSONL files every 2 seconds and prints new entries as they arrive.
+    /// Press Ctrl-C to stop.
+    ///
+    /// Examples:
+    ///   innerwarden tail
+    ///   innerwarden tail --type events
+    ///   innerwarden tail --type incidents
+    Tail {
+        /// What to stream: incidents or events (default: incidents)
+        #[arg(long, default_value = "incidents")]
+        r#type: String,
+
+        /// Poll interval in seconds (default: 2)
+        #[arg(long, default_value = "2")]
+        interval: u64,
+
+        /// Directory where InnerWarden data files are stored
+        #[arg(long, default_value = "/var/lib/innerwarden")]
+        data_dir: PathBuf,
+    },
+
     /// List recent security incidents detected on this host.
     ///
     /// Shows threats from today (and optionally yesterday) with severity,
@@ -745,6 +814,20 @@ fn main() -> Result<()> {
             notify,
             ref data_dir,
         } => cmd_watchdog(&cli, threshold, notify, data_dir),
+        Command::SensorStatus { ref data_dir } => cmd_sensor_status(&cli, data_dir),
+        Command::Export {
+            ref kind,
+            ref from,
+            ref to,
+            ref format,
+            ref output,
+            ref data_dir,
+        } => cmd_export(&cli, kind, from.as_deref(), to.as_deref(), format, output.as_deref(), data_dir),
+        Command::Tail {
+            ref r#type,
+            interval,
+            ref data_dir,
+        } => cmd_tail(&cli, r#type, interval, data_dir),
     }
 }
 
@@ -2281,6 +2364,280 @@ fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
         .with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, env_path)
         .with_context(|| format!("cannot update {}", env_path.display()))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+
+fn cmd_setup(cli: &Cli) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+    let env_vars = load_env_file(&env_file);
+
+    let agent_doc: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let is_enabled = |section: &str| -> bool {
+        agent_doc
+            .as_ref()
+            .and_then(|v| v.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env = |key: &str| -> bool {
+        env_vars.get(key).map_or(false, |v| !v.is_empty())
+            || std::env::var(key).map_or(false, |v| !v.is_empty())
+    };
+
+    let ai_ok = is_enabled("ai");
+    let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
+    let responder_ok = is_enabled("responder");
+
+    // ── Welcome ───────────────────────────────────────────────────────────
+    println!("InnerWarden — first-time setup\n");
+    println!("Scanning your system to see what's installed...\n");
+
+    let probes = scan::run_probes();
+    let recs = scan::score_modules(&probes);
+
+    // Print compact scan summary — essential modules only
+    let essential: Vec<&scan::ModuleRec> = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Essential))
+        .collect();
+    let recommended: Vec<&scan::ModuleRec> = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Recommended))
+        .collect();
+
+    if !essential.is_empty() {
+        println!("Detected on this host:");
+        for r in &essential {
+            println!("  ★ {}  — {}", r.name, r.why.split('.').next().unwrap_or(""));
+        }
+        println!();
+    }
+    if !recommended.is_empty() {
+        println!("Also available:");
+        for r in &recommended {
+            println!("  · {}  — {}", r.name, r.why.split('.').next().unwrap_or(""));
+        }
+        println!();
+    }
+    println!("Run 'innerwarden scan' after setup for the full module advisor.\n");
+    println!("{}", "─".repeat(56));
+
+    println!();
+    println!("Now configuring the essentials in 4 steps:");
+    println!("  1. AI provider    — brains for threat analysis");
+    println!("  2. Telegram       — real-time alerts on your phone");
+    println!("  3. Responder      — decide how to react to threats");
+    println!("  4. Modules        — enable essential protections\n");
+    println!("You can skip any step and run it later with 'innerwarden configure'.\n");
+    println!("{}", "─".repeat(56));
+
+    // ── Step 1: AI ────────────────────────────────────────────────────────
+    println!();
+    if ai_ok {
+        println!("Step 1/4 — AI provider   ✅ already configured\n");
+    } else {
+        println!("Step 1/4 — AI provider\n");
+        println!("InnerWarden uses AI to analyse threats and decide how to respond.");
+        println!("Options:");
+        println!("  1. Ollama (recommended) — free, no credit card, runs in the cloud");
+        println!("  2. OpenAI               — requires API key (paid)");
+        println!("  3. Anthropic            — requires API key (paid)");
+        println!("  s. Skip for now\n");
+        let choice = prompt("Choose [1/2/3/s]")?;
+        println!();
+        match choice.trim().to_lowercase().as_str() {
+            "1" | "" => {
+                if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
+                    println!("  Could not configure Ollama automatically: {e:#}");
+                    println!("  Run later:  innerwarden ai install");
+                }
+            }
+            "2" => {
+                if let Err(e) = cmd_configure_ai(cli, "openai", None, None, None) {
+                    println!("  Skipped AI setup: {e:#}");
+                }
+            }
+            "3" => {
+                if let Err(e) = cmd_configure_ai(cli, "anthropic", None, None, None) {
+                    println!("  Skipped AI setup: {e:#}");
+                }
+            }
+            _ => println!("  Skipped. Run later:  innerwarden configure ai"),
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 2: Telegram ──────────────────────────────────────────────────
+    println!();
+    if telegram_ok {
+        println!("Step 2/4 — Telegram alerts   ✅ already configured\n");
+    } else {
+        println!("Step 2/4 — Telegram alerts\n");
+        println!("Get instant alerts on your phone whenever a threat is detected.");
+        println!("You'll need a free Telegram account.\n");
+        print!("Set up Telegram now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() != "n" {
+            if let Err(e) = cmd_configure_telegram(cli, None, None, false) {
+                println!("  Skipped Telegram: {e:#}");
+                println!("  Run later:  innerwarden configure telegram");
+            }
+        } else {
+            println!("  Skipped. Run later:  innerwarden configure telegram");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 3: Responder ─────────────────────────────────────────────────
+    println!();
+    if responder_ok {
+        let dry = agent_doc
+            .as_ref()
+            .and_then(|v| v.get("responder"))
+            .and_then(|r| r.get("dry_run"))
+            .and_then(|d| d.as_bool())
+            .unwrap_or(true);
+        let mode = if dry { "observe (dry-run)" } else { "live (executing actions)" };
+        println!("Step 3/4 — Responder   ✅ already configured ({mode})\n");
+    } else {
+        println!("Step 3/4 — Responder\n");
+        println!("The responder decides what to do when a threat is confirmed:");
+        println!("  observe — AI analyses threats, logs decisions, never blocks anything");
+        println!("  dry-run — AI decides and shows what it would do (safe for testing)");
+        println!("  live    — AI blocks attackers automatically (requires block skill)\n");
+        println!("Recommended for first setup: observe or dry-run.\n");
+        print!("Configure now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() != "n" {
+            if let Err(e) = cmd_configure_responder(cli, false, false, None) {
+                println!("  Skipped responder: {e:#}");
+                println!("  Run later:  innerwarden configure responder");
+            }
+        } else {
+            println!("  Skipped. Run later:  innerwarden configure responder");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 4: Essential modules ─────────────────────────────────────────
+    println!();
+    {
+        let essential_unset: Vec<&scan::ModuleRec> = recs
+            .iter()
+            .filter(|r| matches!(r.tier, scan::Tier::Essential))
+            .collect();
+
+        if !essential_unset.is_empty() {
+            println!("Step 4/4 — Enable protection modules\n");
+            println!("Based on what's installed on this host, these modules are recommended:\n");
+            for (i, r) in essential_unset.iter().enumerate() {
+                println!("  {}. {}  — {}", i + 1, r.name, r.why.split('.').next().unwrap_or(""));
+                println!("     Enable with:  {}", r.enable_hint);
+            }
+            println!();
+            print!("Enable these now? [Y/n] ");
+            std::io::stdout().flush()?;
+            let mut ans = String::new();
+            std::io::stdin().read_line(&mut ans)?;
+            println!();
+            if ans.trim().to_lowercase() != "n" {
+                for r in &essential_unset {
+                    println!("  Enabling {} ...", r.name);
+                    // Parse the enable hint to extract capability id and params
+                    // hint is like "innerwarden enable block-ip" or "innerwarden enable block-ip --param backend=ufw"
+                    let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
+                    if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
+                        let cap_id = parts[2];
+                        let mut params = std::collections::HashMap::new();
+                        let mut i = 3;
+                        while i < parts.len() {
+                            if parts[i] == "--param" && i + 1 < parts.len() {
+                                if let Some((k, v)) = parts[i + 1].split_once('=') {
+                                    params.insert(k.to_string(), v.to_string());
+                                }
+                                i += 2;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        let registry = capability::CapabilityRegistry::default_all();
+                        if let Err(e) = cmd_enable(&cli, &registry, cap_id, params, true) {
+                            println!("  Could not enable {}: {e:#}", r.name);
+                        }
+                    }
+                }
+            } else {
+                println!("  Skipped. Enable later with the commands shown above.");
+            }
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Summary ───────────────────────────────────────────────────────────
+    // Re-read state after all changes
+    let env_vars2 = load_env_file(&env_file);
+    let agent_doc2: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let is_enabled2 = |section: &str| -> bool {
+        agent_doc2
+            .as_ref()
+            .and_then(|v| v.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env2 = |key: &str| -> bool {
+        env_vars2.get(key).map_or(false, |v| !v.is_empty())
+            || std::env::var(key).map_or(false, |v| !v.is_empty())
+    };
+
+    println!();
+    println!("Setup complete!\n");
+    let ai_done = is_enabled2("ai");
+    let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
+    let resp_done = is_enabled2("responder");
+    println!(
+        "  AI provider   {}",
+        if ai_done { "✅ configured" } else { "○  not set up" }
+    );
+    println!(
+        "  Telegram      {}",
+        if tg_done { "✅ configured" } else { "○  not set up" }
+    );
+    println!(
+        "  Responder     {}",
+        if resp_done { "✅ configured" } else { "○  not set up" }
+    );
+
+    println!();
+    println!("Useful commands:");
+    println!("  innerwarden status         — overview of services and today's activity");
+    println!("  innerwarden incidents      — list recent threats");
+    println!("  innerwarden report         — daily security narrative");
+    println!("  innerwarden configure      — set up more integrations");
+    println!("  innerwarden doctor         — diagnose any issues");
+    println!("  innerwarden test-alert     — verify notifications are working");
+
     Ok(())
 }
 
@@ -4266,6 +4623,311 @@ fn write_manual_decision(
     use std::io::Write;
     writeln!(file, "{}", entry)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden sensor-status
+// ---------------------------------------------------------------------------
+
+fn cmd_sensor_status(cli: &Cli, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let today = epoch_secs_to_date(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+
+    // Find the most recent telemetry snapshot from today
+    let telemetry_path = effective_dir.join(format!("telemetry-{today}.jsonl"));
+    let snapshot: Option<serde_json::Value> = std::fs::read_to_string(&telemetry_path)
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .last()
+                .and_then(|line| serde_json::from_str(line).ok())
+        });
+
+    println!("InnerWarden — sensor status  ({})\n", today);
+
+    let Some(snap) = snapshot else {
+        println!("  No telemetry data for today.");
+        println!("  Is the agent running?  innerwarden status");
+        return Ok(());
+    };
+
+    // Events by collector
+    println!("Collectors (events today):");
+    let by_collector = snap["events_by_collector"].as_object();
+    match by_collector {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| (k, v.as_u64().unwrap_or(0)))
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (source, count) in &pairs {
+                println!("  ● {:<30} {:>6} events", source, count);
+            }
+        }
+        _ => println!("  (no events recorded yet today)"),
+    }
+
+    // Incidents by detector
+    println!();
+    println!("Detectors (incidents today):");
+    let by_detector = snap["incidents_by_detector"].as_object();
+    match by_detector {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| (k, v.as_u64().unwrap_or(0)))
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (detector, count) in &pairs {
+                println!("  ⚠  {:<30} {:>6} incidents", detector, count);
+            }
+        }
+        _ => println!("  (no incidents today)"),
+    }
+
+    // AI summary
+    let ai_sent = snap["ai_sent_count"].as_u64().unwrap_or(0);
+    let ai_decided = snap["ai_decision_count"].as_u64().unwrap_or(0);
+    let avg_ms = snap["avg_decision_latency_ms"].as_f64().unwrap_or(0.0);
+    let real_exec = snap["real_execution_count"].as_u64().unwrap_or(0);
+    let dry_exec = snap["dry_run_execution_count"].as_u64().unwrap_or(0);
+    let gate_pass = snap["gate_pass_count"].as_u64().unwrap_or(0);
+
+    println!();
+    println!("AI & Response (today):");
+    println!("  Passed algorithm gate:  {gate_pass}");
+    println!("  Sent to AI:             {ai_sent}");
+    println!("  AI decisions:           {ai_decided}  (avg {avg_ms:.0}ms)");
+    if real_exec > 0 {
+        println!("  Actions executed:       {real_exec}  (live)");
+    }
+    if dry_exec > 0 {
+        println!("  Actions simulated:      {dry_exec}  (dry-run)");
+    }
+
+    // Errors
+    let errors = snap["errors_by_component"].as_object();
+    if let Some(map) = errors {
+        if !map.is_empty() {
+            println!();
+            println!("Errors:");
+            for (comp, count) in map {
+                println!("  ✗ {comp}: {}", count.as_u64().unwrap_or(0));
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden export
+// ---------------------------------------------------------------------------
+
+fn cmd_export(
+    cli: &Cli,
+    kind: &str,
+    from_arg: Option<&str>,
+    to_arg: Option<&str>,
+    format: &str,
+    output_path: Option<&Path>,
+    data_dir: &Path,
+) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today = epoch_secs_to_date(now_secs);
+
+    let from = from_arg.unwrap_or(&today).to_string();
+    let to = to_arg.unwrap_or(&today).to_string();
+
+    let prefix = match kind {
+        "events"    => "events",
+        "decisions" => "decisions",
+        _           => "incidents",
+    };
+
+    // Collect all matching JSONL lines across the date range
+    let mut all_lines: Vec<serde_json::Value> = Vec::new();
+
+    // Enumerate all files matching prefix-*.jsonl in the dir
+    if let Ok(entries) = std::fs::read_dir(&effective_dir) {
+        let mut files: Vec<_> = entries
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some(date) = name
+                    .strip_prefix(&format!("{prefix}-"))
+                    .and_then(|s| s.strip_suffix(".jsonl"))
+                {
+                    date >= from.as_str() && date <= to.as_str()
+                } else {
+                    false
+                }
+            })
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+
+        for entry in files {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        all_lines.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    if all_lines.is_empty() {
+        eprintln!("No {kind} found between {from} and {to}.");
+        return Ok(());
+    }
+
+    let content = match format {
+        "csv" => {
+            // Build CSV from the union of all keys across objects
+            let mut keys: Vec<String> = all_lines
+                .iter()
+                .filter_map(|v| v.as_object())
+                .flat_map(|o| o.keys().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            keys.retain(|k| k != "evidence" && k != "details" && k != "entities"); // skip nested
+
+            let mut out = keys.join(",") + "\n";
+            for row in &all_lines {
+                let fields: Vec<String> = keys
+                    .iter()
+                    .map(|k| {
+                        let v = &row[k];
+                        let s = match v {
+                            serde_json::Value::String(s) => s.replace('"', "\"\""),
+                            serde_json::Value::Null => String::new(),
+                            other => other.to_string().replace('"', "\"\""),
+                        };
+                        if s.contains(',') || s.contains('"') || s.contains('\n') {
+                            format!("\"{s}\"")
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
+                out += &(fields.join(",") + "\n");
+            }
+            out
+        }
+        _ => serde_json::to_string_pretty(&all_lines)?,
+    };
+
+    match output_path {
+        Some(path) => {
+            std::fs::write(path, &content)
+                .with_context(|| format!("failed to write to {}", path.display()))?;
+            eprintln!(
+                "Exported {} {kind}(s) ({from} → {to}) to {}",
+                all_lines.len(),
+                path.display()
+            );
+        }
+        None => print!("{content}"),
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden tail
+// ---------------------------------------------------------------------------
+
+fn cmd_tail(cli: &Cli, kind: &str, interval_secs: u64, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let prefix = if kind == "events" { "events" } else { "incidents" };
+
+    println!("Streaming {kind}... (Ctrl-C to stop)\n");
+
+    let mut offset: u64 = 0;
+    let mut current_date = String::new();
+
+    loop {
+        let today = epoch_secs_to_date(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+
+        // Reset offset when the date changes
+        if today != current_date {
+            current_date = today.clone();
+            offset = 0;
+        }
+
+        let path = effective_dir.join(format!("{prefix}-{today}.jsonl"));
+
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let bytes = content.as_bytes();
+            if bytes.len() as u64 > offset {
+                let new_bytes = &bytes[offset as usize..];
+                let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+                for line in new_text.lines().filter(|l| !l.trim().is_empty()) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        print_tail_entry(&v, kind);
+                    }
+                }
+                offset = bytes.len() as u64;
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    }
+}
+
+fn print_tail_entry(v: &serde_json::Value, kind: &str) {
+    let ts = v["ts"].as_str().unwrap_or("");
+    let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
+
+    if kind == "events" {
+        let source = v["source"].as_str().unwrap_or("?");
+        let ev_kind = v["kind"].as_str().unwrap_or("?");
+        let sev = v["severity"].as_str().unwrap_or("Info");
+        let summary = v["summary"].as_str().unwrap_or("");
+        println!("{time}  [{sev:<8}]  {source:<16}  {ev_kind}  {summary}");
+    } else {
+        // incident
+        let sev = v["severity"].as_str().unwrap_or("Info");
+        let title = v["title"].as_str().unwrap_or("Unknown");
+        let ip = v["entities"]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|e| e["type"].as_str() == Some("Ip"))
+                    .and_then(|e| e["value"].as_str())
+            })
+            .unwrap_or("");
+        let sev_tag = match sev {
+            "Critical" => "[CRITICAL]",
+            "High"     => "[HIGH]    ",
+            "Medium"   => "[MEDIUM]  ",
+            "Low"      => "[LOW]     ",
+            _          => "[INFO]    ",
+        };
+        let ip_part = if ip.is_empty() { String::new() } else { format!("  {ip}") };
+        println!("{time}  {sev_tag}  {title}{ip_part}");
+    }
 }
 
 // C.4 — Doctor

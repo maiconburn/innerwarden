@@ -43,7 +43,7 @@ Inner Warden carries defensive skills. When a threat is detected, the agent pick
 | **Block IP** | Firewall block via ufw, iptables, nftables, or pf (macOS) |
 | **Suspend sudo** | Revokes sudo for a compromised user. Auto-expires after TTL. |
 | **Deploy honeypot** | SSH/HTTP decoy captures attacker credentials and behavior |
-| **Rate limit** | Blocks abusive HTTP traffic at nginx layer with TTL |
+| **Rate limit nginx** | Blocks abusive HTTP traffic at nginx layer with TTL |
 | **Monitor IP** | Captures traffic from a suspicious IP for forensic analysis |
 
 All skills are bounded, audited, and reversible.
@@ -134,6 +134,10 @@ Detectors and skills are packaged into modules — enable what you need:
 | `nginx-error-monitor` | HTTP error floods and path traversal probes | Block IP |
 | `slack-notify` | Incident notifications to Slack | — (notification only) |
 | `cloudflare-integration` | L7 DDoS / botnet IPs reaching the host | Block at Cloudflare edge |
+| `abuseipdb-enrichment` | IP reputation context before AI analysis | Enriched AI prompt |
+| `geoip-enrichment` | Country/ISP geolocation context | Enriched AI prompt |
+| `fail2ban-integration` | Sync active fail2ban bans into InnerWarden | Block enforcement |
+| `crowdsec-integration` | CrowdSec community threat intel | Block enforcement |
 
 ```bash
 innerwarden enable block-ip
@@ -275,7 +279,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test    # 486 tests
+make test    # 491 tests
 make build   # debug build (sensor + agent + ctl)
 ```
 
