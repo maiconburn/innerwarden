@@ -435,6 +435,18 @@ fn capabilities_keyboard(cfg: &config::AgentConfig) -> serde_json::Value {
             "callback_data": "enable:geoip"
         }));
     }
+    if !cfg.fail2ban.enabled {
+        buttons.push(serde_json::json!({
+            "text": "🔍 Enable Fail2ban",
+            "callback_data": "enable:fail2ban"
+        }));
+    }
+    if cfg.honeypot.mode != "listener" {
+        buttons.push(serde_json::json!({
+            "text": "🪤 Enable Honeypot",
+            "callback_data": "enable:honeypot"
+        }));
+    }
 
     if buttons.is_empty() {
         // All enabled — show a status button only
@@ -447,6 +459,39 @@ fn capabilities_keyboard(cfg: &config::AgentConfig) -> serde_json::Value {
     // Group buttons into rows of 2
     let rows: Vec<Vec<serde_json::Value>> = buttons.chunks(2).map(|chunk| chunk.to_vec()).collect();
     serde_json::json!(rows)
+}
+
+/// Probe the system at startup and send proactive Telegram suggestions
+/// for tools that are installed but not yet integrated with InnerWarden.
+/// Runs once before the main loop. Fail-silent.
+async fn probe_and_suggest(
+    cfg: &config::AgentConfig,
+    tg: Option<&telegram::TelegramClient>,
+) {
+    // Only if Telegram is configured
+    let Some(tg) = tg else { return; };
+
+    // Check for fail2ban: installed + running but not enabled in config
+    if !cfg.fail2ban.enabled {
+        let is_available = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("fail2ban-client")
+                .arg("ping")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
+
+        if is_available {
+            let text = "🔍 <b>Fail2ban detected!</b>\n\nFail2ban is running on this server but not integrated with InnerWarden.\n\nIntegrating it means InnerWarden will automatically sync all fail2ban bans — no duplicate work, full audit trail.\n\n<i>Want me to enable the integration?</i>";
+            let keyboard = serde_json::json!([[
+                {"text": "✅ Enable Fail2ban sync", "callback_data": "enable:fail2ban"},
+                {"text": "❌ Not now", "callback_data": "menu:dismiss"}
+            ]]);
+            let _ = tg.send_text_with_keyboard(text, keyboard).await;
+        }
+    }
 }
 
 /// Strip ANSI escape codes from a string (for clean Telegram display).
@@ -773,6 +818,13 @@ async fn main() -> Result<()> {
             ai_enabled: cfg.ai.enabled,
             ai_provider: cfg.ai.provider.clone(),
             ai_model: cfg.ai.model.clone(),
+            fail2ban_enabled: cfg.fail2ban.enabled,
+            geoip_enabled: cfg.geoip.enabled,
+            abuseipdb_enabled: cfg.abuseipdb.enabled,
+            honeypot_mode: cfg.honeypot.mode.clone(),
+            telegram_enabled: cfg.telegram.enabled,
+            slack_enabled: cfg.slack.enabled,
+            cloudflare_enabled: cfg.cloudflare.enabled,
         };
         let dashboard_data_dir = cli.data_dir.clone();
         let dashboard_bind = cli.dashboard_bind.clone();
@@ -1026,6 +1078,9 @@ async fn main() -> Result<()> {
             tokio::spawn(async move { tg_clone.run_polling(approval_tx).await });
             info!("Telegram polling task started (T.2 approvals enabled)");
         }
+
+        // Proactive startup suggestions (fail2ban detected but not integrated, etc.)
+        probe_and_suggest(&cfg, state.telegram_client.as_deref()).await;
 
         let ai_poll = cfg.ai.incident_poll_secs;
         info!(
@@ -2654,9 +2709,20 @@ async fn process_telegram_approval(
                 if let Some(ref tg) = tg {
                     tg.send_typing().await;
                 }
-                let output = run_innerwarden_cli(&["enable", &cap_id]).await;
+                // fail2ban uses `innerwarden integrate fail2ban` instead of `enable`
+                // honeypot uses `innerwarden enable honeypot` (standard path)
+                let output = if cap_id == "fail2ban" {
+                    run_innerwarden_cli(&["integrate", "fail2ban"]).await
+                } else {
+                    run_innerwarden_cli(&["enable", &cap_id]).await
+                };
+                let cmd_label = if cap_id == "fail2ban" {
+                    format!("innerwarden integrate {cap_id}")
+                } else {
+                    format!("innerwarden enable {cap_id}")
+                };
                 let text = format!(
-                    "🔧 <b>innerwarden enable {cap_id}</b>\n\n<pre>{output}</pre>",
+                    "🔧 <b>{cmd_label}</b>\n\n<pre>{output}</pre>",
                     output = output.chars().take(2000).collect::<String>()
                 );
                 if let Some(ref tg) = tg {

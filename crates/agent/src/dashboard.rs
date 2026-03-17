@@ -67,6 +67,20 @@ pub struct DashboardActionConfig {
     pub ai_provider: String,
     /// AI model in use.
     pub ai_model: String,
+    /// Whether fail2ban integration is enabled.
+    pub fail2ban_enabled: bool,
+    /// Whether GeoIP enrichment is enabled.
+    pub geoip_enabled: bool,
+    /// Whether AbuseIPDB enrichment is enabled.
+    pub abuseipdb_enabled: bool,
+    /// Honeypot mode: "off" | "demo" | "listener".
+    pub honeypot_mode: String,
+    /// Whether Telegram notifications are enabled.
+    pub telegram_enabled: bool,
+    /// Whether Slack notifications are enabled.
+    pub slack_enabled: bool,
+    /// Whether Cloudflare integration is enabled.
+    pub cloudflare_enabled: bool,
 }
 
 impl Default for DashboardActionConfig {
@@ -79,6 +93,13 @@ impl Default for DashboardActionConfig {
             ai_enabled: false,
             ai_provider: "openai".to_string(),
             ai_model: "gpt-4o-mini".to_string(),
+            fail2ban_enabled: false,
+            geoip_enabled: false,
+            abuseipdb_enabled: false,
+            honeypot_mode: "off".to_string(),
+            telegram_enabled: false,
+            slack_enabled: false,
+            cloudflare_enabled: false,
         }
     }
 }
@@ -1267,6 +1288,15 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "dry_run": action_cfg.dry_run,
             "block_backend": action_cfg.block_backend,
             "allowed_skills": action_cfg.allowed_skills
+        },
+        "integrations": {
+            "fail2ban": action_cfg.fail2ban_enabled,
+            "geoip": action_cfg.geoip_enabled,
+            "abuseipdb": action_cfg.abuseipdb_enabled,
+            "honeypot_mode": action_cfg.honeypot_mode,
+            "telegram": action_cfg.telegram_enabled,
+            "slack": action_cfg.slack_enabled,
+            "cloudflare": action_cfg.cloudflare_enabled
         }
     }))
 }
@@ -4718,6 +4748,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   function renderStatus(s) {
     const files = s.files || {};
     const resp = s.responder || {};
+    const integ = s.integrations || {};
     const fmt = (bytes) => bytes > 1048576 ? (bytes/1048576).toFixed(1)+'MB' : bytes > 1024 ? (bytes/1024).toFixed(1)+'KB' : bytes+'B';
 
     // Agent liveness
@@ -4730,16 +4761,76 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     const isHealthy = tSecs != null && tSecs < 300;
 
-    const modeLabel = s.mode === 'guard' ? '🛡 GUARD' : s.mode === 'watch' ? '👁 WATCH' : '📖 READ-ONLY';
+    // ── Section 1: Guard Mode card ─────────────────────────────────────────
+    let guardLabel, guardDesc, guardCls;
+    if (s.mode === 'guard') {
+      guardLabel = '🛡 GUARD'; guardDesc = 'Actively blocking threats — live mode with real firewall rules'; guardCls = 'bad';
+    } else if (s.mode === 'watch') {
+      guardLabel = '👁 WATCH'; guardDesc = 'Dry-run mode — AI analyses threats but does not execute actions'; guardCls = 'warn';
+    } else {
+      guardLabel = '📖 READ-ONLY'; guardDesc = 'Responder disabled — monitoring and reporting only, no automated actions'; guardCls = '';
+    }
     const aiLabel = s.ai_enabled ? '🤖 ' + esc(s.ai_provider || '') + ' / ' + esc(s.ai_model || '') : '— off';
 
-    let html = '<div class="report-section"><div class="report-section-title">System</div>' +
-      '<div class="report-kpi-row">' +
-      '<div class="report-kpi"><div class="report-kpi-label">Mode</div><div class="report-kpi-value ' + (s.mode === 'guard' ? 'bad' : s.mode === 'watch' ? 'warn' : '') + '">' + modeLabel + '</div></div>' +
-      '<div class="report-kpi"><div class="report-kpi-label">AI Brain</div><div class="report-kpi-value ' + (s.ai_enabled ? 'good' : '') + '">' + aiLabel + '</div></div>' +
-      '<div class="report-kpi"><div class="report-kpi-label">Agent Activity</div><div class="report-kpi-value ' + (isHealthy ? 'good' : 'warn') + '">' + liveStr + '</div></div>' +
+    let html = '<div class="report-section">' +
+      '<div class="report-section-title">Guard Mode</div>' +
+      '<div style="background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px;margin-bottom:4px">' +
+      '<div style="font-size:2rem;flex-shrink:0">' + (s.mode === 'guard' ? '🛡' : s.mode === 'watch' ? '👁' : '📖') + '</div>' +
+      '<div>' +
+      '<div style="font-size:1.1rem;font-weight:800;color:var(--' + (s.mode === 'guard' ? 'danger' : s.mode === 'watch' ? 'warn' : 'muted') + ')">' + esc(guardLabel) + '</div>' +
+      '<div style="font-size:0.75rem;color:var(--muted);margin-top:3px">' + esc(guardDesc) + '</div>' +
+      '<div style="margin-top:8px;font-size:0.72rem;color:var(--muted)">AI: <span style="color:var(--' + (s.ai_enabled ? 'ok' : 'muted') + ')">' + aiLabel + '</span> &nbsp;·&nbsp; Agent: <span style="color:var(--' + (isHealthy ? 'ok' : 'warn') + ')">' + liveStr + '</span></div>' +
+      '</div></div></div>';
+
+    // ── Section 2: Active Integrations grid ───────────────────────────────
+    const card = (icon, name, on, desc, badgeLabel) => {
+      const badge = badgeLabel === 'ON'   ? '<span class="integ-badge on">ON</span>'   :
+                    badgeLabel === 'OFF'  ? '<span class="integ-badge off">OFF</span>' :
+                    badgeLabel === 'DEMO' ? '<span class="integ-badge demo">DEMO</span>' :
+                    badgeLabel === 'LIVE' ? '<span class="integ-badge on">LIVE</span>' :
+                                           '<span class="integ-badge off">OFF</span>';
+      const hint = !on ? '<div style="font-size:0.62rem;color:var(--accent);margin-top:4px">Enable via CLI: <code>innerwarden enable ' + esc(name.toLowerCase().replace(/ /g,'-')) + '</code></div>' : '';
+      return '<div class="integ-card ' + (on ? 'active' : 'inactive') + '">' +
+        '<div class="integ-icon">' + icon + '</div>' +
+        '<div class="integ-body">' +
+        '<div class="integ-name">' + esc(name) + badge + '</div>' +
+        '<div class="integ-desc">' + esc(desc) + '</div>' +
+        hint +
+        '</div></div>';
+    };
+
+    const hpMode = (integ.honeypot_mode || 'off').toLowerCase();
+    const hpBadge = hpMode === 'listener' ? 'LIVE' : hpMode === 'demo' ? 'DEMO' : 'OFF';
+
+    html += '<div class="report-section"><div class="report-section-title">Active Integrations</div>' +
+      '<style>' +
+      '.integ-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px}' +
+      '.integ-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px}' +
+      '.integ-card.active{border-color:rgba(58,194,126,0.4)}' +
+      '.integ-card.inactive{opacity:0.7}' +
+      '.integ-icon{font-size:1.4rem;flex-shrink:0}' +
+      '.integ-body{flex:1;min-width:0}' +
+      '.integ-name{font-size:0.85rem;font-weight:700;color:var(--text);margin-bottom:2px}' +
+      '.integ-desc{font-size:0.68rem;color:var(--muted);line-height:1.4}' +
+      '.integ-badge{display:inline-block;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle}' +
+      '.integ-badge.on{background:rgba(58,194,126,0.2);color:var(--ok)}' +
+      '.integ-badge.off{background:rgba(244,63,94,0.12);color:var(--danger)}' +
+      '.integ-badge.demo{background:rgba(255,184,77,0.15);color:var(--warn)}' +
+      '@media(max-width:640px){.integ-grid{grid-template-columns:1fr}}' +
+      '</style>' +
+      '<div class="integ-grid">' +
+      card('🤖', 'AI Analysis',    s.ai_enabled,          'Analyzes threats and recommends actions',                       s.ai_enabled ? 'ON' : 'OFF') +
+      card('🛡️', 'IP Blocker',     resp.enabled,          'Automatically blocks attacking IPs via UFW/iptables',           resp.enabled ? 'ON' : 'OFF') +
+      card('🪤', 'Honeypot',       hpMode !== 'off',      'Decoy server that captures attacker behavior',                  hpBadge) +
+      card('🔒', 'Fail2ban Sync',  integ.fail2ban,        'Syncs bans from fail2ban to InnerWarden',                      integ.fail2ban ? 'ON' : 'OFF') +
+      card('🔍', 'AbuseIPDB',      integ.abuseipdb,       'Checks IP reputation before AI analysis',                      integ.abuseipdb ? 'ON' : 'OFF') +
+      card('🌍', 'GeoIP',          integ.geoip,           'Adds country/ISP info to threat context',                      integ.geoip ? 'ON' : 'OFF') +
+      card('🔔', 'Telegram',       integ.telegram,        'Real-time alerts and remote control via bot',                  integ.telegram ? 'ON' : 'OFF') +
+      card('💬', 'Slack',          integ.slack,           'Incident notifications to Slack channel',                      integ.slack ? 'ON' : 'OFF') +
+      card('☁️', 'Cloudflare',     integ.cloudflare,      'Pushes blocked IPs to Cloudflare edge',                       integ.cloudflare ? 'ON' : 'OFF') +
       '</div></div>';
 
+    // ── Section 3: Data files ──────────────────────────────────────────────
     html += '<div class="report-section"><div class="report-section-title">Data Files — ' + esc(s.date || '—') + '</div>' +
       '<table class="report-table"><thead><tr><th>File</th><th>Status</th><th>Size</th></tr></thead><tbody>';
     Object.entries(files).forEach(([k, v]) => {
@@ -4751,17 +4842,6 @@ const INDEX_HTML: &str = r##"<!doctype html>
         '</tr>';
     });
     html += '</tbody></table></div>';
-
-    html += '<div class="report-section"><div class="report-section-title">Responder</div>' +
-      '<div class="report-kpi-row">' +
-      '<div class="report-kpi"><div class="report-kpi-label">Actions</div><div class="report-kpi-value ' + (resp.enabled ? 'good' : '') + '">' + (resp.enabled ? 'ENABLED' : 'DISABLED') + '</div></div>' +
-      '<div class="report-kpi"><div class="report-kpi-label">Mode</div><div class="report-kpi-value ' + (resp.dry_run ? 'warn' : 'bad') + '">' + (resp.dry_run ? 'DRY RUN' : 'LIVE') + '</div></div>' +
-      '<div class="report-kpi"><div class="report-kpi-label">Backend</div><div class="report-kpi-value">' + esc(resp.block_backend || '—') + '</div></div>' +
-      '</div>' +
-      '<div style="margin-top:8px;font-size:0.72rem;color:var(--muted)">Allowed skills:</div>' +
-      '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">' +
-      (resp.allowed_skills || []).map(sk => '<span class="card-badge badge-ai">' + esc(sk) + '</span>').join('') +
-      '</div></div>';
 
     html += '<div class="report-section"><div class="report-section-title">Data Directory</div>' +
       '<div style="font-family:\'JetBrains Mono\',monospace;font-size:0.78rem;color:var(--muted);padding:4px 0">' + esc(s.data_dir || '—') + '</div></div>';
@@ -6641,6 +6721,7 @@ mod tests {
                 ai_enabled: false,
                 ai_provider: "openai".to_string(),
                 ai_model: "gpt-4o-mini".to_string(),
+                ..DashboardActionConfig::default()
             };
             let skill_id = format!("block-ip-{}", cfg.block_backend);
             assert_eq!(skill_id, expected_id);
