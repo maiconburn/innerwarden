@@ -139,6 +139,19 @@ struct AgentState {
     /// Circuit breaker: when tripped by a high-volume incident burst, AI analysis
     /// is suspended until this timestamp. None = circuit breaker not tripped.
     circuit_breaker_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Pending operator honeypot choices keyed by IP.
+    /// When Telegram is configured and AI recommends Honeypot, execution is deferred
+    /// until the operator picks an action via the 4-button inline keyboard.
+    pending_honeypot_choices: HashMap<String, PendingHoneypotChoice>,
+}
+
+/// Tracks a deferred honeypot-or-block decision waiting for operator input via Telegram.
+struct PendingHoneypotChoice {
+    #[allow(dead_code)]
+    ip: String,
+    incident_id: String,
+    incident: innerwarden_core::incident::Incident,
+    expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
@@ -1050,6 +1063,7 @@ async fn main() -> Result<()> {
             None
         },
         circuit_breaker_until: None,
+        pending_honeypot_choices: HashMap::new(),
     };
 
     let state_path = cli.data_dir.join("agent-state.json");
@@ -1350,11 +1364,14 @@ async fn process_incidents(
         process_telegram_approval(approval, data_dir, cfg, state).await;
     }
 
-    // Expire stale pending confirmations
+    // Expire stale pending confirmations and honeypot choices
     let now = chrono::Utc::now();
     state
         .pending_confirmations
         .retain(|_, (pending, _, _)| pending.expires_at > now);
+    state
+        .pending_honeypot_choices
+        .retain(|_, choice| choice.expires_at > now);
 
     if new_incidents.entries.is_empty() {
         return 0;
@@ -1766,6 +1783,67 @@ async fn process_incidents(
             reason = %decision.reason,
             "AI decision"
         );
+
+        // Honeypot operator-in-the-loop: when Telegram is configured and the AI
+        // recommends Honeypot, defer execution and ask the operator what to do.
+        // The operator sees a 4-button keyboard: Honeypot / Block / Monitor / Ignore.
+        // Execution is resumed in process_telegram_approval when the choice arrives.
+        if let ai::AiAction::Honeypot { ip } = &decision.action {
+            if let Some(ref tg) = state.telegram_client {
+                let ttl = cfg.telegram.approval_ttl_secs;
+                let tg_clone = tg.clone();
+                let reason = decision.reason.clone();
+                let confidence = decision.confidence;
+                let incident_clone = incident.clone();
+                let ip_clone = ip.clone();
+                match tg_clone
+                    .send_honeypot_suggestion(
+                        &incident_clone,
+                        &ip_clone,
+                        &reason,
+                        confidence,
+                        "honeypot",
+                    )
+                    .await
+                {
+                    Ok(_msg_id) => {
+                        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl as i64);
+                        state.pending_honeypot_choices.insert(
+                            ip_clone.clone(),
+                            PendingHoneypotChoice {
+                                ip: ip_clone.clone(),
+                                incident_id: incident.incident_id.clone(),
+                                incident: incident_clone,
+                                expires_at,
+                            },
+                        );
+                        // Write an audit entry noting the operator was asked
+                        if let Some(writer) = &mut state.decision_writer {
+                            let entry = decisions::build_entry(
+                                &incident.incident_id,
+                                &incident.host,
+                                provider_name,
+                                &decision,
+                                cfg.responder.dry_run,
+                                "pending: operator honeypot choice requested via Telegram",
+                            );
+                            if let Err(e) = writer.write(&entry) {
+                                state.telemetry.observe_error("decision_writer");
+                                warn!("failed to write honeypot-pending decision: {e:#}");
+                            }
+                        }
+                        handled += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(
+                            incident_id = %incident.incident_id,
+                            "Telegram honeypot suggestion failed: {e:#} — falling through to auto-execute"
+                        );
+                    }
+                }
+            }
+        }
 
         // Execute if:
         //   (a) AI flagged auto_execute, OR operator has trusted this detector+action pair
@@ -2848,6 +2926,211 @@ async fn process_telegram_approval(
         return;
     }
 
+    // Honeypot operator-in-the-loop: "hpot:{action}:{ip}" via send_honeypot_suggestion
+    if let Some(ip) = result.incident_id.strip_prefix("__hpot__:") {
+        let ip = ip.to_string();
+        let operator = result.operator_name.clone();
+        let chosen = result.chosen_action.as_str();
+        info!(ip = %ip, operator = %operator, action = %chosen, "Telegram honeypot choice received");
+
+        let Some(choice) = state.pending_honeypot_choices.remove(&ip) else {
+            debug!(
+                ip = %ip,
+                "Telegram honeypot choice for unknown or expired IP — ignoring"
+            );
+            return;
+        };
+
+        let host = choice.incident.host.clone();
+        let provider_label = format!("operator:telegram:{operator}");
+
+        match chosen {
+            "honeypot" => {
+                // Build SkillContext and execute the honeypot skill
+                if let Some(skill) = state.skill_registry.get("honeypot") {
+                    let mut runtime = honeypot_runtime(cfg);
+                    runtime.ai_provider = state.ai_provider.clone();
+                    let ctx = skills::SkillContext {
+                        incident: choice.incident.clone(),
+                        target_ip: Some(ip.clone()),
+                        target_user: None,
+                        duration_secs: None,
+                        host: host.clone(),
+                        data_dir: data_dir.to_path_buf(),
+                        honeypot: runtime.clone(),
+                        ai_provider: state.ai_provider.clone(),
+                    };
+                    let exec_result = skill.execute(&ctx, cfg.responder.dry_run).await;
+                    let msg = if exec_result.success {
+                        match append_honeypot_marker_event(
+                            data_dir,
+                            &choice.incident,
+                            &ip,
+                            cfg.responder.dry_run,
+                            &runtime,
+                        )
+                        .await
+                        {
+                            Ok(path) => format!(
+                                "{} | honeypot marker written to {}",
+                                exec_result.message,
+                                path.display()
+                            ),
+                            Err(e) => {
+                                warn!("failed to write honeypot marker: {e:#}");
+                                exec_result.message.clone()
+                            }
+                        }
+                    } else {
+                        exec_result.message.clone()
+                    };
+                    if let Some(writer) = &mut state.decision_writer {
+                        let entry = decisions::DecisionEntry {
+                            ts: chrono::Utc::now(),
+                            incident_id: choice.incident_id.clone(),
+                            host: host.clone(),
+                            ai_provider: provider_label,
+                            action_type: "honeypot".to_string(),
+                            target_ip: Some(ip.clone()),
+                            target_user: None,
+                            skill_id: Some("honeypot".to_string()),
+                            confidence: 1.0,
+                            auto_executed: true,
+                            dry_run: cfg.responder.dry_run,
+                            reason: format!("Operator {operator} chose honeypot via Telegram"),
+                            estimated_threat: "high".to_string(),
+                            execution_result: msg.clone(),
+                        };
+                        if let Err(e) = writer.write(&entry) {
+                            warn!("failed to write honeypot decision entry: {e:#}");
+                        }
+                    }
+                    let reply = if cfg.responder.dry_run {
+                        format!("🧪 Simulado — {ip} seria jogado no honeypot. Ative live mode para executar de verdade.")
+                    } else if exec_result.success {
+                        format!("🍯 {ip} no honeypot. Agora vamos ver o que esse cara tenta fazer.")
+                    } else {
+                        format!(
+                            "❌ Falha ao ativar honeypot para {ip}: {}",
+                            exec_result.message
+                        )
+                    };
+                    tg_reply!(reply);
+                } else {
+                    tg_reply!(format!("⚠️ Honeypot skill não disponível para {ip}."));
+                }
+            }
+            "block" => {
+                // Execute block_ip skill
+                let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
+                let skill = state.skill_registry.get(&skill_id).or_else(|| {
+                    state
+                        .skill_registry
+                        .block_skill_for_backend(&cfg.responder.block_backend)
+                });
+                if let Some(skill) = skill {
+                    let ctx = skills::SkillContext {
+                        incident: choice.incident.clone(),
+                        target_ip: Some(ip.clone()),
+                        target_user: None,
+                        duration_secs: None,
+                        host: host.clone(),
+                        data_dir: data_dir.to_path_buf(),
+                        honeypot: honeypot_runtime(cfg),
+                        ai_provider: state.ai_provider.clone(),
+                    };
+                    let exec_result = skill.execute(&ctx, cfg.responder.dry_run).await;
+                    if exec_result.success {
+                        state.blocklist.insert(ip.clone());
+                    }
+                    if let Some(writer) = &mut state.decision_writer {
+                        let entry = decisions::DecisionEntry {
+                            ts: chrono::Utc::now(),
+                            incident_id: choice.incident_id.clone(),
+                            host: host.clone(),
+                            ai_provider: provider_label,
+                            action_type: "block_ip".to_string(),
+                            target_ip: Some(ip.clone()),
+                            target_user: None,
+                            skill_id: Some(skill_id.clone()),
+                            confidence: 1.0,
+                            auto_executed: true,
+                            dry_run: cfg.responder.dry_run,
+                            reason: format!("Operator {operator} chose block via Telegram"),
+                            estimated_threat: "high".to_string(),
+                            execution_result: exec_result.message.clone(),
+                        };
+                        if let Err(e) = writer.write(&entry) {
+                            warn!("failed to write honeypot-block decision entry: {e:#}");
+                        }
+                    }
+                    let reply = if cfg.responder.dry_run {
+                        format!("🧪 Simulado — {ip} seria bloqueado no firewall.")
+                    } else if exec_result.success {
+                        format!("🛡 {ip} bloqueado no firewall. Acabou para esse cara.")
+                    } else {
+                        format!("❌ Falha ao bloquear {ip}: {}", exec_result.message)
+                    };
+                    tg_reply!(reply);
+                } else {
+                    tg_reply!(format!("⚠️ Skill de bloqueio não disponível para {ip}."));
+                }
+            }
+            "monitor" => {
+                if let Some(writer) = &mut state.decision_writer {
+                    let entry = decisions::DecisionEntry {
+                        ts: chrono::Utc::now(),
+                        incident_id: choice.incident_id.clone(),
+                        host: host.clone(),
+                        ai_provider: provider_label,
+                        action_type: "monitor".to_string(),
+                        target_ip: Some(ip.clone()),
+                        target_user: None,
+                        skill_id: None,
+                        confidence: 1.0,
+                        auto_executed: false,
+                        dry_run: cfg.responder.dry_run,
+                        reason: format!("Operator {operator} chose monitor via Telegram"),
+                        estimated_threat: "medium".to_string(),
+                        execution_result: "monitoring: no active action taken".to_string(),
+                    };
+                    if let Err(e) = writer.write(&entry) {
+                        warn!("failed to write monitor decision entry: {e:#}");
+                    }
+                }
+                tg_reply!(format!("👁 Registrado. Monitorando {ip} silenciosamente."));
+            }
+            _ => {
+                // "ignore" or anything else
+                if let Some(writer) = &mut state.decision_writer {
+                    let entry = decisions::DecisionEntry {
+                        ts: chrono::Utc::now(),
+                        incident_id: choice.incident_id.clone(),
+                        host: host.clone(),
+                        ai_provider: provider_label,
+                        action_type: "ignore".to_string(),
+                        target_ip: Some(ip.clone()),
+                        target_user: None,
+                        skill_id: None,
+                        confidence: 1.0,
+                        auto_executed: false,
+                        dry_run: cfg.responder.dry_run,
+                        reason: format!("Operator {operator} chose ignore via Telegram"),
+                        estimated_threat: "low".to_string(),
+                        execution_result: "ignored by operator".to_string(),
+                    };
+                    if let Err(e) = writer.write(&entry) {
+                        warn!("failed to write ignore decision entry: {e:#}");
+                    }
+                }
+                tg_reply!(format!(
+                    "👍 Anotado. {ip} marcado como falso positivo. Mantendo olho aberto."
+                ));
+            }
+        }
+        return;
+    }
+
     let Some((pending, decision, incident)) =
         state.pending_confirmations.remove(&result.incident_id)
     else {
@@ -3395,6 +3678,7 @@ mod tests {
             slack_client: None,
             cloudflare_client: None,
             circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
         };
 
         // 4. Run the incident tick
@@ -3507,6 +3791,7 @@ mod tests {
             slack_client: None,
             cloudflare_client: None,
             circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -3594,6 +3879,7 @@ mod tests {
             slack_client: None,
             cloudflare_client: None,
             circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -3693,6 +3979,7 @@ mod tests {
             slack_client: None,
             cloudflare_client: None,
             circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -3769,6 +4056,7 @@ mod tests {
             slack_client: None,
             cloudflare_client: None,
             circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();
@@ -3857,6 +4145,7 @@ mod tests {
             slack_client: None,
             cloudflare_client: None,
             circuit_breaker_until: None,
+            pending_honeypot_choices: HashMap::new(),
         };
 
         let mut cursor = reader::AgentCursor::default();

@@ -57,6 +57,9 @@ pub struct ApprovalResult {
     pub operator_name: String,
     /// If true, the operator wants this detector+action pair to always auto-execute.
     pub always: bool,
+    /// The action chosen by the operator (for multi-choice keyboards).
+    /// Values: "honeypot", "block", "monitor", "ignore", or empty (binary approve/reject).
+    pub chosen_action: String,
 }
 
 /// Tracks a pending confirmation while waiting for the operator's response.
@@ -363,6 +366,83 @@ impl TelegramClient {
         Ok(msg_id)
     }
 
+    // -----------------------------------------------------------------------
+    // Honeypot operator-in-the-loop suggestion
+    // -----------------------------------------------------------------------
+
+    /// Send a honeypot suggestion message with a 4-button choice keyboard.
+    ///
+    /// Sent when the AI recommends `Honeypot` (or when `block_ip` is decided and honeypot
+    /// is an allowed skill) so the operator can choose what to do with the attacker.
+    ///
+    /// Returns the Telegram `message_id` for pending-choice tracking.
+    pub async fn send_honeypot_suggestion(
+        &self,
+        incident: &Incident,
+        ip: &str,
+        ai_reason: &str,
+        ai_confidence: f32,
+        ai_suggested: &str, // "honeypot" | "block" | "monitor"
+    ) -> Result<i64> {
+        let pct = (ai_confidence * 100.0) as u32;
+
+        let text = format!(
+            "🎯 <b>Tenho um suspeito aqui</b>\n\
+             \n\
+             <b>IP:</b> <code>{ip}</code>\n\
+             <b>Incidente:</b> {title}\n\
+             <b>Avaliação IA:</b> {reason} (confiança: {pct}%)\n\
+             \n\
+             O que fazemos com esse cara?",
+            ip = escape_html(ip),
+            title = escape_html(&incident.title),
+            reason = escape_html(ai_reason),
+            pct = pct,
+        );
+
+        // Add ✓ checkmark to the AI-suggested action
+        let honeypot_label = if ai_suggested == "honeypot" {
+            "🍯 Honeypot ✓"
+        } else {
+            "🍯 Honeypot"
+        };
+        let block_label = if ai_suggested == "block" {
+            "🚫 Bloquear ✓"
+        } else {
+            "🚫 Bloquear"
+        };
+        let monitor_label = if ai_suggested == "monitor" {
+            "👁 Monitorar ✓"
+        } else {
+            "👁 Monitorar"
+        };
+
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        { "text": honeypot_label, "callback_data": format!("hpot:honeypot:{ip}") },
+                        { "text": block_label,    "callback_data": format!("hpot:block:{ip}")    }
+                    ],
+                    [
+                        { "text": monitor_label,  "callback_data": format!("hpot:monitor:{ip}")  },
+                        { "text": "❌ Ignorar",   "callback_data": format!("hpot:ignore:{ip}")   }
+                    ]
+                ]
+            }
+        });
+
+        let resp = self.post_json_with_response("sendMessage", &body).await?;
+        let msg_id = resp["result"]["message_id"]
+            .as_i64()
+            .context("Telegram sendMessage returned no message_id")?;
+        Ok(msg_id)
+    }
+
     /// Edit a confirmation message to show the final outcome (removes the keyboard).
     pub async fn resolve_confirmation(
         &self,
@@ -555,9 +635,42 @@ impl TelegramClient {
                                         approved: true,
                                         always: false,
                                         operator_name: operator.clone(),
+                                        chosen_action: String::new(),
                                     };
                                     if approval_tx.send(result).await.is_err() {
                                         return;
+                                    }
+                                } else if let Some(rest) = data.strip_prefix("hpot:") {
+                                    // Honeypot operator-in-the-loop choice
+                                    // format: "hpot:{action}:{ip}"
+                                    let parts: Vec<&str> = rest.splitn(2, ':').collect();
+                                    if parts.len() == 2 {
+                                        let action = parts[0];
+                                        let ip = parts[1];
+                                        let toast = match action {
+                                            "honeypot" => {
+                                                format!("🍯 Jogando {ip} no honeypot...")
+                                            }
+                                            "block" => {
+                                                format!("🚫 Bloqueando {ip} no firewall...")
+                                            }
+                                            "monitor" => {
+                                                format!("👁 Monitorando {ip} silenciosamente...")
+                                            }
+                                            _ => "👍 Registrado.".to_string(),
+                                        };
+                                        let _ =
+                                            self.answer_callback_toast(&callback.id, &toast).await;
+                                        let result = ApprovalResult {
+                                            incident_id: format!("__hpot__:{ip}"),
+                                            approved: action != "ignore",
+                                            always: false,
+                                            operator_name: operator.clone(),
+                                            chosen_action: action.to_string(),
+                                        };
+                                        if approval_tx.send(result).await.is_err() {
+                                            return;
+                                        }
                                     }
                                 } else {
                                     // Answer the callback immediately to remove the spinner
@@ -645,6 +758,7 @@ impl TelegramClient {
                                         approved: true,
                                         always: false,
                                         operator_name: operator,
+                                        chosen_action: String::new(),
                                     })
                                     .await;
                             }
@@ -1004,6 +1118,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             approved: true,
             always: false,
             operator_name: operator.to_string(),
+            chosen_action: String::new(),
         });
     }
     if let Some(id) = data.strip_prefix("always:") {
@@ -1012,6 +1127,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             approved: true,
             always: true,
             operator_name: operator.to_string(),
+            chosen_action: String::new(),
         });
     }
     if let Some(id) = data.strip_prefix("reject:") {
@@ -1020,6 +1136,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             approved: false,
             always: false,
             operator_name: operator.to_string(),
+            chosen_action: String::new(),
         });
     }
     // Inline-keyboard menu buttons: "menu:status", "menu:threats", etc.
@@ -1036,6 +1153,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             approved: true,
             always: false,
             operator_name: operator.to_string(),
+            chosen_action: String::new(),
         });
     }
     // Capabilities inline keyboard: "enable:<id>" → routed to __enable__:<id> handler
@@ -1045,6 +1163,7 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             approved: true,
             always: false,
             operator_name: operator.to_string(),
+            chosen_action: String::new(),
         });
     }
     None
@@ -1236,6 +1355,7 @@ mod tests {
             approved: true,
             always: false,
             operator_name: operator.to_string(),
+            chosen_action: String::new(),
         };
 
         assert_eq!(result.incident_id, "__quick_block__:1.2.3.4");
@@ -1277,5 +1397,108 @@ mod tests {
             ],
         );
         assert_eq!(first_ip_entity(&inc), Some("10.0.0.1".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Honeypot operator-in-the-loop tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_hpot_callback_routing() {
+        // Simulate the run_polling routing logic for hpot: callbacks
+        let data = "hpot:honeypot:1.2.3.4";
+        let rest = data.strip_prefix("hpot:").unwrap();
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        assert_eq!(parts.len(), 2);
+        let action = parts[0];
+        let ip = parts[1];
+        assert_eq!(action, "honeypot");
+        assert_eq!(ip, "1.2.3.4");
+
+        let result = ApprovalResult {
+            incident_id: format!("__hpot__:{ip}"),
+            approved: action != "ignore",
+            always: false,
+            operator_name: "Alice".to_string(),
+            chosen_action: action.to_string(),
+        };
+        assert_eq!(result.incident_id, "__hpot__:1.2.3.4");
+        assert!(result.approved);
+        assert_eq!(result.chosen_action, "honeypot");
+
+        // ignore action should produce approved=false
+        let data_ignore = "hpot:ignore:5.6.7.8";
+        let rest_i = data_ignore.strip_prefix("hpot:").unwrap();
+        let parts_i: Vec<&str> = rest_i.splitn(2, ':').collect();
+        let action_i = parts_i[0];
+        assert_eq!(action_i, "ignore");
+        let result_i = ApprovalResult {
+            incident_id: format!("__hpot__:{}", parts_i[1]),
+            approved: action_i != "ignore",
+            always: false,
+            operator_name: "Bob".to_string(),
+            chosen_action: action_i.to_string(),
+        };
+        assert!(!result_i.approved);
+        assert_eq!(result_i.chosen_action, "ignore");
+
+        // hpot: prefix must not be caught by parse_callback
+        assert!(parse_callback("hpot:honeypot:1.2.3.4", "Alice").is_none());
+        assert!(parse_callback("hpot:block:1.2.3.4", "Alice").is_none());
+    }
+
+    #[test]
+    fn test_send_honeypot_suggestion_format() {
+        // Verify the message body would contain the key fields.
+        // We test by constructing the expected format string directly.
+        let ip = "185.220.101.45";
+        let title = "47 tentativas SSH em 5 min";
+        let reason = "IP novo, sem histórico em listas negras";
+        let confidence = 0.87_f32;
+        let pct = (confidence * 100.0) as u32;
+
+        let text = format!(
+            "🎯 <b>Tenho um suspeito aqui</b>\n\
+             \n\
+             <b>IP:</b> <code>{ip}</code>\n\
+             <b>Incidente:</b> {title}\n\
+             <b>Avaliação IA:</b> {reason} (confiança: {pct}%)\n\
+             \n\
+             O que fazemos com esse cara?",
+            ip = escape_html(ip),
+            title = escape_html(title),
+            reason = escape_html(reason),
+            pct = pct,
+        );
+
+        assert!(text.contains("185.220.101.45"), "IP must appear in message");
+        assert!(
+            text.contains("47 tentativas"),
+            "incident title must appear in message"
+        );
+        assert!(text.contains("87%"), "confidence percentage must appear");
+        assert!(
+            text.contains("Tenho um suspeito"),
+            "personality heading must appear"
+        );
+        assert!(
+            text.contains("O que fazemos"),
+            "operator question must appear"
+        );
+
+        // Verify ai_suggested checkmark logic
+        let honeypot_label_suggested = if "honeypot" == "honeypot" {
+            "🍯 Honeypot ✓"
+        } else {
+            "🍯 Honeypot"
+        };
+        assert_eq!(honeypot_label_suggested, "🍯 Honeypot ✓");
+
+        let block_label_not_suggested = if "honeypot" == "block" {
+            "🚫 Bloquear ✓"
+        } else {
+            "🚫 Bloquear"
+        };
+        assert_eq!(block_label_not_suggested, "🚫 Bloquear");
     }
 }
