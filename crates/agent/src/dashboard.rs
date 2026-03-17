@@ -4006,6 +4006,38 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .home-det-bar { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
     .home-det-count { font-size: 0.7rem; color: var(--accent); font-weight: 600; min-width: 24px; text-align: right; }
     .home-footer { margin-top: 14px; padding: 10px 0; text-align: center; }
+    /* Status hero */
+    .status-hero {
+      border-radius: 16px; padding: 24px 20px; margin-bottom: 16px;
+      text-align: center; position: relative; overflow: hidden;
+      border: 1px solid var(--line);
+      background: linear-gradient(135deg, rgba(9,17,33,0.98) 0%, rgba(15,26,49,0.95) 100%);
+    }
+    .status-hero.safe   { border-color: rgba(58,194,126,0.35); background: linear-gradient(135deg, rgba(9,17,33,0.98) 0%, rgba(12,40,25,0.95) 100%); }
+    .status-hero.warn   { border-color: rgba(255,184,77,0.35);  background: linear-gradient(135deg, rgba(9,17,33,0.98) 0%, rgba(40,28,10,0.95) 100%); }
+    .status-hero.danger { border-color: rgba(244,63,94,0.35);  background: linear-gradient(135deg, rgba(9,17,33,0.98) 0%, rgba(40,12,18,0.95) 100%); }
+    .status-hero-icon { font-size: 2.4rem; line-height: 1; margin-bottom: 8px; }
+    .status-hero-title {
+      font-size: 1.3rem; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 6px;
+    }
+    .status-hero.safe   .status-hero-title { color: var(--ok); }
+    .status-hero.warn   .status-hero-title { color: var(--warn); }
+    .status-hero.danger .status-hero-title { color: var(--danger); }
+    .status-hero-sub { font-size: 0.75rem; color: var(--muted); line-height: 1.5; }
+    /* Activity feed */
+    .activity-feed { display: flex; flex-direction: column; gap: 0; }
+    .activity-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 0; border-bottom: 1px solid var(--line);
+      cursor: pointer; transition: background 0.12s; border-radius: 0;
+    }
+    .activity-row:last-child { border-bottom: none; }
+    .activity-row:hover { background: rgba(120,229,255,0.04); border-radius: 8px; padding-left: 6px; }
+    .activity-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 1px; }
+    .activity-body { flex: 1; min-width: 0; }
+    .activity-title { font-size: 0.8rem; font-weight: 600; color: var(--text); line-height: 1.3; }
+    .activity-meta { font-size: 0.67rem; color: var(--muted); margin-top: 2px; }
+    .activity-time { font-size: 0.65rem; color: var(--muted); flex-shrink: 0; white-space: nowrap; margin-top: 2px; }
     @media (max-width: 860px) {
       .home-kpi-row { grid-template-columns: repeat(2, 1fr); }
       .home-grid { grid-template-columns: 1fr; }
@@ -4100,9 +4132,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
     <span id="refreshStatus"></span>
     <div class="main-nav">
-      <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Investigate</button>
+      <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Threats</button>
       <button type="button" class="main-nav-btn" id="navReport" onclick="showView('report')">Report</button>
-      <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Status</button>
+      <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Health</button>
     </div>
     <button type="button" class="panel-toggle-btn" id="panelToggleBtn" onclick="toggleLeftPanel()" aria-label="Toggle panel">
       <span id="panelToggleIcon">▲</span> List
@@ -4111,105 +4143,104 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   <div class="app-body" id="viewInvestigate">
 
-    <!-- Left panel: KPIs + attacker list -->
+    <!-- Left panel: summary + threat list -->
     <aside class="left-panel">
 
-      <!-- KPI row -->
-      <div class="kpi-grid">
+      <!-- Today summary strip -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(4,1fr)">
         <div class="kpi-card"><div class="kpi-label">Date</div><div class="kpi-value" id="kpi-date" style="font-size:0.7rem">—</div></div>
-        <div class="kpi-card"><div class="kpi-label">Events</div><div class="kpi-value" id="kpi-events">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Incid.</div><div class="kpi-value" id="kpi-incidents">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Dec.</div><div class="kpi-value" id="kpi-decisions">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Attk.</div><div class="kpi-value" id="kpi-attackers">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Activity</div><div class="kpi-value" id="kpi-events">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Threats</div><div class="kpi-value" id="kpi-incidents">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Actions</div><div class="kpi-value" id="kpi-decisions">0</div></div>
       </div>
 
-      <div class="filters">
-        <input id="flt-date" type="date" class="full" />
-        <input id="flt-compare-date" type="date" title="compare date" />
-        <select id="flt-window">
-          <option value="">window: full day</option>
-          <option value="900">window: last 15m</option>
-          <option value="3600">window: last 1h</option>
-          <option value="21600">window: last 6h</option>
-        </select>
-        <select id="flt-severity">
-          <option value="">severity: any</option>
-          <option value="critical">severity: critical+</option>
-          <option value="high">severity: high+</option>
-          <option value="medium">severity: medium+</option>
-          <option value="low">severity: low+</option>
-          <option value="info">severity: info+</option>
-        </select>
-        <input id="flt-detector" type="text" placeholder="detector (ex: ssh_bruteforce)" />
-        <div class="filters-note">Comparison uses same subject + filters on selected compare date.</div>
-        <button id="flt-apply" class="full" type="button">Apply Filters</button>
+      <!-- Date + advanced filters (hidden by default) -->
+      <div class="filters" style="grid-template-columns:1fr auto;margin-bottom:6px">
+        <input id="flt-date" type="date" class="full" style="grid-column:1/-1" />
+        <button id="flt-adv-toggle" type="button" class="full" style="background:transparent;border:none;color:var(--muted);font-size:0.68rem;cursor:pointer;text-align:left;padding:2px 0" onclick="toggleAdvFilters()">▸ Advanced filters</button>
+      </div>
+      <div id="advFilters" style="display:none">
+        <div class="filters">
+          <input id="flt-compare-date" type="date" title="compare date" />
+          <select id="flt-window">
+            <option value="">window: full day</option>
+            <option value="900">last 15m</option>
+            <option value="3600">last 1h</option>
+            <option value="21600">last 6h</option>
+          </select>
+          <select id="flt-severity">
+            <option value="">severity: any</option>
+            <option value="critical">critical+</option>
+            <option value="high">high+</option>
+            <option value="medium">medium+</option>
+          </select>
+          <input id="flt-detector" type="text" placeholder="filter by detector" />
+          <button id="flt-apply" class="full" type="button">Apply</button>
+        </div>
       </div>
 
-      <div class="pivot-tabs">
-        <button type="button" class="pivot-tab active" data-pivot="ip">IP</button>
-        <button type="button" class="pivot-tab" data-pivot="user">User</button>
-        <button type="button" class="pivot-tab" data-pivot="detector">Detector</button>
+      <!-- Hidden pivot tabs (kept for JS compatibility, not shown) -->
+      <div style="display:none">
+        <div class="pivot-tabs">
+          <button type="button" class="pivot-tab active" data-pivot="ip">IP</button>
+          <button type="button" class="pivot-tab" data-pivot="user">User</button>
+          <button type="button" class="pivot-tab" data-pivot="detector">Detector</button>
+        </div>
+        <!-- Hidden but required: cluster/detector lists for JS -->
+        <div id="clusterList"></div>
+        <div id="topDetectors"></div>
       </div>
 
-      <!-- D9 — inline search -->
+      <!-- Search -->
       <div class="search-wrap">
-        <input id="entitySearch" type="search" placeholder="filter by IP, detector, severity…"
+        <input id="entitySearch" type="search" placeholder="search threats…"
                autocomplete="off" spellcheck="false" />
       </div>
 
-      <!-- Entity list -->
-      <div class="section-title" id="entityTitle">Attackers (IP)</div>
+      <!-- Threat list -->
+      <div class="section-title" id="entityTitle">Threats Today</div>
       <div id="attackerList"><div class="empty">Loading…</div></div>
-
-      <!-- Correlation clusters -->
-      <div class="section-title" style="margin-top:14px">Correlation Clusters</div>
-      <div id="clusterList"><div class="empty">—</div></div>
-
-      <!-- Top detectors -->
-      <div class="section-title" style="margin-top:14px">Top Detectors</div>
-      <div id="topDetectors"><div class="empty">—</div></div>
 
     </aside>
 
     <!-- Right panel: journey timeline -->
     <main class="right-panel" id="rightPanel">
       <div id="homeState">
-        <div class="home-kpi-row" id="homeKpiRow">
-          <div class="home-kpi-card"><div class="home-kpi-icon">⚡</div><div class="home-kpi-label">Events Today</div><div class="home-kpi-val" id="h-events">—</div></div>
-          <div class="home-kpi-card"><div class="home-kpi-icon">🚨</div><div class="home-kpi-label">Incidents</div><div class="home-kpi-val" id="h-incidents">—</div></div>
-          <div class="home-kpi-card"><div class="home-kpi-icon">🤖</div><div class="home-kpi-label">AI Decisions</div><div class="home-kpi-val" id="h-decisions">—</div></div>
-          <div class="home-kpi-card"><div class="home-kpi-icon">🚫</div><div class="home-kpi-label">Blocked IPs</div><div class="home-kpi-val" id="h-blocks">—</div></div>
+        <!-- Status hero -->
+        <div class="status-hero safe" id="statusHero">
+          <div class="status-hero-icon" id="heroIcon">✅</div>
+          <div class="status-hero-title" id="heroTitle">Server Protected</div>
+          <div class="status-hero-sub" id="heroSub">Loading today's activity…</div>
         </div>
 
-        <div class="home-grid">
-          <!-- Recent Threats -->
-          <div class="home-card">
-            <div class="home-card-title">
-              <span class="live-dot"></span>
-              Recent Threats
-            </div>
-            <div id="homeRecentThreats"><div class="empty">Loading…</div></div>
+        <!-- Activity feed -->
+        <div class="home-card">
+          <div class="home-card-title">
+            <span class="live-dot"></span>
+            What happened today
           </div>
-
-          <!-- Recent Decisions -->
-          <div class="home-card">
-            <div class="home-card-title">AI Decisions</div>
-            <div id="homeRecentDecisions"><div class="empty">Loading…</div></div>
-          </div>
+          <div id="activityFeed"><div class="empty">Loading…</div></div>
         </div>
 
-        <div class="home-card" style="margin-top:12px">
-          <div class="home-card-title">Top Active Detectors</div>
-          <div id="homeDetectors"><div class="empty">Loading…</div></div>
+        <!-- Hidden elements kept for JS compatibility -->
+        <div style="display:none">
+          <div id="homeKpiRow"></div>
+          <div id="homeRecentThreats"></div>
+          <div id="homeRecentDecisions"></div>
+          <div id="homeDetectors"></div>
+          <div id="h-events"></div>
+          <div id="h-incidents"></div>
+          <div id="h-decisions"></div>
+          <div id="h-blocks"></div>
         </div>
 
         <div class="home-actions">
-          <button class="home-action-btn" type="button" onclick="investigateTopThreat()">🔍 Investigate Top Threat</button>
+          <button class="home-action-btn" type="button" onclick="investigateTopThreat()">🔍 Investigate a Threat</button>
           <button class="home-action-btn" type="button" onclick="showView('report')">📊 Daily Report</button>
-          <button class="home-action-btn" type="button" onclick="showView('status')">🩺 System Status</button>
+          <button class="home-action-btn" type="button" onclick="showView('status')">🩺 System Health</button>
         </div>
         <div class="home-footer" style="margin-top:8px">
-          <span style="color:var(--muted);font-size:0.7rem">← Select an entity from the list to investigate its full attack timeline</span>
+          <span style="color:var(--muted);font-size:0.7rem">← Click any threat on the left to see its full history</span>
         </div>
       </div>
 
@@ -4309,73 +4340,16 @@ const INDEX_HTML: &str = r##"<!doctype html>
         loadJson('/api/pivots?group_by=ip&limit=5')
       ]);
 
-      // KPIs
-      const blockCount = (decisions.items || []).filter(d => d.action_type === 'block_ip' && d.auto_executed).length;
+      // Update status hero and activity feed
+      const incidentList = await loadJson('/api/incidents?limit=30');
+      updateStatusHero(incidentList.items || [], decisions.items || []);
+      buildActivityFeed(incidentList.items || [], decisions.items || []);
+
+      // KPI strip in left panel
       setHomeKpi('h-events', overview.events_count ?? 0);
       setHomeKpi('h-incidents', overview.incidents_count ?? 0);
       setHomeKpi('h-decisions', overview.decisions_count ?? 0);
-      setHomeKpi('h-blocks', blockCount);
-
-      // Recent threats (top IPs)
-      const threats = document.getElementById('homeRecentThreats');
-      if (threats) {
-        const items = pivots.items || [];
-        if (items.length === 0) {
-          threats.innerHTML = '<div class="empty">No threats detected today.</div>';
-        } else {
-          threats.innerHTML = items.slice(0,5).map(item => {
-            const sev = item.max_severity || 'unknown';
-            const ago = timeAgo(item.last_seen);
-            return '<div class="home-threat-row" onclick="handleCardClickByValue(\'ip\',\'' + esc(item.value || item.ip || '') + '\')">' +
-              '<div class="home-threat-ip">' + esc(item.value || item.ip || '?') + '</div>' +
-              '<span class="' + sevCls(sev) + '" style="font-size:0.62rem;font-weight:700">' + esc(sev.toUpperCase()) + '</span>' +
-              '<div class="home-threat-meta">' + (item.incident_count || 0) + ' inc · ' + ago + '</div>' +
-              '</div>';
-          }).join('');
-        }
-      }
-
-      // Recent decisions
-      const decs = document.getElementById('homeRecentDecisions');
-      if (decs) {
-        const items = decisions.items || [];
-        if (items.length === 0) {
-          decs.innerHTML = '<div class="empty">No decisions today.</div>';
-        } else {
-          const actionLabels = { block_ip: '🚫 Block IP', monitor_ip: '🔍 Monitor', honeypot: '🍯 Honeypot', suspend_user_sudo: '🔒 Suspend', ignore: '— Ignore' };
-          decs.innerHTML = items.slice(0,5).map(d => {
-            const label = actionLabels[d.action_type] || d.action_type;
-            const conf = ((d.confidence || 0) * 100).toFixed(0) + '%';
-            const mode = d.dry_run ? ' (dry)' : d.auto_executed ? '' : ' (skipped)';
-            return '<div class="home-decision-row">' +
-              '<div style="flex:1">' +
-              '<div class="home-decision-action">' + esc(label) + (mode ? '<span style="color:var(--muted);font-weight:400;font-size:0.65rem">' + esc(mode) + '</span>' : '') + '</div>' +
-              '<div class="home-decision-meta">' + esc(d.target_ip || d.incident_id || '—') + '</div>' +
-              '</div>' +
-              '<div class="home-decision-conf">' + conf + '</div>' +
-              '</div>';
-          }).join('');
-        }
-      }
-
-      // Top detectors
-      const detsEl = document.getElementById('homeDetectors');
-      if (detsEl) {
-        const dets = overview.top_detectors || [];
-        if (dets.length === 0) {
-          detsEl.innerHTML = '<div class="empty">No detector data.</div>';
-        } else {
-          const maxCount = Math.max(...dets.map(d => d.count), 1);
-          detsEl.innerHTML = '<div style="display:grid;gap:2px">' + dets.slice(0,8).map(d => {
-            const pct = Math.round((d.count / maxCount) * 100);
-            return '<div class="home-det-row">' +
-              '<div class="home-det-name">' + esc(d.detector) + '</div>' +
-              '<div class="home-det-bar-wrap"><div class="home-det-bar" style="width:' + pct + '%"></div></div>' +
-              '<div class="home-det-count">' + d.count + '</div>' +
-              '</div>';
-          }).join('') + '</div>';
-        }
-      }
+      setHomeKpi('h-blocks', (decisions.items || []).filter(d => d.action_type === 'block_ip' && d.auto_executed).length);
     } catch(e) {
       console.warn('Home state load error:', e);
     }
@@ -4423,6 +4397,104 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (first) { first.click(); return; }
     // Show investigate tab in case we're in a different view
     showView('investigate');
+  }
+
+  function toggleAdvFilters() {
+    const el = document.getElementById('advFilters');
+    const btn = document.getElementById('flt-adv-toggle');
+    if (!el || !btn) return;
+    const open = el.style.display !== 'none';
+    el.style.display = open ? 'none' : 'block';
+    btn.textContent = open ? '▸ Advanced filters' : '▾ Advanced filters';
+  }
+
+  function updateStatusHero(incidents, decisions) {
+    const hero = document.getElementById('statusHero');
+    const icon = document.getElementById('heroIcon');
+    const title = document.getElementById('heroTitle');
+    const sub = document.getElementById('heroSub');
+    if (!hero || !icon || !title || !sub) return;
+
+    const highCount = (incidents || []).filter(i => ['critical','high'].includes((i.severity||'').toLowerCase())).length;
+    const totalThreats = (incidents || []).length;
+    const blockedCount = (decisions || []).filter(d => d.action_type === 'block_ip' && d.auto_executed).length;
+    const ago = incidents && incidents.length > 0 ? timeAgo(incidents[0].ts) : null;
+
+    if (highCount > 0) {
+      hero.className = 'status-hero danger';
+      icon.textContent = '🚨';
+      title.textContent = highCount === 1 ? 'Active Threat Detected' : highCount + ' Active Threats';
+      sub.textContent = 'High-severity activity found — check the threat list on the left' + (ago ? ' · last seen ' + ago : '');
+    } else if (totalThreats > 0) {
+      hero.className = 'status-hero warn';
+      icon.textContent = '⚠️';
+      title.textContent = totalThreats + ' Threat' + (totalThreats !== 1 ? 's' : '') + ' Today';
+      sub.textContent = (blockedCount > 0 ? blockedCount + ' blocked automatically' : 'Being monitored') + (ago ? ' · last ' + ago : '');
+    } else {
+      hero.className = 'status-hero safe';
+      icon.textContent = '✅';
+      title.textContent = 'Server Protected';
+      sub.textContent = 'No threats detected today · AI guard active';
+    }
+  }
+
+  function buildActivityFeed(incidents, decisions) {
+    const feedEl = document.getElementById('activityFeed');
+    if (!feedEl) return;
+
+    const actionMap = {};
+    (decisions || []).forEach(d => {
+      const key = d.target_ip || d.incident_id || '';
+      if (key) actionMap[key] = d;
+    });
+
+    const detectorLabels = {
+      ssh_bruteforce: 'SSH password guessing',
+      credential_stuffing: 'credential stuffing attack',
+      port_scan: 'port scan',
+      sudo_abuse: 'suspicious sudo commands',
+      search_abuse: 'search abuse',
+      web_scan: 'web scanner detected',
+      user_agent_scanner: 'automated scanner',
+      execution_guard: 'suspicious command execution',
+    };
+
+    const rows = (incidents || []).slice(0, 12).map(inc => {
+      const sev = (inc.severity || '').toLowerCase();
+      const ip = (inc.entities || []).find(e => e.type === 'Ip' || e.type === 'ip')?.value || '';
+      const dec = ip ? actionMap[ip] : null;
+      const detectorSlug = (inc.incident_id || '').split(':')[0] || '';
+      const label = detectorLabels[detectorSlug] || inc.title || detectorSlug;
+      const ago = timeAgo(inc.ts);
+
+      let icon, actionText;
+      if (dec && dec.action_type === 'block_ip' && dec.auto_executed && !dec.dry_run) {
+        icon = '🚫'; actionText = 'Blocked' + (ip ? ' ' + ip : '');
+      } else if (dec && dec.action_type === 'block_ip' && dec.dry_run) {
+        icon = '🧪'; actionText = 'Would block' + (ip ? ' ' + ip : '') + ' (test mode)';
+      } else if (dec && dec.action_type === 'monitor_ip') {
+        icon = '👁'; actionText = 'Monitoring' + (ip ? ' ' + ip : '');
+      } else if (sev === 'critical' || sev === 'high') {
+        icon = '🚨'; actionText = ip ? 'Attack from ' + ip : 'Threat detected';
+      } else {
+        icon = '⚠️'; actionText = ip ? 'Suspicious activity from ' + ip : 'Suspicious activity';
+      }
+
+      return '<div class="activity-row" onclick="handleCardClickByValue(\'ip\',\'' + esc(ip) + '\')">' +
+        '<div class="activity-icon">' + icon + '</div>' +
+        '<div class="activity-body">' +
+          '<div class="activity-title">' + esc(actionText) + '</div>' +
+          '<div class="activity-meta">' + esc(label) + '</div>' +
+        '</div>' +
+        '<div class="activity-time">' + esc(ago) + '</div>' +
+        '</div>';
+    });
+
+    if (rows.length === 0) {
+      feedEl.innerHTML = '<div class="empty" style="padding:20px 0;text-align:center;color:var(--ok)">✅ Nothing suspicious today</div>';
+    } else {
+      feedEl.innerHTML = '<div class="activity-feed">' + rows.join('') + '</div>';
+    }
   }
 
   // ── D10 — Report tab ────────────────────────────────────────────────────
@@ -5639,7 +5711,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       document.getElementById('kpi-events').textContent    = ov.events_count;
       document.getElementById('kpi-incidents').textContent = ov.incidents_count;
       document.getElementById('kpi-decisions').textContent = ov.decisions_count;
-      document.getElementById('kpi-attackers').textContent = items.length;
+      const kpiAtt = document.getElementById('kpi-attackers');
+      if (kpiAtt) kpiAtt.textContent = items.length;
 
       const list = document.getElementById('attackerList');
       if (items.length === 0) {
