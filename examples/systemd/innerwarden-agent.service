@@ -27,10 +27,14 @@ StandardError=journal
 SyslogIdentifier=innerwarden-agent
 
 # Hardening
-NoNewPrivileges=yes
+# NoNewPrivileges is intentionally omitted: block-ip skills call `sudo ufw/iptables/nftables`
+# which requires the ability to gain privileges via sudoers. Enable only if using iptables
+# directly without sudo (e.g. CAP_NET_ADMIN) or if no block-ip skills are needed.
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/innerwarden
+# /run     — UFW needs /run/ufw.lock
+# /etc/ufw — UFW writes updated rules to /etc/ufw/user{6}.rules
+ReadWritePaths=/var/lib/innerwarden /run /etc/ufw
 ReadOnlyPaths=/etc/innerwarden
 ProtectHome=yes
 

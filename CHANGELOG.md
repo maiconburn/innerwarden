@@ -11,6 +11,48 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.20] — 2026-03-17
+
+### Honeypot
+
+- **Phase 8.9 — LLM-powered SSH shell** (`interaction = "llm_shell"`) — attacker types commands into a realistic Ubuntu 22.04 shell; AI responds in character with plausible output (home directories, `ls`, `ps`, `id`, `hostname`, `cat /etc/passwd`, etc.); rolling 10-command history keeps the AI context coherent across the session; command/response pairs recorded in the evidence JSONL
+- **Always-on mode** (`mode = "always_on"`) — honeypot TCP listener starts at agent startup and stays permanently open, no operator approval needed before a session; per-connection smart filter: blocklist → AbuseIPDB reputation gate → accept into LLM shell; eliminates the timing problem where the attacker is gone before the operator clicks 🍯
+- **Post-session loop** — after every session, the agent reads evidence, extracts IOCs (URLs, IPs, domains, attack categories via regex), calls AI for a verdict, attempts auto-block of the attacker IP, and sends a Telegram T.5 report
+- **IOC extraction** (`ioc.rs`) — regex-based extraction of IPs, URLs, domains from shell commands; category tagging (download, persistence, enumeration, network, execution, obfuscation); `format_telegram()` and `format_list()` helpers; 5 unit tests
+
+### Telegram
+
+- **T.4 — operator-in-the-loop honeypot decisions** — when AI recommends `honeypot` and Telegram is configured, agent sends a personality message with a 4-button inline keyboard: `[🍯 Honeypot] [🚫 Bloquear] [👁 Monitorar] [❌ Ignorar]`; AI-suggested action gets a `✓` checkmark; callback format `hpot:{action}:{ip}`; deferred execution via `PendingHoneypotChoice` in agent state
+
+### Dashboard
+
+- **🍯 Honeypot tab** — `GET /api/honeypot/sessions` lists completed sessions (JSON metadata + JSONL evidence); rendered as session cards with auth attempts, shell commands, and session ID
+- **Test honeypot button** — `POST /api/action/honeypot` injects a synthetic incident for manual testing; returns SSH instructions with the decoy port; `🧪 Iniciar sessão de teste` button in the Honeypot tab
+
+### AI
+
+- Prompt updated to prefer `honeypot` when the skill is available and the attacker shows persistence (multiple incidents or high attempt count)
+
+### Security hardening
+
+- **Systemd agent unit** — removed `NoNewPrivileges=yes` (was silently blocking `sudo ufw/iptables` calls used by block-ip skills); added `/run` and `/etc/ufw` to `ReadWritePaths` so UFW can acquire its lock file and write updated rules after a block decision
+
+### `innerwarden scan` audit
+
+- Full security audit across all major service categories: SSH (`sshd_config` — PasswordAuthentication, PermitRootLogin, X11Forwarding, MaxAuthTries, AllowTcpForwarding), nginx (server_tokens, HTTPS, rate limiting), fail2ban (sshd jail active, bantime ≥ 3600 s), UFW (active status, default outbound), system (unattended-upgrades, dangerous open ports)
+- `ScanFinding { severity, resource, title, detail, iw_handles, admin_action }` — severity levels Info/Low/Medium/High; consolidated "Admin actions required" section lists manual steps the operator must take; `iw_handles` items show which findings InnerWarden can remediate automatically
+- Fixed duplicate nginx findings when both `search-protection` and `nginx-error-monitor` modules are scored in the same scan
+
+### Bug fixes
+
+- Sensor Docker audit at startup emits `container.privileged` / `container.sock_mount` / `container.dangerous_cap` findings correctly for already-running containers
+
+### Test coverage
+
+537 tests across three crates (185 sensor + 197 agent + 155 ctl).
+
+---
+
 ## [0.1.19] — 2026-03-17
 
 ### Dashboard
