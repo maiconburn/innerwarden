@@ -203,10 +203,10 @@ impl TelegramClient {
         let pct = (confidence * 100.0) as u32;
         let text = if dry_run {
             format!(
-                "🧪 <b>DRY RUN</b> — <b>{host}</b>\n\
-                 Would have {action_label} <code>{target}</code>\n\
+                "🧪 <b>Simulated</b> — <b>{host}</b>\n\
+                 Would've {action_label} <code>{target}</code>\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}%",
+                 Confidence: {pct}% | No real action taken (dry-run mode)",
                 host = escape_html(host),
                 action_label = action_label,
                 target = escape_html(target),
@@ -214,10 +214,10 @@ impl TelegramClient {
             )
         } else {
             format!(
-                "✅ <b>Done</b> — <b>{host}</b>\n\
+                "✅ <b>Threat neutralized</b> — <b>{host}</b>\n\
                  {action_label} <code>{target}</code>\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}%",
+                 Confidence: {pct}% | This actor won't be back.",
                 host = escape_html(host),
                 action_label = action_label,
                 target = escape_html(target),
@@ -247,25 +247,24 @@ impl TelegramClient {
         let mode_desc = mode.description();
 
         let today_line = if incident_count == 0 {
-            "All quiet today — no threats detected.".to_string()
+            "Perimeter's clean — no threat actors in the logs today.".to_string()
         } else {
             format!(
-                "Today: <b>{incident_count}</b> threat{} detected, <b>{decision_count}</b> action{}.",
+                "<b>{incident_count}</b> intrusion attempt{} logged, <b>{decision_count}</b> neutralized.",
                 if incident_count == 1 { "" } else { "s" },
-                if decision_count == 1 { "" } else { "s" },
             )
         };
 
         let text = format!(
-            "🛡 Hey! I'm <b>InnerWarden</b>, your server's security guardian.\n\
-             Watching <b>{host}</b> right now.\n\
+            "👾 Yo. I'm <b>InnerWarden</b> — your server's hacker guardian.\n\
+             Got eyes on <b>{host}</b>. Perimeter's mine.\n\
              \n\
              {today_line}\n\
              \n\
-             Mode: {mode_label}\n\
+             Mode: <b>{mode_label}</b>\n\
              <i>{mode_desc}</i>\n\
              \n\
-             Ask me anything or use the buttons below.",
+             What do you need, operator?",
             host = escape_html(host),
         );
 
@@ -309,10 +308,10 @@ impl TelegramClient {
         let pct = (confidence * 100.0) as u32;
 
         let confidence_phrase = match pct {
-            90..=100 => "I'm very confident about this",
-            75..=89 => "I'm fairly confident about this",
-            60..=74 => "I think this is the right call",
-            _ => "not 100% sure, but leaning toward this",
+            90..=100 => "High confidence — this is a real threat",
+            75..=89 => "Strong signal — TTPs check out",
+            60..=74 => "Moderate confidence — worth acting on",
+            _ => "Low signal — could be noise, could be legit",
         };
         let action_plain = plain_action(action_description);
         let expires_min = expires_secs / 60;
@@ -327,10 +326,10 @@ impl TelegramClient {
              <b>{title}</b>\n\
              {entity_line}\n\
              \n\
-             🤖 {confidence_phrase}. Suggested action:\n\
-             <b>{action_plain}</b>\n\
+             🤖 {confidence_phrase} ({pct}%). Recommended action:\n\
+             <code>{action_plain}</code>\n\
              \n\
-             Your call — {expires_label} to decide.",
+             Your call, operator — {expires_label} to respond.",
             host = escape_html(&incident.host),
             title = escape_html(&incident.title),
             action_plain = escape_html(&action_plain),
@@ -339,6 +338,7 @@ impl TelegramClient {
             source_icon = source_icon,
             confidence_phrase = confidence_phrase,
             expires_label = expires_label,
+            pct = pct,
         );
 
         let id = &incident.incident_id;
@@ -379,17 +379,20 @@ impl TelegramClient {
         // Remove inline keyboard
         let _ = self.post_json("editMessageReplyMarkup", &body).await;
 
-        // Send follow-up result message with personality
+        // Send follow-up result message with hacker personality
         let text = if always {
-            format!("🔁 Got it, {operator}. I'll handle this automatically from now on. No need to ask.", operator = escape_html(operator))
+            format!(
+                "🔁 Trust rule saved, {operator}. This TTP is now auto-contained — no need to ping you next time.",
+                operator = escape_html(operator)
+            )
         } else if approved {
             format!(
-                "✅ Done. Executed on {operator}'s orders. They won't bother us again.",
+                "✅ Executed. {operator} called the shot — threat actor has been neutralized.",
                 operator = escape_html(operator)
             )
         } else {
             format!(
-                "❌ Standing down. {operator} said let it slide. I'll keep watching.",
+                "❌ Standing down on {operator}'s call. Logging the IOC, keeping eyes on it.",
                 operator = escape_html(operator)
             )
         };
@@ -516,7 +519,7 @@ impl TelegramClient {
                                     let _ = self
                                         .answer_callback_toast(
                                             &callback.id,
-                                            "👍 Noted — monitoring continues",
+                                            "👍 Logged as false positive. Keeping eyes on it.",
                                         )
                                         .await;
                                 } else if let Some(ip) = data.strip_prefix("quick:block:") {
@@ -524,7 +527,7 @@ impl TelegramClient {
                                     let _ = self
                                         .answer_callback_toast(
                                             &callback.id,
-                                            &format!("🛡 Queuing block for {ip}..."),
+                                            &format!("🛡 Dropping {ip} at the firewall..."),
                                         )
                                         .await;
                                     let result = ApprovalResult {
@@ -779,16 +782,16 @@ fn format_incident_message(
     // Mode-specific header and call-to-action
     let (mode_prefix, cta) = match mode {
         GuardianMode::Guard => (
-            "⚡ Analyzing…",
-            String::new(), // No CTA — action report will follow
+            "⚡ Live threat —",
+            "\n<i>Analyzing TTPs… action report incoming.</i>".to_string(),
         ),
         GuardianMode::DryRun => (
-            "🧪 Dry-run mode —",
-            "\n<i>No real action taken — configure responder to go live</i>".to_string(),
+            "🧪 Dry-run —",
+            "\n<i>Simulation only — enable live mode to let me act.</i>".to_string(),
         ),
         GuardianMode::Watch => {
             let quip = incident_quip(incident);
-            ("", quip.to_string())
+            ("🚨", quip.to_string())
         }
     };
 
@@ -829,42 +832,54 @@ fn format_incident_message(
     )
 }
 
-/// Returns a snarky one-liner based on the incident type.
+/// Returns a hacker-flavored one-liner based on the incident type.
 fn incident_quip(incident: &Incident) -> &'static str {
     let title = incident.title.to_lowercase();
     let tags: Vec<&str> = incident.tags.iter().map(|s| s.as_str()).collect();
 
-    if title.contains("brute") || title.contains("ssh") {
-        return "🧱 Script kiddie found the door. On it.";
+    if title.contains("brute") || (title.contains("ssh") && title.contains("fail")) {
+        return "💥 Script kiddie hammering the front door. Dictionary attack, classic.";
     }
     if title.contains("credential") || title.contains("stuffing") || title.contains("spray") {
-        return "🎭 Someone's cosplaying as your users. Not for long.";
+        return "🎭 Credential spray detected. Threat actor cosplaying as your users.";
     }
     if title.contains("port scan") || title.contains("portscan") {
-        return "🔭 They're window shopping. Let's close the blinds.";
+        return "🔭 Recon phase active — they're mapping our attack surface. Not on my watch.";
     }
     if title.contains("sudo") || title.contains("privilege") {
-        return "👑 Someone's reaching for the crown. Hard no.";
+        return "👑 Privilege escalation attempt. This actor's trying to go root. Hard no.";
     }
     if title.contains("execution") || title.contains("shell") || title.contains("command") {
-        return "💀 That command had bad news written all over it.";
+        return "💀 Suspicious binary execution. Could be a payload drop — locking it down.";
     }
     if title.contains("rate") || title.contains("search") || title.contains("abuse") {
-        return "🤖 Bot party detected. Bouncer mode: engaged.";
+        return "🤖 Automated scraping detected. Bot's treating your server like an open API.";
+    }
+    if title.contains("authorized_keys") || title.contains("ssh key") {
+        return "🔑 SSH key tampering — classic persistence play. ATT&CK T1098.004 vibes.";
+    }
+    if title.contains("cron") || title.contains("scheduled") {
+        return "⏰ Cron tampering — threat actor planting a persistent backdoor. ATT&CK T1053.";
     }
     if title.contains("file") || title.contains("integrity") {
-        return "🕵️ Someone touched what they shouldn't have.";
+        return "🕵️ File tampered outside expected windows. Could be an IOC — eyes on it.";
+    }
+    if title.contains("container") || title.contains("docker") {
+        return "🐳 Suspicious container spun up. Checking for --privileged escapes.";
     }
     if tags.contains(&"falco") {
-        return "🔬 Falco caught something spicy in the kernel.";
+        return "🔬 Falco snagged a kernel-level anomaly. That's deep in the stack — serious.";
     }
     if tags.contains(&"suricata") {
-        return "🌐 Network IDS flagged it. Dirty traffic incoming.";
+        return "🌐 Suricata flagged dirty traffic. Network-layer IOC confirmed.";
     }
-    "👀 Something's off. Eyes on this one."
+    if tags.contains(&"wazuh") {
+        return "🛡 Wazuh HIDS tripped. Host-based intrusion signatures firing.";
+    }
+    "👾 Anomaly in the noise. Threat actor or misconfigured bot — investigating."
 }
 
-/// Converts a technical action description into plain language.
+/// Converts a technical action description into hacker-flavored plain language.
 fn plain_action(action: &str) -> String {
     let a = action.trim();
     // block-ip variants
@@ -874,27 +889,27 @@ fn plain_action(action: &str) -> String {
         || a.contains("pfctl")
     {
         let ip = a.split_whitespace().last().unwrap_or("IP");
-        return format!("Block {ip} at the firewall");
+        return format!("Drop {ip} at the firewall — blackhole their traffic");
     }
     if a.contains("block") && a.contains("ip") {
         let ip = a.split_whitespace().last().unwrap_or("IP");
-        return format!("Block {ip} at the firewall");
+        return format!("Firewall drop {ip} — null route all inbound traffic");
     }
     // suspend-user-sudo
     if a.contains("sudoers") || a.contains("suspend") {
         let user = a.split_whitespace().last().unwrap_or("user");
-        return format!("Suspend sudo access for {user}");
+        return format!("Kill sudo privileges for {user} — privilege revoked");
     }
     // monitor
     if a.contains("tcpdump") || a.contains("monitor") || a.contains("pcap") {
         let ip = a.split_whitespace().last().unwrap_or("IP");
-        return format!("Capture traffic from {ip} for analysis");
+        return format!("Spin up packet capture on {ip} — collect forensic evidence");
     }
     // honeypot
     if a.contains("honeypot") {
-        return "Redirect attacker to honeypot".to_string();
+        return "Redirect threat actor to honeypot — let them think they're in".to_string();
     }
-    // fallback: show as-is but clean up
+    // fallback
     a.to_string()
 }
 

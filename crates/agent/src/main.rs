@@ -1966,18 +1966,18 @@ async fn process_telegram_approval(
                 .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
                 .unwrap_or_else(|_| "unknown".to_string());
             let today_line = if incident_count == 0 {
-                "All quiet today — no threats.".to_string()
+                "Perimeter clean — no threat actors in the logs.".to_string()
             } else {
-                format!("{incident_count} threats detected, {decision_count} actions taken")
+                format!("{incident_count} intrusion attempts, {decision_count} neutralized")
             };
             let text = format!(
-                "🛡 <b>InnerWarden</b> — <b>{host}</b>\n\
+                "👾 <b>InnerWarden</b> — <b>{host}</b>\n\
                  ━━━━━━━━━━━━━━━━\n\
                  Mode: <b>{mode_label}</b>\n\
                  <i>{mode_desc}</i>\n\
                  \n\
-                 AI: {ai_label}\n\
-                 Today: {today_line}\n\
+                 Threat brain: {ai_label}\n\
+                 Intel today: {today_line}\n\
                  \n\
                  /threats · /decisions · /blocked",
             );
@@ -1989,18 +1989,18 @@ async fn process_telegram_approval(
     if result.incident_id == "__help__" {
         info!(operator = %result.operator_name, "Telegram /help command received");
         if cfg.telegram.bot.enabled {
-            let text = "🛡 <b>InnerWarden Commands</b>\n\n\
-                /status — mode, AI, today's summary\n\
-                /threats — recent threats detected\n\
-                /decisions — recent actions taken\n\
-                /blocked — currently blocked IPs\n\
-                /guard — activate auto-defend mode\n\
-                /watch — switch to monitor-only mode\n\
-                /ask <question> — ask me anything\n\
-                <i>or just type your question directly</i>\n\n\
-                On threat notifications:\n\
-                🛡 <b>Block</b> — block the IP immediately\n\
-                🙈 <b>Ignore</b> — dismiss this alert";
+            let text = "👾 <b>InnerWarden — Operator Commands</b>\n\n\
+                /status — guardian status, mode, threat intel\n\
+                /threats — recent intrusion attempts\n\
+                /decisions — actions I've taken\n\
+                /blocked — threat actors currently contained\n\
+                /guard — activate auto-defend (I act autonomously)\n\
+                /watch — passive mode (I alert, you decide)\n\
+                /ask <question> — ask me anything about your server\n\
+                <i>or just type — I'll answer in plain language</i>\n\n\
+                On alert notifications:\n\
+                🛡 <b>Block</b> — drop this actor now\n\
+                🙈 <b>Ignore</b> — false positive, stand down";
             tg_reply!(text);
         }
         return;
@@ -2079,20 +2079,20 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let mode = guardian_mode(cfg);
             let text = match mode {
-                telegram::GuardianMode::Guard => "🟢 <b>Already in GUARD mode.</b>\n\
-                     I act on high-confidence threats automatically.\n\
-                     You'll get a report after each action.\n\n\
-                     To switch to WATCH mode:\n\
-                     <code>innerwarden enable block-ip --param backend=ufw</code>\n\
-                     then disable auto-execution in agent.toml"
+                telegram::GuardianMode::Guard => "🟢 <b>Already running in GUARD mode.</b>\n\
+                     High-confidence threats get neutralized on sight — no confirmation needed.\n\
+                     You'll get an action report after each hit.\n\n\
+                     To switch to passive WATCH mode:\n\
+                     <code>innerwarden configure responder</code> → option 1"
                     .to_string(),
                 _ => {
                     format!(
-                        "🟢 <b>To activate GUARD mode</b>, run on your server:\n\
+                        "🟢 <b>GUARD mode</b> — autonomous threat neutralization.\n\
+                         When I'm confident, I act. No need to ask.\n\n\
+                         To activate, run on your server:\n\
                          <code>innerwarden configure responder</code>\n\
-                         Then select option 3 (Live mode).\n\n\
-                         Current mode: {}\n\
-                         <i>{}</i>",
+                         Then pick option 3 (Live mode).\n\n\
+                         Current mode: {} — <i>{}</i>",
                         mode.label(),
                         mode.description()
                     )
@@ -2109,19 +2109,19 @@ async fn process_telegram_approval(
             let mode = guardian_mode(cfg);
             let text = match mode {
                 telegram::GuardianMode::Watch => "🔵 <b>Already in WATCH mode.</b>\n\
-                     I detect threats and ask you what to do.\n\
-                     No actions taken without your approval.\n\n\
-                     To switch to GUARD mode:\n\
-                     <code>innerwarden configure responder</code>\n\
-                     Then select option 3 (Live mode)."
+                     I detect and log everything — you decide what gets dropped.\n\
+                     Good for baselining or when you want full visibility before acting.\n\n\
+                     To switch to autonomous GUARD mode:\n\
+                     <code>innerwarden configure responder</code> → option 3"
                     .to_string(),
                 _ => {
                     format!(
-                        "🔵 <b>To activate WATCH mode</b>, run on your server:\n\
+                        "🔵 <b>WATCH mode</b> — passive recon, active alerts.\n\
+                         I flag every IOC, you make the call on containment.\n\n\
+                         To activate, run on your server:\n\
                          <code>innerwarden configure responder</code>\n\
-                         Then select option 1 (Observe only).\n\n\
-                         Current mode: {}\n\
-                         <i>{}</i>",
+                         Then pick option 1 (Observe only).\n\n\
+                         Current mode: {} — <i>{}</i>",
                         mode.label(),
                         mode.description()
                     )
@@ -2137,8 +2137,8 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let blocked: Vec<String> = state.blocklist.as_vec();
             let text = if blocked.is_empty() {
-                "📋 No IPs currently blocked in this session.\n\
-                 Blocks from previous sessions are in the firewall rules."
+                "📋 No threat actors contained in this session.\n\
+                 <i>Previous blocks are still enforced in the firewall.</i>"
                     .to_string()
             } else {
                 let mut sorted = blocked;
@@ -2149,7 +2149,7 @@ async fn process_telegram_approval(
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!(
-                    "🛡 <b>Blocked IPs</b> ({} this session)\n\n{list}",
+                    "🛡 <b>Contained threat actors</b> ({} this session)\n\n{list}",
                     sorted.len()
                 )
             };
@@ -2161,7 +2161,9 @@ async fn process_telegram_approval(
     if result.incident_id == "__unknown_cmd__" {
         info!(operator = %result.operator_name, "Telegram unknown command received");
         if cfg.telegram.bot.enabled {
-            tg_reply!("Unknown command. Use /help to see available commands or /menu for buttons.");
+            tg_reply!(
+                "Unknown command. Type /help for the full operator playbook, or just ask me directly."
+            );
         }
         return;
     }
@@ -2315,11 +2317,11 @@ async fn process_telegram_approval(
         }
 
         let reply = if cfg.responder.dry_run {
-            format!("🧪 DRY RUN — would block {ip} at the firewall (no real action taken)")
+            format!("🧪 Simulated — would've dropped {ip} at the firewall. Enable live mode to make it real.")
         } else if exec_result.success {
-            format!("🛡 Blocked {ip} at the firewall")
+            format!("🛡 Threat actor {ip} neutralized — dropped at the firewall. They won't pivot from there.")
         } else {
-            format!("❌ Block failed for {ip}: {}", exec_result.message)
+            format!("❌ Failed to contain {ip}: {}", exec_result.message)
         };
         tg_reply!(reply);
         return;
