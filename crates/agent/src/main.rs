@@ -464,12 +464,11 @@ fn capabilities_keyboard(cfg: &config::AgentConfig) -> serde_json::Value {
 /// Probe the system at startup and send proactive Telegram suggestions
 /// for tools that are installed but not yet integrated with InnerWarden.
 /// Runs once before the main loop. Fail-silent.
-async fn probe_and_suggest(
-    cfg: &config::AgentConfig,
-    tg: Option<&telegram::TelegramClient>,
-) {
+async fn probe_and_suggest(cfg: &config::AgentConfig, tg: Option<&telegram::TelegramClient>) {
     // Only if Telegram is configured
-    let Some(tg) = tg else { return; };
+    let Some(tg) = tg else {
+        return;
+    };
 
     // Check for fail2ban: installed + running but not enabled in config
     if !cfg.fail2ban.enabled {
