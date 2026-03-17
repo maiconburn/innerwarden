@@ -485,6 +485,98 @@ impl TelegramClient {
     }
 
     // -----------------------------------------------------------------------
+    // T.5 — Post-session honeypot report
+    // -----------------------------------------------------------------------
+
+    /// T.5 — Post-session report sent after a honeypot session ends.
+    /// Summarizes commands, extracted IOCs, AI verdict, and offers a Block action.
+    pub async fn send_honeypot_session_report(
+        &self,
+        ip: &str,
+        session_id: &str,
+        duration_secs: u64,
+        commands: &[String],
+        iocs: &crate::ioc::ExtractedIocs,
+        ai_verdict: &str,
+        auto_blocked: bool,
+    ) -> Result<()> {
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "🍯 <b>Sessão de honeypot encerrada</b>\n\n\
+             <b>Atacante:</b> <code>{ip}</code>\n\
+             <b>Sessão:</b> <code>{session_id}</code>\n\
+             <b>Duração:</b> {duration_secs}s | <b>Comandos:</b> {}",
+            commands.len(),
+            ip = escape_html(ip),
+            session_id = escape_html(session_id),
+        ));
+
+        if !commands.is_empty() {
+            let mut cmd_block = "\n<b>O que ele tentou:</b>\n".to_string();
+            for cmd in commands.iter().take(8) {
+                cmd_block.push_str(&format!("  $ <code>{}</code>\n", escape_html(cmd)));
+            }
+            lines.push(cmd_block.trim_end().to_string());
+        }
+
+        if !iocs.is_empty() {
+            let ioc_text = iocs.format_telegram();
+            if !ioc_text.is_empty() {
+                lines.push(format!("\n<b>IOCs extraídos:</b>\n{ioc_text}"));
+            }
+        }
+
+        lines.push(format!(
+            "\n<b>Veredicto IA:</b> {}",
+            escape_html(ai_verdict)
+        ));
+
+        if auto_blocked {
+            lines.push("\n✅ IP bloqueado automaticamente.".to_string());
+        }
+
+        let text = lines.join("\n");
+
+        // Build inline keyboard
+        let mut keyboard_rows: Vec<Vec<serde_json::Value>> = vec![];
+
+        if !auto_blocked {
+            keyboard_rows.push(vec![serde_json::json!({
+                "text": "🚫 Bloquear agora",
+                "callback_data": format!("hpot:block:{ip}")
+            })]);
+        }
+
+        if let Some(ref dash_url) = self.dashboard_url {
+            keyboard_rows.push(vec![serde_json::json!({
+                "text": "📊 Ver no dashboard",
+                "url": dash_url
+            })]);
+        }
+
+        let body = if keyboard_rows.is_empty() {
+            serde_json::json!({
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": true,
+            })
+        } else {
+            serde_json::json!({
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": true,
+                "reply_markup": {
+                    "inline_keyboard": keyboard_rows
+                }
+            })
+        };
+
+        self.post_json("sendMessage", &body).await
+    }
+
+    // -----------------------------------------------------------------------
     // T.3 — Daily digest
     // -----------------------------------------------------------------------
 

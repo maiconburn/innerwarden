@@ -605,6 +605,8 @@ pub async fn serve(
         .route("/api/action/block-ip", post(api_action_block_ip))
         .route("/api/action/suspend-user", post(api_action_suspend_user))
         .route("/api/action/config", get(api_action_config))
+        // Honeypot tab
+        .route("/api/honeypot/sessions", get(api_honeypot_sessions))
         // D6 — SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         .layer(auth_layer)
@@ -1232,6 +1234,123 @@ async fn api_quickwins(State(state): State<DashboardState>) -> Json<serde_json::
         "suggestions": suggestions,
         "count": suggestions.len()
     }))
+}
+
+/// GET /api/honeypot/sessions — list honeypot sessions from the honeypot/ subdirectory.
+async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let honeypot_dir = state.data_dir.join("honeypot");
+
+    // Collect blocked IPs from recent decisions for "blocked" badge
+    let mut blocked_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    for date in &[today.as_str(), yesterday.as_str()] {
+        let decisions =
+            read_jsonl::<DecisionEntry>(&state.data_dir.join(format!("decisions-{date}.jsonl")));
+        for d in decisions {
+            if d.action_type == "block_ip" {
+                if let Some(ip) = d.target_ip {
+                    blocked_ips.insert(ip);
+                }
+            }
+        }
+    }
+
+    // Read session metadata files
+    let mut sessions: Vec<serde_json::Value> = Vec::new();
+
+    let Ok(mut dir) = tokio::fs::read_dir(&honeypot_dir).await else {
+        return Json(serde_json::json!({ "sessions": [] }));
+    };
+
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        // Session metadata files: listener-session-{id}.json
+        if !fname.starts_with("listener-session-") || !fname.ends_with(".json") {
+            continue;
+        }
+        // Skip the .jsonl files here (we want the .json metadata)
+        if fname.ends_with(".jsonl") {
+            continue;
+        }
+
+        let Ok(content) = tokio::fs::read_to_string(entry.path()).await else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+
+        let session_id = meta
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let target_ip = meta
+            .get("target_ip")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let started_at = meta
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let duration_secs = meta
+            .get("duration_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Read commands from evidence JSONL
+        let evidence_path = honeypot_dir.join(format!("listener-session-{session_id}.jsonl"));
+        let mut commands: Vec<String> = Vec::new();
+        if let Ok(ev_content) = tokio::fs::read_to_string(&evidence_path).await {
+            for line in ev_content.lines() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                    if val.get("type").and_then(|t| t.as_str()) == Some("ssh_connection") {
+                        if let Some(attempts) = val.get("shell_commands").and_then(|a| a.as_array())
+                        {
+                            for a in attempts {
+                                if let Some(cmd) = a.get("command").and_then(|c| c.as_str()) {
+                                    if !cmd.is_empty() {
+                                        commands.push(cmd.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Extract IOCs
+        let iocs = crate::ioc::extract_from_commands(&commands);
+        let ioc_list = iocs.format_list();
+
+        let is_blocked = blocked_ips.contains(&target_ip);
+
+        sessions.push(serde_json::json!({
+            "session_id": session_id,
+            "target_ip": target_ip,
+            "started_at": started_at,
+            "duration_secs": duration_secs,
+            "commands_count": commands.len(),
+            "commands": commands,
+            "iocs": ioc_list,
+            "blocked": is_blocked,
+        }));
+    }
+
+    // Sort sessions by started_at descending (newest first)
+    sessions.sort_by(|a, b| {
+        let ta = a.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+        let tb = b.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+        tb.cmp(ta)
+    });
+
+    Json(serde_json::json!({ "sessions": sessions }))
 }
 
 /// GET /api/status — E6: system status including data files and responder config.
@@ -4167,6 +4286,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <button type="button" class="main-nav-btn active" id="navInvestigate" onclick="showView('investigate')">Threats</button>
       <button type="button" class="main-nav-btn" id="navReport" onclick="showView('report')">Report</button>
       <button type="button" class="main-nav-btn" id="navStatus" onclick="showView('status')">Health</button>
+      <button type="button" class="main-nav-btn" id="navHoneypot" onclick="showView('honeypot')">🍯 Honeypot</button>
     </div>
     <button type="button" class="panel-toggle-btn" id="panelToggleBtn" onclick="toggleLeftPanel()" aria-label="Toggle panel">
       <span id="panelToggleIcon">▲</span> List
@@ -4308,6 +4428,17 @@ const INDEX_HTML: &str = r##"<!doctype html>
     </div>
   </div>
 
+  <!-- Honeypot tab view -->
+  <div class="report-view" id="viewHoneypot" style="display:none">
+    <div class="report-toolbar">
+      <button type="button" class="report-refresh-btn" onclick="loadHoneypot()">↻ Refresh</button>
+      <span id="honeypotViewStatus" class="report-status"></span>
+    </div>
+    <div id="honeypotContent" class="report-content">
+      <div class="empty" style="padding:40px;text-align:center">Loading…</div>
+    </div>
+  </div>
+
   <!-- D3 — action modal -->
   <div class="modal-overlay" id="actionModal" onclick="handleModalBg(event)">
     <div class="modal-box" onclick="event.stopPropagation()">
@@ -4349,8 +4480,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // ── D10 — View switcher ──────────────────────────────────────────────────
   function showView(name) {
-    const views = { investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus' };
-    const btns  = { investigate: 'navInvestigate', report: 'navReport', status: 'navStatus' };
+    const views = { investigate: 'viewInvestigate', report: 'viewReport', status: 'viewStatus', honeypot: 'viewHoneypot' };
+    const btns  = { investigate: 'navInvestigate', report: 'navReport', status: 'navStatus', honeypot: 'navHoneypot' };
     Object.keys(views).forEach(k => {
       const el = document.getElementById(views[k]);
       const btn = document.getElementById(btns[k]);
@@ -4361,6 +4492,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (toggleBtn) toggleBtn.style.display = name === 'investigate' ? '' : 'none';
     if (name === 'report') loadReport();
     if (name === 'status') loadStatus();
+    if (name === 'honeypot') loadHoneypot();
   }
 
   // ── E2 — Home state ─────────────────────────────────────────────────────
@@ -4856,6 +4988,90 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (window.innerWidth <= 860 && leftPanelOpen) {
       toggleLeftPanel();
     }
+  }
+
+  // ── Honeypot tab ──────────────────────────────────────────────────────
+  async function loadHoneypot() {
+    const status = document.getElementById('honeypotViewStatus');
+    const content = document.getElementById('honeypotContent');
+    if (!status || !content) return;
+    status.textContent = 'Loading…';
+    content.innerHTML = '<div class="empty" style="padding:40px;text-align:center">Loading…</div>';
+    try {
+      const data = await loadJson('/api/honeypot/sessions');
+      status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      content.innerHTML = renderHoneypot(data);
+    } catch(e) {
+      status.textContent = 'Error';
+      content.innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:var(--danger)">Failed to load honeypot sessions.</div>';
+    }
+  }
+
+  function renderHoneypot(data) {
+    const sessions = data.sessions || [];
+    if (sessions.length === 0) {
+      return '<div class="empty" style="padding:60px;text-align:center;opacity:0.5">🍯 No honeypot sessions yet.<br><span style="font-size:0.8rem">Sessions appear here when attackers interact with a honeypot listener.</span></div>';
+    }
+
+    let html = '<div style="padding:16px;max-width:900px;margin:0 auto">';
+    html += '<div style="font-size:1.1rem;font-weight:600;color:var(--accent);margin-bottom:16px">🍯 Honeypot Sessions (' + sessions.length + ')</div>';
+
+    for (const s of sessions) {
+      const ip = s.target_ip || '—';
+      const sessionId = s.session_id || '—';
+      const startedAt = s.started_at ? new Date(s.started_at).toLocaleString() : '—';
+      const duration = s.duration_secs ? s.duration_secs + 's' : '—';
+      const cmdCount = s.commands_count || 0;
+      const commands = s.commands || [];
+      const iocs = s.iocs || [];
+      const blocked = !!s.blocked;
+
+      html += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;margin-bottom:12px">';
+
+      // Header row
+      html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">';
+      html += '<span style="font-family:monospace;font-size:1rem;color:var(--accent)">' + esc(ip) + '</span>';
+      if (blocked) {
+        html += '<span style="background:rgba(58,194,126,0.15);color:#3ac27e;border:1px solid rgba(58,194,126,0.3);border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600">BLOCKED</span>';
+      }
+      html += '<span style="font-size:0.75rem;opacity:0.6">' + esc(startedAt) + '</span>';
+      html += '<span style="font-size:0.75rem;opacity:0.6">Duration: ' + esc(duration) + '</span>';
+      html += '<span style="font-size:0.75rem;opacity:0.6">Commands: ' + cmdCount + '</span>';
+      html += '</div>';
+
+      // Session ID
+      html += '<div style="font-size:0.7rem;opacity:0.4;margin-bottom:10px;font-family:monospace">' + esc(sessionId) + '</div>';
+
+      // Commands
+      if (commands.length > 0) {
+        html += '<div style="margin-bottom:10px">';
+        html += '<div style="font-size:0.75rem;font-weight:600;color:rgba(255,255,255,0.7);margin-bottom:6px">Commands typed by attacker</div>';
+        html += '<div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:10px;font-family:monospace;font-size:0.78rem;color:rgba(255,255,255,0.85)">';
+        for (const cmd of commands.slice(0, 15)) {
+          html += '<div style="margin-bottom:3px"><span style="color:var(--accent);opacity:0.7">$</span> ' + esc(cmd) + '</div>';
+        }
+        if (commands.length > 15) {
+          html += '<div style="opacity:0.4;font-size:0.7rem">... ' + (commands.length - 15) + ' more commands</div>';
+        }
+        html += '</div></div>';
+      }
+
+      // IOCs
+      if (iocs.length > 0) {
+        html += '<div style="margin-top:10px">';
+        html += '<div style="font-size:0.75rem;font-weight:600;color:#f59e0b;margin-bottom:6px">⚠ Extracted IOCs</div>';
+        html += '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:6px;padding:10px">';
+        for (const ioc of iocs) {
+          html += '<div style="font-family:monospace;font-size:0.78rem;color:#fcd34d;margin-bottom:3px">' + esc(ioc) + '</div>';
+        }
+        html += '</div></div>';
+      }
+
+      html += '</div>'; // end session card
+    }
+
+    html += '</div>';
+    return html;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────

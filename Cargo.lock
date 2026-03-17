@@ -1443,6 +1443,7 @@ dependencies = [
  "hmac",
  "innerwarden_core",
  "rand_core 0.6.4",
+ "regex",
  "reqwest",
  "rpassword",
  "russh",
