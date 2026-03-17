@@ -539,6 +539,27 @@ enum IntegrateCommand {
     ///   innerwarden integrate fail2ban
     Fail2ban,
 
+    /// Push blocked IPs to Cloudflare edge via IP Access Rules API.
+    ///
+    /// After every successful block-ip action, the IP is also added to your
+    /// Cloudflare zone's IP Access Rules — blocking it at the CDN edge before
+    /// traffic even reaches your server.
+    ///
+    /// Requires a Cloudflare API token with Zone > Firewall Services > Edit permission.
+    /// Zone ID is on the right panel of your domain in the Cloudflare dashboard.
+    ///
+    /// Examples:
+    ///   innerwarden integrate cloudflare
+    ///   innerwarden integrate cloudflare --zone-id <id> --api-token <token>
+    Cloudflare {
+        /// Cloudflare Zone ID (from your domain's dashboard page)
+        #[arg(long)]
+        zone_id: Option<String>,
+        /// Cloudflare API token with Firewall Services Edit permission
+        #[arg(long)]
+        api_token: Option<String>,
+    },
+
     /// Set up automatic health monitoring via cron (watchdog).
     ///
     /// Adds a cron entry that runs `innerwarden watchdog --notify` every N minutes.
@@ -761,6 +782,10 @@ fn main() -> Result<()> {
                 ref api_key,
                 auto_block_threshold,
             }) => cmd_configure_abuseipdb(&cli, api_key.as_deref(), *auto_block_threshold),
+            Some(IntegrateCommand::Cloudflare {
+                ref zone_id,
+                ref api_token,
+            }) => cmd_configure_cloudflare(&cli, zone_id.as_deref(), api_token.as_deref()),
             Some(IntegrateCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
             Some(IntegrateCommand::Watchdog { interval }) => {
                 cmd_configure_watchdog(&cli, *interval)
@@ -2824,6 +2849,7 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
     let abuseipdb_ok = has_env("ABUSEIPDB_API_KEY") || is_enabled("abuseipdb");
     let geoip_ok = is_enabled("geoip");
     let fail2ban_ok = is_enabled("fail2ban");
+    let cloudflare_ok = has_env("CLOUDFLARE_API_TOKEN") || is_enabled("cloudflare");
     let responder_ok = is_enabled("responder");
     let watchdog_ok = std::process::Command::new("crontab")
         .arg("-l")
@@ -2841,8 +2867,9 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
     println!("   6. AbuseIPDB        {}", status(abuseipdb_ok));
     println!("   7. GeoIP            {}", status(geoip_ok));
     println!("   8. Fail2ban         {}", status(fail2ban_ok));
-    println!("   9. Responder        {}", status(responder_ok));
-    println!("  10. Watchdog (cron)  {}", status(watchdog_ok));
+    println!("   9. Cloudflare       {}", status(cloudflare_ok));
+    println!("  10. Responder        {}", status(responder_ok));
+    println!("  11. Watchdog (cron)  {}", status(watchdog_ok));
     println!();
     print!("Enter number (or q to quit): ");
     std::io::stdout().flush()?;
@@ -2861,8 +2888,9 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
         "6" => cmd_configure_abuseipdb(cli, None, None),
         "7" => cmd_configure_geoip(cli),
         "8" => cmd_configure_fail2ban(cli),
-        "9" => cmd_configure_responder(cli, false, false, None),
-        "10" => cmd_configure_watchdog(cli, 10),
+        "9" => cmd_configure_cloudflare(cli, None, None),
+        "10" => cmd_configure_responder(cli, false, false, None),
+        "11" => cmd_configure_watchdog(cli, 10),
         "q" | "Q" | "" => {
             println!(
                 "Tip: run 'innerwarden configure <name>' to jump directly to any integration."
@@ -3936,6 +3964,97 @@ fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
     restart_agent(cli);
     println!();
     println!("GeoIP enabled. Country and ISP will appear in AI decisions.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden integrate cloudflare
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_cloudflare(
+    cli: &Cli,
+    zone_id_arg: Option<&str>,
+    api_token_arg: Option<&str>,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    let (zone_id, api_token) = if zone_id_arg.is_some() && api_token_arg.is_some() {
+        (
+            zone_id_arg.unwrap().to_string(),
+            api_token_arg.unwrap().to_string(),
+        )
+    } else {
+        println!("InnerWarden — Cloudflare integration setup\n");
+        println!("When InnerWarden blocks an IP, it will also push that block to Cloudflare's");
+        println!("edge via IP Access Rules — stopping the attacker before they reach your server.\n");
+        println!("You need:");
+        println!("  1. Zone ID   — right panel of your domain at dash.cloudflare.com");
+        println!("  2. API token — dash.cloudflare.com/profile/api-tokens");
+        println!("     Use template 'Edit zone DNS' or custom with Zone > Firewall Services > Edit\n");
+
+        let zid = if let Some(z) = zone_id_arg {
+            z.to_string()
+        } else {
+            let z = prompt("Zone ID")?;
+            if z.is_empty() {
+                anyhow::bail!("Zone ID cannot be empty");
+            }
+            z
+        };
+
+        let tok = if let Some(t) = api_token_arg {
+            t.to_string()
+        } else {
+            let t = prompt("API token")?;
+            if t.is_empty() {
+                anyhow::bail!("API token cannot be empty");
+            }
+            t
+        };
+
+        (zid, tok)
+    };
+
+    if zone_id.len() < 10 {
+        anyhow::bail!("Zone ID looks too short — copy it from the Cloudflare dashboard");
+    }
+    if api_token.len() < 10 {
+        anyhow::bail!("API token looks too short — copy the full token from Cloudflare");
+    }
+
+    if cli.dry_run {
+        println!(
+            "\n  [dry-run] would write CLOUDFLARE_API_TOKEN=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [cloudflare] enabled=true, zone_id={zone_id} in {}",
+            cli.agent_config.display()
+        );
+        return Ok(());
+    }
+
+    write_env_key(&env_file, "CLOUDFLARE_API_TOKEN", &api_token)?;
+    println!("\n  [ok] API token saved to {}", env_file.display());
+
+    config_editor::write_bool(&cli.agent_config, "cloudflare", "enabled", true)?;
+    config_editor::write_str(&cli.agent_config, "cloudflare", "zone_id", &zone_id)?;
+    config_editor::write_bool(&cli.agent_config, "cloudflare", "auto_push_blocks", true)?;
+    println!("  [ok] agent.toml: cloudflare.enabled = true, zone_id set, auto_push_blocks = true");
+
+    restart_agent(cli);
+    println!();
+    println!("Cloudflare integration enabled.");
+    println!("  → Every blocked IP will be pushed to Cloudflare edge IP Access Rules.");
+    println!("  → Attackers are stopped at the CDN before reaching your server.");
+    println!("\nRun 'innerwarden doctor' to validate.");
     Ok(())
 }
 
