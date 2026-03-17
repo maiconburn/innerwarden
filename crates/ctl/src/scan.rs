@@ -236,6 +236,26 @@ impl Tier {
     }
 }
 
+/// Whether a module is fully built into InnerWarden or requires an external tool/service.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IntegrationKind {
+    /// Built into InnerWarden — reads logs/events already present on the host.
+    /// Zero external dependencies, zero additional RAM or network cost.
+    Native,
+    /// Connects to an external tool or service that must be installed, configured,
+    /// or registered separately. Adds coverage but increases operational complexity.
+    External,
+}
+
+impl IntegrationKind {
+    fn badge(&self) -> &'static str {
+        match self {
+            IntegrationKind::Native => "NATIVE  ",
+            IntegrationKind::External => "EXTERNAL",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ModuleRec {
@@ -250,6 +270,10 @@ pub struct ModuleRec {
     pub needs_tool: Option<&'static str>,
     pub docs_path: &'static str,
     pub findings: Vec<ScanFinding>,
+    /// Whether this is a native InnerWarden capability or an external integration.
+    pub kind: IntegrationKind,
+    /// Trade-off / cost explanation shown in the advisor section.
+    pub cost_note: &'static str,
 }
 
 fn stars(n: u8) -> String {
@@ -954,6 +978,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 needs_tool: None,
                 docs_path: "ssh-protection/docs/README.md",
                 findings: ssh_findings,
+                kind: IntegrationKind::Native,
+                cost_note: "Zero cost. Reads auth.log/journald already present on your server. No extra RAM or network.",
             }
         },
         // network-defense
@@ -986,6 +1012,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 needs_tool: None,
                 docs_path: "network-defense/docs/README.md",
                 findings: ufw_findings,
+                kind: IntegrationKind::Native,
+                cost_note: "Zero cost. Reads firewall logs already written by ufw/iptables/nftables.",
             }
         },
         // sudo-protection
@@ -1015,6 +1043,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 needs_tool: None,
                 docs_path: "sudo-protection/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::Native,
+                cost_note: "Zero cost. Reads journald/auth.log already present on your server.",
             }
         },
         // file-integrity
@@ -1029,6 +1059,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             needs_tool: None,
             docs_path: "file-integrity/docs/README.md",
             findings: vec![],
+            kind: IntegrationKind::Native,
+            cost_note: "Zero cost. SHA-256 polling — minimal CPU every 60s, no external dependencies.",
         },
         // container-security
         {
@@ -1063,6 +1095,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 needs_tool: if skip { Some("Docker") } else { None },
                 docs_path: "container-security/docs/README.md",
                 findings: docker_findings,
+                kind: IntegrationKind::Native,
+                cost_note: "Zero cost. Reads Docker Events API — Docker must already be running.",
             }
         },
         // search-protection (owns the nginx audit findings — nginx-error-monitor skips to avoid dups)
@@ -1097,6 +1131,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "search-protection/docs/README.md",
                 findings: nginx_findings_search,
+                kind: IntegrationKind::Native,
+                cost_note: "Zero cost. Reads nginx access.log already written by nginx.",
             }
         },
         // nginx-error-monitor (no nginx audit here — findings already shown under search-protection)
@@ -1130,6 +1166,8 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "nginx-error-monitor/docs/README.md",
                 findings: nginx_findings_error,
+                kind: IntegrationKind::Native,
+                cost_note: "Zero cost. Reads nginx error.log already written by nginx.",
             }
         },
         // execution-guard
@@ -1161,6 +1199,10 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 needs_tool: None,
                 docs_path: "execution-guard/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::Native,
+                cost_note: "Zero external cost, but high privacy impact: every shell command is captured. \
+                            Enable only with explicit host-owner consent. \
+                            If Falco is active, prefer it for exec monitoring — Falco has lower privacy impact.",
             }
         },
         // fail2ban-integration
@@ -1199,12 +1241,16 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 name: "fail2ban Integration",
                 description: "Unified fail2ban ban decisions into InnerWarden's audit trail.",
                 why,
-                enable_hint: "innerwarden module install fail2ban-integration",
+                enable_hint: "innerwarden integrate fail2ban",
                 stars: s,
                 tier,
                 needs_tool: if missing { Some("fail2ban") } else { None },
                 docs_path: "fail2ban-integration/docs/README.md",
                 findings: fb_findings,
+                kind: IntegrationKind::External,
+                cost_note: "Free and lightweight (~5MB RAM). Often already installed on servers. \
+                            Adds ban deduplication but can overlap with InnerWarden's own block-ip decisions. \
+                            Avoid setting AbuseIPDB auto_block_threshold when fail2ban is active to prevent competing auto-blocks.",
             }
         },
         // geoip-enrichment
@@ -1214,12 +1260,15 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             description: "Adds country/ISP context to AI decisions — free, no API key needed.",
             why: "Free enrichment layer. Adds country/ISP context to every AI decision."
                 .to_string(),
-            enable_hint: "innerwarden module install geoip-enrichment",
+            enable_hint: "innerwarden integrate geoip",
             stars: 2,
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "geoip-enrichment/docs/README.md",
             findings: vec![],
+            kind: IntegrationKind::Native,
+            cost_note: "Free, no API key. Calls ip-api.com (rate-limited to 45 req/min). \
+                        No extra RAM. First easy enrichment to add.",
         },
         // abuseipdb-enrichment
         ModuleRec {
@@ -1230,12 +1279,17 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             why:
                 "Requires a free API key at abuseipdb.com. Raises AI confidence for known-bad IPs."
                     .to_string(),
-            enable_hint: "innerwarden module install abuseipdb-enrichment",
+            enable_hint: "innerwarden integrate abuseipdb",
             stars: 2,
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "abuseipdb-enrichment/docs/README.md",
             findings: vec![],
+            kind: IntegrationKind::External,
+            cost_note: "Free plan: 1,000 req/day (one lookup per incident). \
+                        Paid plans start at $50/mo for higher volume. \
+                        The auto_block_threshold feature (bypass AI for known-bad IPs) is powerful \
+                        but should not be combined with fail2ban auto-banning to avoid double-blocking.",
         },
         // falco-integration
         {
@@ -1265,6 +1319,11 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "falco-integration/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::External,
+                cost_note: "Free and open-source. Adds ~50MB RAM (eBPF probe) or ~100MB (kernel module). \
+                            Very high value for syscall/container monitoring. \
+                            If you enable Falco, disable execution-guard — they overlap on exec detection \
+                            and will flood you with duplicate incidents.",
             }
         },
         // suricata-integration
@@ -1300,6 +1359,11 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "suricata-integration/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::External,
+                cost_note: "Free and open-source. Adds ~100–200MB RAM. Requires a network tap or span port. \
+                            Very high value for network-layer detection (IDS signatures, protocol anomalies). \
+                            Suricata's port-scan detection overlaps with InnerWarden's syslog_firewall detector — \
+                            you can safely disable syslog_firewall once Suricata is active.",
             }
         },
         // osquery-integration
@@ -1335,6 +1399,10 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "osquery-integration/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::External,
+                cost_note: "Free and lightweight (~30MB RAM). Good for host-level queries \
+                            (open ports, crontabs, user accounts, listening services). \
+                            No incident passthrough — provides context and observability, not automated response.",
             }
         },
         // wazuh-integration
@@ -1365,21 +1433,14 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "wazuh-integration/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::External,
+                cost_note: "Free (self-hosted) but heavyweight: Wazuh agent adds ~100MB RAM; \
+                            the Wazuh manager server requires a separate machine (~2GB RAM). \
+                            Best for compliance-driven environments (PCI-DSS, HIPAA). \
+                            Note: Wazuh's SSH rules overlap with InnerWarden's ssh-protection — \
+                            you may get duplicate SSH brute-force alerts. Consider disabling \
+                            Wazuh's sshd rules or InnerWarden's auth_log collector when both are active.",
             }
-        },
-        // threat-capture
-        ModuleRec {
-            id: "threat-capture",
-            name: "Threat Capture (Premium)",
-            description: "Full-packet capture + attacker honeypot. Premium tier.",
-            why: "Premium: captures attacker traffic (tcpdump) and deploys interactive honeypots."
-                .to_string(),
-            enable_hint: "innerwarden module install threat-capture",
-            stars: 2,
-            tier: Tier::Optional,
-            needs_tool: None,
-            docs_path: "threat-capture/docs/README.md",
-            findings: vec![],
         },
         // crowdsec-integration
         {
@@ -1414,6 +1475,12 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
                 },
                 docs_path: "crowdsec-integration/docs/README.md",
                 findings: vec![],
+                kind: IntegrationKind::External,
+                cost_note: "Free (community plan). CrowdSec agent is lightweight (~20MB RAM). \
+                            Shares threat intelligence across the community — if an IP attacks \
+                            another CrowdSec user, it's pre-blocked for you. \
+                            Overlaps with AbuseIPDB enrichment on IP reputation — pick one or use both \
+                            with different thresholds.",
             }
         },
         // slack-notify
@@ -1423,12 +1490,35 @@ pub fn score_modules(p: &SystemProbes) -> Vec<ModuleRec> {
             description: "Sends High/Critical incident alerts to a Slack channel.",
             why: "Optional: push notifications to Slack for any High/Critical incident."
                 .to_string(),
-            enable_hint: "innerwarden module install slack-notify",
+            enable_hint: "innerwarden notify slack",
             stars: 2,
             tier: Tier::Optional,
             needs_tool: None,
             docs_path: "slack-notify/docs/README.md",
             findings: vec![],
+            kind: IntegrationKind::External,
+            cost_note: "Free (requires a Slack workspace). Adds another notification channel. \
+                        Caution: if you already have Telegram enabled, activating Slack doubles \
+                        your alert volume — you'll get the same incident on both channels. \
+                        Use Slack for team channels, Telegram for personal real-time response.",
+        },
+        // threat-capture
+        ModuleRec {
+            id: "threat-capture",
+            name: "Threat Capture (Premium)",
+            description: "Full-packet capture + attacker honeypot. Premium tier.",
+            why: "Premium: captures attacker traffic (tcpdump) and deploys interactive honeypots."
+                .to_string(),
+            enable_hint: "innerwarden module install threat-capture",
+            stars: 2,
+            tier: Tier::Optional,
+            needs_tool: None,
+            docs_path: "threat-capture/docs/README.md",
+            findings: vec![],
+            kind: IntegrationKind::Native,
+            cost_note: "Premium tier. tcpdump capture requires root or CAP_NET_RAW. \
+                        Honeypot listener adds ~10MB RAM. Produces forensic .pcap files — \
+                        configure forensics_max_total_mb to prevent disk exhaustion.",
         },
     ];
 
@@ -1470,10 +1560,11 @@ fn print_recommendations(recs: &[ModuleRec], system_findings: &[ScanFinding]) {
             current_tier = Some(&rec.tier);
         }
         println!(
-            "  [{idx}] {:<28} {}  {}",
+            "  [{idx}] {:<28} {}  {}  [{}]",
             rec.id,
             stars(rec.stars),
-            rec.name
+            rec.name,
+            rec.kind.badge()
         );
         println!("      {}", rec.why);
         println!("      \u{2192} {}", rec.enable_hint);
@@ -1631,23 +1722,240 @@ fn find_module_readme(module_id: &str, modules_dir: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
-fn show_module_info(module_id: &str, modules_dir: &Path) {
-    match find_module_readme(module_id, modules_dir) {
+fn show_module_info(rec: &ModuleRec, modules_dir: &Path) {
+    println!();
+    println!("{}", "\u{2501}".repeat(64));
+    println!(
+        "  {}   [{}]",
+        rec.name,
+        rec.kind.badge()
+    );
+    println!("{}", "\u{2501}".repeat(64));
+    println!();
+    println!("  {}", rec.description);
+    println!();
+    println!("  Cost / trade-offs:");
+    for line in wrap_text(rec.cost_note, 60) {
+        println!("    {line}");
+    }
+    println!();
+    println!("  Enable with:");
+    println!("    $ {}", rec.enable_hint);
+    println!();
+
+    match find_module_readme(rec.id, modules_dir) {
         Some(readme) => match std::fs::read_to_string(&readme) {
             Ok(content) => {
-                println!();
+                println!("{}", "\u{2500}".repeat(64));
                 println!("{content}");
             }
             Err(e) => {
-                println!("Could not read docs for '{module_id}': {e}");
+                println!("Could not read docs for '{}': {e}", rec.id);
             }
         },
         None => {
-            println!();
-            println!("No detailed docs found for '{module_id}'.");
-            println!("\u{2192} innerwarden module install {module_id}");
+            println!("(No detailed README found for '{}' on this machine)", rec.id);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Integration advisor
+// ---------------------------------------------------------------------------
+
+struct ConflictPair {
+    module_a: &'static str,
+    module_b: &'static str,
+    overlap: &'static str,
+    recommendation: &'static str,
+}
+
+fn detect_conflicts(recs: &[ModuleRec]) -> Vec<ConflictPair> {
+    let available: std::collections::HashSet<&str> = recs
+        .iter()
+        .filter(|r| r.tier != Tier::NotAvailable)
+        .map(|r| r.id)
+        .collect();
+
+    let mut conflicts = vec![];
+
+    // Falco + execution-guard: both detect suspicious exec
+    if available.contains("falco-integration") && available.contains("execution-guard") {
+        conflicts.push(ConflictPair {
+            module_a: "falco-integration",
+            module_b: "execution-guard",
+            overlap: "Both detect suspicious shell command execution (Falco via eBPF syscalls, \
+                      execution-guard via auditd AST analysis)",
+            recommendation: "Use Falco and disable execution-guard. Falco is more comprehensive \
+                             and has lower privacy impact. Running both will generate duplicate \
+                             exec incidents and can flood your notification channel.",
+        });
+    }
+
+    // Wazuh + ssh-protection: both detect SSH brute-force
+    if available.contains("wazuh-integration") && available.contains("ssh-protection") {
+        conflicts.push(ConflictPair {
+            module_a: "wazuh-integration",
+            module_b: "ssh-protection",
+            overlap: "Wazuh's sshd detection rules overlap with InnerWarden's auth_log SSH \
+                      brute-force detector — both produce SSH incident alerts",
+            recommendation: "Both can coexist but you will get duplicate SSH alerts. Consider \
+                             disabling InnerWarden's auth_log collector ([collectors.auth_log] \
+                             enabled = false) and letting Wazuh own SSH detection, or disable \
+                             Wazuh's sshd jail rules.",
+        });
+    }
+
+    // Suricata + network-defense (syslog_firewall): both detect port scans
+    if available.contains("suricata-integration") && available.contains("network-defense") {
+        conflicts.push(ConflictPair {
+            module_a: "suricata-integration",
+            module_b: "network-defense",
+            overlap: "Suricata's port-scan detection overlaps with InnerWarden's syslog_firewall \
+                      collector that also feeds port-scan detection",
+            recommendation: "Once Suricata is active, disable InnerWarden's syslog_firewall \
+                             collector ([collectors.syslog_firewall] enabled = false). Suricata \
+                             provides deeper network-layer scanning visibility.",
+        });
+    }
+
+    // AbuseIPDB auto-block + fail2ban: both auto-block IPs
+    if available.contains("abuseipdb-enrichment") && available.contains("fail2ban-integration") {
+        conflicts.push(ConflictPair {
+            module_a: "abuseipdb-enrichment (auto_block_threshold)",
+            module_b: "fail2ban-integration",
+            overlap: "Both can automatically block IPs without AI involvement — \
+                      AbuseIPDB via auto_block_threshold and fail2ban via its ban rules",
+            recommendation: "Set abuseipdb.auto_block_threshold = 0 to disable AbuseIPDB \
+                             auto-blocking when fail2ban is active. Use AbuseIPDB only for \
+                             AI context enrichment. Having both auto-block can trigger \
+                             double notifications and competing audit entries.",
+        });
+    }
+
+    // Telegram + Slack both active: double notification volume
+    if available.contains("slack-notify") {
+        // Check if Telegram is likely configured (we can't probe from here, so hint always)
+        conflicts.push(ConflictPair {
+            module_a: "slack-notify",
+            module_b: "Telegram (if configured)",
+            overlap: "Both channels send the same High/Critical incident alerts in real time",
+            recommendation: "Use Telegram for personal real-time response (supports approval \
+                             buttons). Use Slack for team visibility channels. If you are the \
+                             only operator, activating both doubles your notification volume \
+                             with no benefit.",
+        });
+    }
+
+    conflicts
+}
+
+fn activation_sequence(probes: &SystemProbes) -> Vec<(&'static str, &'static str)> {
+    let mut seq: Vec<(&str, &str)> = vec![];
+
+    if probes.has_sshd || probes.has_auth_log {
+        seq.push((
+            "innerwarden enable block-ip",
+            "SSH protection + IP blocking (core, activate first)",
+        ));
+    }
+
+    seq.push((
+        "innerwarden integrate geoip",
+        "GeoIP enrichment (free, zero noise, adds country/ISP to AI)",
+    ));
+
+    seq.push((
+        "innerwarden notify telegram",
+        "Push alerts (Telegram is recommended: bidirectional approval, no extra cost)",
+    ));
+
+    seq.push((
+        "innerwarden integrate abuseipdb",
+        "IP reputation scoring (free API key, enriches AI context)",
+    ));
+
+    if probes.has_fail2ban_client {
+        seq.push((
+            "innerwarden integrate fail2ban",
+            "Unify fail2ban bans into InnerWarden's audit trail",
+        ));
+    }
+
+    if probes.has_docker {
+        seq.push((
+            "innerwarden enable container-security",
+            "Docker lifecycle + privilege escalation detection",
+        ));
+    }
+
+    if probes.has_nginx_access_log || probes.has_nginx_error_log {
+        seq.push((
+            "innerwarden module install nginx-error-monitor",
+            "nginx scanner + error spike detection (if you run a web server)",
+        ));
+    }
+
+    // External tools only after native layer is stable
+    if probes.has_falco_log {
+        seq.push((
+            "innerwarden module install falco-integration",
+            "Falco eBPF/syscall alerts (already installed — high value, route into IW)",
+        ));
+    }
+
+    if probes.has_suricata_eve {
+        seq.push((
+            "innerwarden module install suricata-integration",
+            "Suricata IDS alerts (already installed — high value, route into IW)",
+        ));
+    }
+
+    seq
+}
+
+fn print_advisor(probes: &SystemProbes, recs: &[ModuleRec]) {
+    let conflicts = detect_conflicts(recs);
+
+    println!();
+    println!("{}", "\u{2501}".repeat(64));
+    println!("Integration advisor");
+    println!("{}", "\u{2501}".repeat(64));
+    println!();
+    println!("  \u{25b6} NATIVE   Built into InnerWarden. Zero external dependencies.");
+    println!("           Reads logs already present on your server.");
+    println!("  \u{25b6} EXTERNAL Connects to a separate tool or cloud service.");
+    println!("           More coverage, more complexity, possible ongoing cost.");
+    println!();
+
+    if !conflicts.is_empty() {
+        println!("  \u{26a0}  Overlaps / conflicts detected:");
+        println!();
+        for c in &conflicts {
+            println!("  \u{25b8} {} \u{2194} {}", c.module_a, c.module_b);
+            for line in wrap_text(c.overlap, 60) {
+                println!("    {line}");
+            }
+            println!("    Fix: {}", c.recommendation);
+            println!();
+        }
+    }
+
+    let seq = activation_sequence(probes);
+    if !seq.is_empty() {
+        println!("  Recommended activation order (one at a time):");
+        println!();
+        for (i, (cmd, why)) in seq.iter().enumerate() {
+            println!("  {}. {}", i + 1, why);
+            println!("     $ {cmd}");
+            println!();
+        }
+    }
+
+    println!("  \u{1f4a1} Tip: activate one module at a time. Watch your notification");
+    println!("       channel for 24h before enabling the next. This lets you");
+    println!("       tune thresholds before the volume increases.");
+    println!();
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,7 +1985,7 @@ fn interactive_loop(recs: &[ModuleRec], modules_dir: &Path) {
                 if let Ok(n) = other.parse::<usize>() {
                     if n >= 1 && n <= available.len() {
                         let rec = available[n - 1];
-                        show_module_info(rec.id, modules_dir);
+                        show_module_info(rec, modules_dir);
                         continue;
                     }
                 }
@@ -1685,7 +1993,7 @@ fn interactive_loop(recs: &[ModuleRec], modules_dir: &Path) {
                 // Try module ID match (case-insensitive).
                 let all: Vec<_> = recs.iter().collect();
                 if let Some(rec) = all.iter().find(|r| r.id == other) {
-                    show_module_info(rec.id, modules_dir);
+                    show_module_info(rec, modules_dir);
                     continue;
                 }
 
@@ -1721,6 +2029,7 @@ pub fn cmd_scan(modules_dir_override: &str) -> Result<()> {
     let recs = score_modules(&probes);
     let system_findings = audit_system();
     print_recommendations(&recs, &system_findings);
+    print_advisor(&probes, &recs);
 
     interactive_loop(&recs, &modules_dir);
 

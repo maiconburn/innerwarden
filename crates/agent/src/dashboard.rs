@@ -609,6 +609,7 @@ pub async fn serve(
         .route("/api/quickwins", get(api_quickwins))
         // E6 — system status
         .route("/api/status", get(api_status))
+        .route("/api/collectors", get(api_collectors))
         // D3 — operator-initiated actions (POST, require auth, respect dry_run)
         .route("/api/action/block-ip", post(api_action_block_ip))
         .route("/api/action/suspend-user", post(api_action_suspend_user))
@@ -1495,6 +1496,169 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "cloudflare": action_cfg.cloudflare_enabled
         }
     }))
+}
+
+/// GET /api/collectors — sensor collector detection (file existence + recency).
+/// Fail-silent: never requires root, never panics.
+async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    let data_dir = &state.data_dir;
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let events_file = data_dir.join(format!("events-{today}.jsonl"));
+
+    // Helper: check if a path exists
+    let file_exists = |p: &str| std::path::Path::new(p).exists();
+
+    // Helper: how many seconds since a file was modified (None if missing or error)
+    let file_age_secs = |p: &str| -> Option<u64> {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs())
+    };
+
+    // Helper: check if a binary is in PATH
+    let has_binary = |name: &str| {
+        std::process::Command::new("which")
+            .arg(name)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+
+    // Helper: count events by source in today's events file (last 2000 lines)
+    let count_source = |source: &str| -> u64 {
+        use std::io::{BufRead, BufReader};
+        let f = match std::fs::File::open(&events_file) {
+            Ok(f) => f,
+            Err(_) => return 0,
+        };
+        let needle = format!("\"source\":\"{source}\"");
+        let needle2 = format!("\"source\": \"{source}\"");
+        BufReader::new(f)
+            .lines()
+            .filter_map(|l| l.ok())
+            .filter(|l| l.contains(&needle) || l.contains(&needle2))
+            .count() as u64
+    };
+
+    // Recency threshold: active if file modified within last 2 hours
+    let recent = |age: Option<u64>| age.map(|s| s < 7200).unwrap_or(false);
+
+    let auth_log   = "/var/log/auth.log";
+    let falco_log  = "/var/log/falco/falco.log";
+    let suricata   = "/var/log/suricata/eve.json";
+    let wazuh      = "/var/ossec/logs/alerts/alerts.json";
+    let osquery    = "/var/log/osquery/osqueryd.results.log";
+    let audit_log  = "/var/log/audit/audit.log";
+    let nginx_acc  = "/var/log/nginx/access.log";
+    let nginx_err  = "/var/log/nginx/error.log";
+    let docker_sock = "/var/run/docker.sock";
+
+    let collectors = serde_json::json!([
+        {
+            "id": "auth_log",
+            "name": "SSH / Auth Log",
+            "kind": "native",
+            "log_path": auth_log,
+            "detected": file_exists(auth_log),
+            "active": recent(file_age_secs(auth_log)),
+            "events_today": count_source("auth_log"),
+            "desc": "Parses /var/log/auth.log for SSH failures, logins, sudo"
+        },
+        {
+            "id": "journald",
+            "name": "systemd Journal",
+            "kind": "native",
+            "log_path": "journald",
+            "detected": has_binary("journalctl"),
+            "active": has_binary("journalctl"),
+            "events_today": count_source("journald"),
+            "desc": "Tails journald (sshd, sudo, kernel) via journalctl --follow"
+        },
+        {
+            "id": "docker",
+            "name": "Docker Events",
+            "kind": "native",
+            "log_path": docker_sock,
+            "detected": file_exists(docker_sock),
+            "active": file_exists(docker_sock),
+            "events_today": count_source("docker"),
+            "desc": "Docker lifecycle events + privilege escalation detection"
+        },
+        {
+            "id": "nginx_access",
+            "name": "nginx Access Log",
+            "kind": "native",
+            "log_path": nginx_acc,
+            "detected": file_exists(nginx_acc),
+            "active": recent(file_age_secs(nginx_acc)),
+            "events_today": count_source("nginx_access"),
+            "desc": "nginx access log — search abuse, UA scanner detection"
+        },
+        {
+            "id": "nginx_error",
+            "name": "nginx Error Log",
+            "kind": "native",
+            "log_path": nginx_err,
+            "detected": file_exists(nginx_err),
+            "active": recent(file_age_secs(nginx_err)),
+            "events_today": count_source("nginx_error"),
+            "desc": "nginx error log — web scanner and probe detection"
+        },
+        {
+            "id": "exec_audit",
+            "name": "Shell Audit (auditd)",
+            "kind": "native",
+            "log_path": audit_log,
+            "detected": file_exists(audit_log),
+            "active": recent(file_age_secs(audit_log)),
+            "events_today": count_source("exec_audit"),
+            "desc": "auditd EXECVE events — execution guard and shell command trail"
+        },
+        {
+            "id": "falco_log",
+            "name": "Falco",
+            "kind": "external",
+            "log_path": falco_log,
+            "detected": file_exists(falco_log),
+            "active": recent(file_age_secs(falco_log)),
+            "events_today": count_source("falco_log"),
+            "desc": "Falco eBPF/syscall runtime security alerts"
+        },
+        {
+            "id": "suricata_eve",
+            "name": "Suricata IDS",
+            "kind": "external",
+            "log_path": suricata,
+            "detected": file_exists(suricata),
+            "active": recent(file_age_secs(suricata)),
+            "events_today": count_source("suricata_eve"),
+            "desc": "Suricata network IDS alerts (alert, dns, http, tls, anomaly)"
+        },
+        {
+            "id": "wazuh_alerts",
+            "name": "Wazuh HIDS",
+            "kind": "external",
+            "log_path": wazuh,
+            "detected": file_exists(wazuh),
+            "active": recent(file_age_secs(wazuh)),
+            "events_today": count_source("wazuh_alerts"),
+            "desc": "Wazuh HIDS/FIM/compliance alerts"
+        },
+        {
+            "id": "osquery_log",
+            "name": "osquery",
+            "kind": "external",
+            "log_path": osquery,
+            "detected": file_exists(osquery),
+            "active": recent(file_age_secs(osquery)),
+            "events_today": count_source("osquery_log"),
+            "desc": "osquery differential results (ports, users, crontabs, processes)"
+        }
+    ]);
+
+    Json(serde_json::json!({ "collectors": collectors }))
 }
 
 /// POST /api/action/block-ip — operator-initiated IP block with mandatory reason.
@@ -5092,16 +5256,19 @@ const INDEX_HTML: &str = r##"<!doctype html>
     status.textContent = 'Loading…';
     content.innerHTML = '<div class="empty" style="padding:40px;text-align:center">Loading…</div>';
     try {
-      const s = await loadJson('/api/status');
+      const [s, col] = await Promise.all([
+        loadJson('/api/status'),
+        loadJson('/api/collectors').catch(() => ({ collectors: [] }))
+      ]);
       status.textContent = 'Updated ' + new Date().toLocaleTimeString();
-      content.innerHTML = renderStatus(s);
+      content.innerHTML = renderStatus(s, col.collectors || []);
     } catch(e) {
       status.textContent = 'error';
       content.innerHTML = '<div class="empty" style="padding:40px;color:var(--danger)">Failed: ' + esc(String(e.message)) + '</div>';
     }
   }
 
-  function renderStatus(s) {
+  function renderStatus(s, collectors) {
     const files = s.files || {};
     const resp = s.responder || {};
     const integ = s.integrations || {};
@@ -5139,18 +5306,23 @@ const INDEX_HTML: &str = r##"<!doctype html>
       '</div></div></div>';
 
     // ── Section 2: Active Integrations grid ───────────────────────────────
-    const card = (icon, name, on, desc, badgeLabel) => {
+    const card = (icon, name, on, desc, badgeLabel, kind, costNote, enableCmd) => {
       const badge = badgeLabel === 'ON'   ? '<span class="integ-badge on">ON</span>'   :
                     badgeLabel === 'OFF'  ? '<span class="integ-badge off">OFF</span>' :
                     badgeLabel === 'DEMO' ? '<span class="integ-badge demo">DEMO</span>' :
                     badgeLabel === 'LIVE' ? '<span class="integ-badge on">LIVE</span>' :
                                            '<span class="integ-badge off">OFF</span>';
-      const hint = !on ? '<div style="font-size:0.62rem;color:var(--accent);margin-top:4px">Enable via CLI: <code>innerwarden enable ' + esc(name.toLowerCase().replace(/ /g,'-')) + '</code></div>' : '';
+      const kindBadge = kind === 'native'
+        ? '<span class="integ-kind-native">NATIVE</span>'
+        : '<span class="integ-kind-ext">EXTERNAL</span>';
+      const cost = costNote ? '<div class="integ-cost">' + esc(costNote) + '</div>' : '';
+      const hint = !on && enableCmd ? '<div class="integ-hint">$ <code>' + esc(enableCmd) + '</code></div>' : '';
       return '<div class="integ-card ' + (on ? 'active' : 'inactive') + '">' +
         '<div class="integ-icon">' + icon + '</div>' +
         '<div class="integ-body">' +
-        '<div class="integ-name">' + esc(name) + badge + '</div>' +
+        '<div class="integ-name">' + esc(name) + badge + kindBadge + '</div>' +
         '<div class="integ-desc">' + esc(desc) + '</div>' +
+        cost +
         hint +
         '</div></div>';
     };
@@ -5163,30 +5335,159 @@ const INDEX_HTML: &str = r##"<!doctype html>
       '.integ-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px}' +
       '.integ-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px}' +
       '.integ-card.active{border-color:rgba(58,194,126,0.4)}' +
-      '.integ-card.inactive{opacity:0.7}' +
+      '.integ-card.inactive{opacity:0.65}' +
       '.integ-icon{font-size:1.4rem;flex-shrink:0}' +
       '.integ-body{flex:1;min-width:0}' +
       '.integ-name{font-size:0.85rem;font-weight:700;color:var(--text);margin-bottom:2px}' +
       '.integ-desc{font-size:0.68rem;color:var(--muted);line-height:1.4}' +
+      '.integ-cost{font-size:0.62rem;color:var(--muted);opacity:0.75;margin-top:3px;line-height:1.4}' +
+      '.integ-hint{font-size:0.62rem;color:var(--accent);margin-top:5px}' +
+      '.integ-hint code{font-family:\'JetBrains Mono\',monospace}' +
       '.integ-badge{display:inline-block;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle}' +
       '.integ-badge.on{background:rgba(58,194,126,0.2);color:var(--ok)}' +
       '.integ-badge.off{background:rgba(244,63,94,0.12);color:var(--danger)}' +
       '.integ-badge.demo{background:rgba(255,184,77,0.15);color:var(--warn)}' +
+      '.integ-kind-native{display:inline-block;font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;background:rgba(120,229,255,0.12);color:var(--accent);letter-spacing:0.04em}' +
+      '.integ-kind-ext{display:inline-block;font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:5px;vertical-align:middle;background:rgba(255,184,77,0.12);color:var(--warn);letter-spacing:0.04em}' +
       '@media(max-width:640px){.integ-grid{grid-template-columns:1fr}}' +
       '</style>' +
       '<div class="integ-grid">' +
-      card('🤖', 'AI Analysis',    s.ai_enabled,          'Analyzes threats and recommends actions',                       s.ai_enabled ? 'ON' : 'OFF') +
-      card('🛡️', 'IP Blocker',     resp.enabled,          'Automatically blocks attacking IPs via UFW/iptables',           resp.enabled ? 'ON' : 'OFF') +
-      card('🪤', 'Honeypot',       hpMode !== 'off',      'Decoy server that captures attacker behavior',                  hpBadge) +
-      card('🔒', 'Fail2ban Sync',  integ.fail2ban,        'Syncs bans from fail2ban to InnerWarden',                      integ.fail2ban ? 'ON' : 'OFF') +
-      card('🔍', 'AbuseIPDB',      integ.abuseipdb,       'Checks IP reputation before AI analysis',                      integ.abuseipdb ? 'ON' : 'OFF') +
-      card('🌍', 'GeoIP',          integ.geoip,           'Adds country/ISP info to threat context',                      integ.geoip ? 'ON' : 'OFF') +
-      card('🔔', 'Telegram',       integ.telegram,        'Real-time alerts and remote control via bot',                  integ.telegram ? 'ON' : 'OFF') +
-      card('💬', 'Slack',          integ.slack,           'Incident notifications to Slack channel',                      integ.slack ? 'ON' : 'OFF') +
-      card('☁️', 'Cloudflare',     integ.cloudflare,      'Pushes blocked IPs to Cloudflare edge',                       integ.cloudflare ? 'ON' : 'OFF') +
+      card('🤖', 'AI Analysis',   s.ai_enabled,       'Analyzes threats and selects the best response action',         s.ai_enabled ? 'ON' : 'OFF',  'native',   'Built into InnerWarden — no external service needed.',                                       'innerwarden enable ai') +
+      card('🛡️', 'IP Blocker',    resp.enabled,       'Automatically blocks IPs via UFW/iptables when AI decides',     resp.enabled ? 'ON' : 'OFF',  'native',   'Zero cost. Uses your existing firewall.',                                                    'innerwarden enable block-ip') +
+      card('🪤', 'Honeypot',      hpMode !== 'off',   'Decoy server that captures and logs attacker behavior',         hpBadge,                      'native',   'Built-in. listener mode activates on AI demand; always_on keeps it permanently open.',      '') +
+      card('🌍', 'GeoIP',         integ.geoip,        'Adds country/ISP info to every threat — free, no key needed',  integ.geoip ? 'ON' : 'OFF',   'native',   'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.',                      'innerwarden integrate geoip') +
+      card('🔍', 'AbuseIPDB',     integ.abuseipdb,    'IP reputation check before AI call — skips known-bad IPs',     integ.abuseipdb ? 'ON' : 'OFF','external', 'Free plan: 1,000 req/day. Paid plans from $50/mo. Caution: do not combine auto_block_threshold with fail2ban auto-banning.', 'innerwarden integrate abuseipdb') +
+      card('🔒', 'Fail2ban',      integ.fail2ban,     'Syncs fail2ban bans into InnerWarden\'s audit trail',           integ.fail2ban ? 'ON' : 'OFF', 'external', 'Free & lightweight. If active, set abuseipdb auto_block_threshold=0 to avoid double-blocking.', 'innerwarden integrate fail2ban') +
+      card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel — supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
+      card('💬', 'Slack',         integ.slack,        'Incident notifications to a Slack team channel',               integ.slack ? 'ON' : 'OFF',   'external', 'Free (requires workspace). Activating alongside Telegram doubles alert volume for same incident.', 'innerwarden notify slack') +
+      card('☁️', 'Cloudflare',    integ.cloudflare,   'Pushes blocked IPs to Cloudflare edge after block-ip fires',   integ.cloudflare ? 'ON' : 'OFF','external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.',               'innerwarden integrate cloudflare') +
       '</div></div>';
 
-    // ── Section 3: Data files ──────────────────────────────────────────────
+    // ── Section 2b: Integration advisor ────────────────────────────────────
+    const conflicts = [];
+    if (integ.abuseipdb && integ.fail2ban) {
+      conflicts.push({
+        a: 'AbuseIPDB auto-block', b: 'Fail2ban',
+        msg: 'Both can auto-block IPs without AI. Set abuseipdb.auto_block_threshold = 0 and use AbuseIPDB only for enrichment context.'
+      });
+    }
+    if (integ.telegram && integ.slack) {
+      conflicts.push({
+        a: 'Telegram', b: 'Slack',
+        msg: 'Both send the same High/Critical alert. If you are the only operator, this doubles notification volume with no benefit. Use Telegram for real-time response, Slack for team visibility.'
+      });
+    }
+
+    const recommendations = [];
+    if (!integ.geoip)     recommendations.push({ icon:'🌍', text:'Enable GeoIP — free, zero noise, adds country/ISP to every AI decision', cmd:'innerwarden integrate geoip' });
+    if (!integ.telegram)  recommendations.push({ icon:'🔔', text:'Enable Telegram — real-time alerts with approve/reject buttons on your phone', cmd:'innerwarden notify telegram' });
+    if (!integ.abuseipdb) recommendations.push({ icon:'🔍', text:'Enable AbuseIPDB — free API key, enriches AI context with IP reputation score', cmd:'innerwarden integrate abuseipdb' });
+    if (!integ.cloudflare && resp.enabled) recommendations.push({ icon:'☁️', text:'Enable Cloudflare — push blocked IPs to the edge after every block-ip decision', cmd:'innerwarden integrate cloudflare' });
+
+    if (conflicts.length > 0 || recommendations.length > 0) {
+      html += '<div class="report-section"><div class="report-section-title">Integration Advisor</div>' +
+        '<style>' +
+        '.advisor-block{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px}' +
+        '.advisor-conflict{border-left:3px solid var(--warn)}' +
+        '.advisor-rec{border-left:3px solid var(--accent)}' +
+        '.advisor-label{font-size:0.65rem;font-weight:700;letter-spacing:0.06em;margin-bottom:6px}' +
+        '.advisor-label.warn{color:var(--warn)}' +
+        '.advisor-label.ok{color:var(--accent)}' +
+        '.advisor-pair{font-size:0.75rem;font-weight:700;color:var(--text);margin-bottom:3px}' +
+        '.advisor-msg{font-size:0.68rem;color:var(--muted);line-height:1.5}' +
+        '.advisor-cmd{font-size:0.62rem;color:var(--accent);margin-top:5px;font-family:\'JetBrains Mono\',monospace}' +
+        '</style>';
+
+      conflicts.forEach(c => {
+        html += '<div class="advisor-block advisor-conflict">' +
+          '<div class="advisor-label warn">⚠ OVERLAP DETECTED</div>' +
+          '<div class="advisor-pair">' + esc(c.a) + ' ↔ ' + esc(c.b) + '</div>' +
+          '<div class="advisor-msg">' + esc(c.msg) + '</div>' +
+          '</div>';
+      });
+
+      if (recommendations.length > 0) {
+        const next = recommendations[0];
+        html += '<div class="advisor-block advisor-rec">' +
+          '<div class="advisor-label ok">💡 RECOMMENDED NEXT STEP</div>' +
+          '<div class="advisor-pair">' + next.icon + ' ' + esc(next.text) + '</div>' +
+          '<div class="advisor-cmd">$ ' + esc(next.cmd) + '</div>' +
+          '</div>';
+        if (recommendations.length > 1) {
+          html += '<div style="font-size:0.62rem;color:var(--muted);padding:0 4px 12px">After that: ';
+          html += recommendations.slice(1).map(r => esc(r.icon + ' ' + r.cmd)).join(' &nbsp;·&nbsp; ');
+          html += '</div>';
+        }
+      }
+
+      html += '</div>';
+    }
+
+    // ── Section 3: Sensor Collectors ──────────────────────────────────────
+    if (collectors.length > 0) {
+      const colIcons = {
+        auth_log:'🔑', journald:'📋', docker:'🐳', nginx_access:'🌐', nginx_error:'⚠️',
+        exec_audit:'🔎', falco_log:'🦅', suricata_eve:'🐉', wazuh_alerts:'🔒', osquery_log:'🔍'
+      };
+      const colStyle =
+        '.col-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:4px}' +
+        '.col-row{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;display:flex;align-items:center;gap:10px}' +
+        '.col-row.col-active{border-color:rgba(58,194,126,0.35)}' +
+        '.col-row.col-detected{border-color:rgba(255,184,77,0.25)}' +
+        '.col-row.col-missing{opacity:0.5}' +
+        '.col-ico{font-size:1.2rem;flex-shrink:0}' +
+        '.col-body{flex:1;min-width:0}' +
+        '.col-name{font-size:0.8rem;font-weight:700;color:var(--text)}' +
+        '.col-meta{font-size:0.62rem;color:var(--muted);margin-top:2px}' +
+        '.col-evt{display:inline-block;font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;margin-left:6px;vertical-align:middle;background:rgba(120,229,255,0.12);color:var(--accent)}' +
+        '.col-status-active{font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;background:rgba(58,194,126,0.2);color:var(--ok)}' +
+        '.col-status-detected{font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;background:rgba(255,184,77,0.15);color:var(--warn)}' +
+        '.col-status-missing{font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:20px;background:rgba(100,100,100,0.15);color:var(--muted)}' +
+        '.col-kind-native{display:inline-block;font-size:0.5rem;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle;background:rgba(120,229,255,0.1);color:var(--accent)}' +
+        '.col-kind-ext{display:inline-block;font-size:0.5rem;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle;background:rgba(255,184,77,0.1);color:var(--warn)}' +
+        '@media(max-width:640px){.col-grid{grid-template-columns:1fr}}';
+
+      html += '<div class="report-section"><div class="report-section-title">Sensor Collectors</div>' +
+        '<style>' + colStyle + '</style>' +
+        '<div style="font-size:0.65rem;color:var(--muted);margin-bottom:12px">' +
+        '<span class="col-status-active">ACTIVE</span> log file exists + written in last 2h &nbsp; ' +
+        '<span class="col-status-detected">DETECTED</span> log file exists but stale or not yet seen today &nbsp; ' +
+        '<span class="col-status-missing">NOT FOUND</span> tool not installed / log absent' +
+        '</div>' +
+        '<div class="col-grid">';
+
+      collectors.forEach(c => {
+        const icon = colIcons[c.id] || '📦';
+        const kindBadge = c.kind === 'native'
+          ? '<span class="col-kind-native">NATIVE</span>'
+          : '<span class="col-kind-ext">EXTERNAL</span>';
+        let statusBadge, rowCls;
+        if (c.active) {
+          statusBadge = '<span class="col-status-active">ACTIVE</span>';
+          rowCls = 'col-active';
+        } else if (c.detected) {
+          statusBadge = '<span class="col-status-detected">DETECTED</span>';
+          rowCls = 'col-detected';
+        } else {
+          statusBadge = '<span class="col-status-missing">NOT FOUND</span>';
+          rowCls = 'col-missing';
+        }
+        const evtBadge = c.events_today > 0
+          ? '<span class="col-evt">' + c.events_today + ' events today</span>'
+          : '';
+        html += '<div class="col-row ' + rowCls + '">' +
+          '<div class="col-ico">' + icon + '</div>' +
+          '<div class="col-body">' +
+          '<div class="col-name">' + esc(c.name) + kindBadge + statusBadge + evtBadge + '</div>' +
+          '<div class="col-meta">' + esc(c.desc) + '</div>' +
+          ((!c.detected && c.kind === 'external') ? '<div style="font-size:0.58rem;color:var(--accent);margin-top:3px">Not installed — optional external tool</div>' : '') +
+          '</div></div>';
+      });
+
+      html += '</div></div>';
+    }
+
+    // ── Section 4: Data files ──────────────────────────────────────────────
     html += '<div class="report-section"><div class="report-section-title">Data Files — ' + esc(s.date || '—') + '</div>' +
       '<table class="report-table"><thead><tr><th>File</th><th>Status</th><th>Size</th></tr></thead><tbody>';
     Object.entries(files).forEach(([k, v]) => {
