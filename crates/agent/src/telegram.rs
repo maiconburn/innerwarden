@@ -204,6 +204,7 @@ impl TelegramClient {
         dry_run: bool,
         reputation: Option<&crate::abuseipdb::IpReputation>,
         geo: Option<&crate::geoip::GeoInfo>,
+        cloudflare_pushed: bool,
     ) -> Result<()> {
         let pct = (confidence * 100.0) as u32;
 
@@ -226,12 +227,18 @@ impl TelegramClient {
             enrichment = format!("\n🌐 {flag} {} · {}", g.country, escape_html(&g.isp));
         }
 
+        let cf_line = if cloudflare_pushed {
+            "\n☁️ Also pushed to Cloudflare edge — blocked at CDN level too."
+        } else {
+            ""
+        };
+
         let text = if dry_run {
             format!(
                 "🧪 <b>Simulated</b> — <b>{host}</b>\n\
                  Would've {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% | No real action taken (dry-run mode)",
+                 Confidence: {pct}% | No real action taken (dry-run mode){cf_line}",
                 host = escape_html(host),
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
@@ -241,7 +248,7 @@ impl TelegramClient {
                 "✅ <b>Threat neutralized</b> — <b>{host}</b>\n\
                  {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
-                 Confidence: {pct}% | This actor won't be back.",
+                 Confidence: {pct}% | This actor won't be back.{cf_line}",
                 host = escape_html(host),
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),

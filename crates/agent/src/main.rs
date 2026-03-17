@@ -1747,10 +1747,10 @@ async fn process_incidents(
                     {
                         state.decision_cooldowns.insert(key, chrono::Utc::now());
                     }
-                    let execution_result = if cfg.responder.enabled {
+                    let (execution_result, _cf_pushed) = if cfg.responder.enabled {
                         execute_decision(&auto_decision, incident, data_dir, cfg, state).await
                     } else {
-                        "skipped: responder disabled".to_string()
+                        ("skipped: responder disabled".to_string(), false)
                     };
                     if let Some(writer) = &mut state.decision_writer {
                         let entry = decisions::build_entry(
@@ -1962,7 +1962,7 @@ async fn process_incidents(
         let detector = incident_detector(&incident.incident_id);
         let action_name = decision.action.name();
         let trusted = is_trusted(&state.trust_rules, detector, action_name);
-        let execution_result = if (decision.auto_execute || trusted)
+        let (execution_result, cloudflare_pushed) = if (decision.auto_execute || trusted)
             && decision.confidence >= cfg.ai.confidence_threshold
             && cfg.responder.enabled
         {
@@ -1978,13 +1978,16 @@ async fn process_incidents(
                 .observe_execution_path(cfg.responder.dry_run);
             execute_decision(&decision, incident, data_dir, cfg, state).await
         } else if !cfg.responder.enabled {
-            "skipped: responder disabled".to_string()
+            ("skipped: responder disabled".to_string(), false)
         } else if !decision.auto_execute && !trusted {
-            "skipped: AI did not recommend auto-execution (no trust rule)".to_string()
+            ("skipped: AI did not recommend auto-execution (no trust rule)".to_string(), false)
         } else {
-            format!(
-                "skipped: confidence {:.2} below threshold {:.2}",
-                decision.confidence, cfg.ai.confidence_threshold
+            (
+                format!(
+                    "skipped: confidence {:.2} below threshold {:.2}",
+                    decision.confidence, cfg.ai.confidence_threshold
+                ),
+                false,
             )
         };
 
@@ -2040,6 +2043,7 @@ async fn process_incidents(
                             dry_run,
                             rep_clone.as_ref(),
                             geo_clone.as_ref(),
+                            cloudflare_pushed,
                         )
                         .await;
                 });
@@ -2065,13 +2069,14 @@ async fn process_incidents(
 }
 
 /// Execute an AI decision by finding and running the appropriate skill.
+/// Returns (execution_message, cloudflare_pushed).
 async fn execute_decision(
     decision: &ai::AiDecision,
     incident: &innerwarden_core::incident::Incident,
     data_dir: &Path,
     cfg: &config::AgentConfig,
     state: &mut AgentState,
-) -> String {
+) -> (String, bool) {
     use ai::AiAction;
 
     match &decision.action {
@@ -2087,7 +2092,7 @@ async fn execute_decision(
                 if cfg.responder.allowed_skills.contains(&fallback) {
                     fallback
                 } else {
-                    return format!("skipped: skill '{skill_id}' not in allowed_skills");
+                    return (format!("skipped: skill '{skill_id}' not in allowed_skills"), false);
                 }
             };
 
@@ -2117,17 +2122,19 @@ async fn execute_decision(
                         state.blocklist.insert(ip.clone());
                     }
                     // Optionally push the block to Cloudflare edge
+                    let mut cf_pushed = false;
                     if result.success && cfg.cloudflare.enabled && cfg.cloudflare.auto_push_blocks {
                         if let Some(ref cf) = state.cloudflare_client {
                             let reason = format!("{}: {}", incident.incident_id, decision.reason);
                             if let Some(rule_id) = cf.push_block(ip, &reason).await {
                                 info!(ip, rule_id, "Cloudflare edge block pushed");
+                                cf_pushed = true;
                             }
                         }
                     }
-                    result.message
+                    (result.message, cf_pushed)
                 }
-                None => format!("skipped: skill '{effective_id}' not found"),
+                None => (format!("skipped: skill '{effective_id}' not found"), false),
             }
         }
         AiAction::Monitor { ip } => {
@@ -2142,9 +2149,9 @@ async fn execute_decision(
                     honeypot: honeypot_runtime(cfg),
                     ai_provider: state.ai_provider.clone(),
                 };
-                skill.execute(&ctx, cfg.responder.dry_run).await.message
+                (skill.execute(&ctx, cfg.responder.dry_run).await.message, false)
             } else {
-                "skipped: monitor-ip skill not available".to_string()
+                ("skipped: monitor-ip skill not available".to_string(), false)
             }
         }
         AiAction::Honeypot { ip } => {
@@ -2206,25 +2213,31 @@ async fn execute_decision(
                     )
                     .await
                     {
-                        Ok(path) => format!(
-                            "{} | honeypot marker written to {}",
-                            result.message,
-                            path.display()
+                        Ok(path) => (
+                            format!(
+                                "{} | honeypot marker written to {}",
+                                result.message,
+                                path.display()
+                            ),
+                            false,
                         ),
                         Err(e) => {
                             state.telemetry.observe_error("honeypot_marker_writer");
                             warn!("failed to write honeypot marker event: {e:#}");
-                            format!(
-                                "{} | warning: failed to write honeypot marker event: {e}",
-                                result.message
+                            (
+                                format!(
+                                    "{} | warning: failed to write honeypot marker event: {e}",
+                                    result.message
+                                ),
+                                false,
                             )
                         }
                     }
                 } else {
-                    result.message
+                    (result.message, false)
                 }
             } else {
-                "skipped: honeypot skill not available".to_string()
+                ("skipped: honeypot skill not available".to_string(), false)
             }
         }
         AiAction::SuspendUserSudo {
@@ -2233,7 +2246,7 @@ async fn execute_decision(
         } => {
             let skill_id = "suspend-user-sudo";
             if !cfg.responder.allowed_skills.iter().any(|id| id == skill_id) {
-                return format!("skipped: skill '{skill_id}' not in allowed_skills");
+                return (format!("skipped: skill '{skill_id}' not in allowed_skills"), false);
             }
             if let Some(skill) = state.skill_registry.get(skill_id) {
                 let ctx = skills::SkillContext {
@@ -2246,9 +2259,9 @@ async fn execute_decision(
                     honeypot: honeypot_runtime(cfg),
                     ai_provider: state.ai_provider.clone(),
                 };
-                skill.execute(&ctx, cfg.responder.dry_run).await.message
+                (skill.execute(&ctx, cfg.responder.dry_run).await.message, false)
             } else {
-                "skipped: suspend-user-sudo skill not available".to_string()
+                ("skipped: suspend-user-sudo skill not available".to_string(), false)
             }
         }
         AiAction::RequestConfirmation { summary } => {
@@ -2283,7 +2296,7 @@ async fn execute_decision(
                             incident.incident_id.clone(),
                             (pending, decision.clone(), incident.clone()),
                         );
-                        return "pending: operator confirmation requested via Telegram".to_string();
+                        return ("pending: operator confirmation requested via Telegram".to_string(), false);
                     }
                     Err(e) => {
                         warn!("Telegram confirmation request failed: {e:#}");
@@ -2300,15 +2313,15 @@ async fn execute_decision(
                 });
                 let client = reqwest::Client::new();
                 match client.post(&cfg.webhook.url).json(&payload).send().await {
-                    Ok(_) => "confirmation request sent via webhook".to_string(),
-                    Err(e) => format!("confirmation webhook failed: {e}"),
+                    Ok(_) => ("confirmation request sent via webhook".to_string(), false),
+                    Err(e) => (format!("confirmation webhook failed: {e}"), false),
                 }
             } else {
-                "confirmation requested (no Telegram or webhook configured)".to_string()
+                ("confirmation requested (no Telegram or webhook configured)".to_string(), false)
             }
         }
         AiAction::Ignore { reason } => {
-            format!("ignored: {reason}")
+            (format!("ignored: {reason}"), false)
         }
     }
 }
@@ -3317,7 +3330,7 @@ async fn process_telegram_approval(
             .await;
     }
 
-    let exec_result = if result.approved {
+    let (exec_result, _cf_pushed) = if result.approved {
         info!(
             incident_id = %result.incident_id,
             operator = %result.operator_name,
@@ -3331,7 +3344,7 @@ async fn process_telegram_approval(
             operator = %result.operator_name,
             "operator rejected action via Telegram"
         );
-        format!("rejected by operator {}", result.operator_name)
+        (format!("rejected by operator {}", result.operator_name), false)
     };
 
     // Audit trail with ai_provider = "telegram:<operator>"
