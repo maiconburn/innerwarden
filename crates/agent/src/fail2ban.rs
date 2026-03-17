@@ -41,20 +41,29 @@ pub struct BannedIp {
 // Client
 // ---------------------------------------------------------------------------
 
-pub struct Fail2BanClient;
+pub struct Fail2BanClient {
+    use_sudo: bool,
+}
 
 impl Fail2BanClient {
-    pub fn new() -> Self {
-        Self
+    pub fn new(use_sudo: bool) -> Self {
+        Self { use_sudo }
     }
 
     /// List all active jails by running `fail2ban-client status`.
     /// Parses the "Jail list:" line from the output.
     pub async fn list_jails(&self) -> Vec<String> {
-        let output = tokio::task::spawn_blocking(|| {
-            std::process::Command::new("fail2ban-client")
-                .arg("status")
-                .output()
+        let use_sudo = self.use_sudo;
+        let output = tokio::task::spawn_blocking(move || {
+            if use_sudo {
+                std::process::Command::new("sudo")
+                    .args(["fail2ban-client", "status"])
+                    .output()
+            } else {
+                std::process::Command::new("fail2ban-client")
+                    .arg("status")
+                    .output()
+            }
         })
         .await;
 
@@ -84,10 +93,17 @@ impl Fail2BanClient {
     /// Parses the "Banned IP list:" line from the output.
     pub async fn banned_ips(&self, jail: &str) -> Vec<BannedIp> {
         let jail_owned = jail.to_string();
+        let use_sudo = self.use_sudo;
         let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("fail2ban-client")
-                .args(["status", &jail_owned])
-                .output()
+            if use_sudo {
+                std::process::Command::new("sudo")
+                    .args(["fail2ban-client", "status", &jail_owned])
+                    .output()
+            } else {
+                std::process::Command::new("fail2ban-client")
+                    .args(["status", &jail_owned])
+                    .output()
+            }
         })
         .await;
 
@@ -242,7 +258,7 @@ impl Fail2BanState {
         Self {
             known_ips: std::collections::HashSet::new(),
             jails: cfg.jails.clone(),
-            client: Fail2BanClient::new(),
+            client: Fail2BanClient::new(cfg.use_sudo),
         }
     }
 }

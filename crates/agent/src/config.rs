@@ -1251,6 +1251,11 @@ pub struct Fail2BanConfig {
     /// Jails to poll. Empty = all active jails (from `fail2ban-client status`).
     #[serde(default)]
     pub jails: Vec<String>,
+
+    /// Prefix fail2ban-client calls with sudo (needed when agent runs as non-root,
+    /// requires: `innerwarden ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client *` in sudoers).
+    #[serde(default)]
+    pub use_sudo: bool,
 }
 
 impl Default for Fail2BanConfig {
@@ -1259,6 +1264,7 @@ impl Default for Fail2BanConfig {
             enabled: false,
             poll_secs: default_fail2ban_poll_secs(),
             jails: vec![],
+            use_sudo: false,
         }
     }
 }
