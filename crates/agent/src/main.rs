@@ -158,6 +158,170 @@ fn guardian_mode(cfg: &config::AgentConfig) -> telegram::GuardianMode {
     }
 }
 
+/// Builds a rich system-state context string injected into every AI chat call.
+/// The AI uses this to answer self-awareness questions accurately and give
+/// correct configuration advice.
+fn build_agent_context(cfg: &config::AgentConfig, data_dir: &Path) -> String {
+    let mode = guardian_mode(cfg);
+    let today = chrono::Local::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let incident_count = count_jsonl_lines(data_dir, &format!("incidents-{today}.jsonl"));
+    let decision_count = count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"));
+    let host = std::env::var("HOSTNAME")
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let skills_list = cfg.responder.allowed_skills.join(", ");
+    let block_backend = &cfg.responder.block_backend;
+    let ai_status = if cfg.ai.enabled {
+        format!(
+            "ENABLED — provider={}, model={}",
+            cfg.ai.provider, cfg.ai.model
+        )
+    } else {
+        "DISABLED".to_string()
+    };
+    let responder_status = if !cfg.responder.enabled {
+        "DISABLED (watch-only mode)".to_string()
+    } else if cfg.responder.dry_run {
+        "ENABLED — dry-run (simulates actions, no real execution)".to_string()
+    } else {
+        format!("ENABLED — live mode (backend={block_backend})")
+    };
+    let telegram_status = if cfg.telegram.enabled {
+        "ENABLED"
+    } else {
+        "DISABLED"
+    };
+    let abuseipdb_status = if cfg.abuseipdb.enabled {
+        "ENABLED"
+    } else {
+        "DISABLED"
+    };
+    let geoip_status = if cfg.geoip.enabled {
+        "ENABLED"
+    } else {
+        "DISABLED"
+    };
+    let fail2ban_status = if cfg.fail2ban.enabled {
+        "ENABLED"
+    } else {
+        "DISABLED"
+    };
+    let slack_status = if cfg.slack.enabled {
+        "ENABLED"
+    } else {
+        "DISABLED"
+    };
+    let cloudflare_status = if cfg.cloudflare.enabled {
+        "ENABLED"
+    } else {
+        "DISABLED"
+    };
+
+    format!(
+        "=== INNERWARDEN SYSTEM STATE ===\n\
+         Host: {host}\n\
+         Version: {version}\n\
+         Mode: {mode_label} — {mode_desc}\n\
+         Data dir: {data_dir}\n\
+         \n\
+         Today ({today}): {incident_count} intrusion attempts, {decision_count} actions taken\n\
+         \n\
+         === ACTIVE CONFIGURATION ===\n\
+         Responder: {responder_status}\n\
+         Allowed skills: {skills_list}\n\
+         AI analysis: {ai_status}\n\
+         Telegram bot: {telegram_status}\n\
+         AbuseIPDB enrichment: {abuseipdb_status}\n\
+         GeoIP enrichment: {geoip_status}\n\
+         Fail2ban integration: {fail2ban_status}\n\
+         Slack notifications: {slack_status}\n\
+         Cloudflare edge blocking: {cloudflare_status}\n\
+         \n\
+         === AVAILABLE CAPABILITIES (innerwarden enable/disable <id>) ===\n\
+         - ai: AI-powered incident analysis (params: provider=openai|anthropic|ollama, model=...)\n\
+         - block-ip: Firewall blocking of attacking IPs (params: backend=ufw|iptables|nftables|pf)\n\
+         - sudo-protection: Detect sudo abuse + auto-suspend attacker privileges\n\
+         - shell-audit: Audit shell command execution (privacy gate required)\n\
+         - search-protection: Protect search/API endpoints from scraping bots\n\
+         \n\
+         === AVAILABLE SKILLS (agent execution layer) ===\n\
+         Open tier: block-ip-ufw, block-ip-iptables, block-ip-nftables, block-ip-pf, suspend-user-sudo, rate-limit-nginx\n\
+         Premium tier: monitor-ip (packet capture), honeypot (attacker trap)\n\
+         \n\
+         === CLI REFERENCE ===\n\
+         innerwarden enable <capability>         # activate a capability\n\
+         innerwarden disable <capability>        # deactivate a capability\n\
+         innerwarden status                      # full system overview\n\
+         innerwarden doctor                      # health check with fix hints\n\
+         innerwarden scan                        # detect installed tools, recommend modules\n\
+         innerwarden list                        # list all capabilities with status\n\
+         innerwarden configure responder         # set GUARD/WATCH/DRY-RUN mode\n\
+         innerwarden notify telegram             # setup Telegram bot\n\
+         innerwarden notify slack                # setup Slack webhook\n\
+         innerwarden integrate abuseipdb         # IP reputation enrichment\n\
+         innerwarden integrate geoip             # GeoIP enrichment (free)\n\
+         innerwarden integrate fail2ban          # sync with fail2ban bans\n\
+         innerwarden block <ip> --reason <r>     # manual IP block\n\
+         innerwarden unblock <ip>                # remove IP block\n\
+         innerwarden incidents --days 7          # list recent incidents\n\
+         innerwarden decisions --days 7          # list recent decisions\n\
+         innerwarden report                      # show operational report\n\
+         innerwarden tune                        # auto-tune detector thresholds\n\
+         ",
+        host = host,
+        version = env!("CARGO_PKG_VERSION"),
+        mode_label = mode.label(),
+        mode_desc = mode.description(),
+        data_dir = data_dir.display(),
+    )
+}
+
+/// Run an `innerwarden` CLI subcommand and return its stdout+stderr as a String.
+/// Times out after 30 seconds. Used by /enable, /disable, /doctor bot commands.
+async fn run_innerwarden_cli(args: &[&str]) -> String {
+    let bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("innerwarden")))
+        .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin/innerwarden"));
+
+    match tokio::process::Command::new(&bin).args(args).output().await {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let combined = format!("{stdout}{stderr}");
+            // Strip ANSI color codes for Telegram
+            strip_ansi(&combined)
+        }
+        Err(e) => format!("Failed to run innerwarden CLI: {e}"),
+    }
+}
+
+/// Strip ANSI escape codes from a string (for clean Telegram display).
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip escape sequence
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for ch in chars.by_ref() {
+                    if ch.is_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 fn decision_cooldown_key(action: &str, detector: &str, entity_kind: &str, entity: &str) -> String {
     format!("{action}:{detector}:{entity_kind}:{entity}")
 }
@@ -1989,16 +2153,28 @@ async fn process_telegram_approval(
     if result.incident_id == "__help__" {
         info!(operator = %result.operator_name, "Telegram /help command received");
         if cfg.telegram.bot.enabled {
-            let text = "👾 <b>InnerWarden — Operator Commands</b>\n\n\
-                /status — guardian status, mode, threat intel\n\
+            let text = "👾 <b>InnerWarden — Operator Playbook</b>\n\n\
+                <b>Intel</b>\n\
+                /status — mode, AI, today's threat intel\n\
                 /threats — recent intrusion attempts\n\
                 /decisions — actions I've taken\n\
-                /blocked — threat actors currently contained\n\
-                /guard — activate auto-defend (I act autonomously)\n\
-                /watch — passive mode (I alert, you decide)\n\
-                /ask <question> — ask me anything about your server\n\
-                <i>or just type — I'll answer in plain language</i>\n\n\
-                On alert notifications:\n\
+                /blocked — threat actors contained\n\
+                \n\
+                <b>Configuration</b>\n\
+                /capabilities — list all capabilities + status\n\
+                /enable &lt;id&gt; — activate a capability\n\
+                /disable &lt;id&gt; — deactivate a capability\n\
+                /doctor — full health check with fix hints\n\
+                \n\
+                <b>Mode</b>\n\
+                /guard — auto-defend (I act autonomously)\n\
+                /watch — passive (I alert, you decide)\n\
+                \n\
+                <b>AI</b>\n\
+                /ask &lt;question&gt; — ask anything, I know my config\n\
+                <i>or just type — I'll understand</i>\n\
+                \n\
+                <b>On threat alerts:</b>\n\
                 🛡 <b>Block</b> — drop this actor now\n\
                 🙈 <b>Ignore</b> — false positive, stand down";
             tg_reply!(text);
@@ -2176,13 +2352,15 @@ async fn process_telegram_approval(
                 .date_naive()
                 .format("%Y-%m-%d")
                 .to_string();
-            let context_snippet = read_last_incidents_raw(data_dir, &today, 3);
-            let system_prompt = if context_snippet.is_empty() {
-                cfg.telegram.bot.personality.clone()
+            // Inject full system context so the AI knows exactly what's configured
+            let agent_ctx = build_agent_context(cfg, data_dir);
+            let recent_incidents = read_last_incidents_raw(data_dir, &today, 3);
+            let system_prompt = if recent_incidents.is_empty() {
+                format!("{}\n\n{agent_ctx}", cfg.telegram.bot.personality)
             } else {
                 format!(
-                    "{}\n\nRecent incidents on this server:\n{}",
-                    cfg.telegram.bot.personality, context_snippet
+                    "{}\n\n{agent_ctx}\n\nRECENT INCIDENTS (last 3):\n{recent_incidents}",
+                    cfg.telegram.bot.personality
                 )
             };
 
@@ -2190,7 +2368,6 @@ async fn process_telegram_approval(
                 let ai = ai.clone();
                 let tg = state.telegram_client.clone();
                 tokio::spawn(async move {
-                    // Keep showing "typing..." while AI processes
                     if let Some(ref tg) = tg {
                         tg.send_typing().await;
                     }
@@ -2205,7 +2382,7 @@ async fn process_telegram_approval(
                             if let Some(ref tg) = tg {
                                 let _ = tg
                                     .send_text_message(&format!(
-                                        "AI error: {}",
+                                        "Brain glitch: {}",
                                         e.to_string().chars().take(200).collect::<String>()
                                     ))
                                     .await;
@@ -2214,8 +2391,111 @@ async fn process_telegram_approval(
                     }
                 });
             } else {
-                tg_reply!("AI is not configured. Run: innerwarden configure ai");
+                tg_reply!(
+                    "AI brain is offline. Activate it:\n<code>innerwarden enable ai</code>\nor via bot: /enable ai"
+                );
             }
+        }
+        return;
+    }
+
+    // /enable <capability> — run innerwarden enable <cap> as subprocess
+    if let Some(cap_args) = result.incident_id.strip_prefix("__enable__:") {
+        let cap_args = cap_args.trim().to_string();
+        info!(operator = %result.operator_name, cap = %cap_args, "Telegram /enable command received");
+        if cfg.telegram.bot.enabled {
+            let tg = state.telegram_client.clone();
+            tokio::spawn(async move {
+                if let Some(ref tg) = tg {
+                    tg.send_typing().await;
+                }
+                // Parse "block-ip --param backend=ufw" → ["enable", "block-ip", "--param", "backend=ufw"]
+                let parts: Vec<&str> = cap_args.split_whitespace().collect();
+                let mut args = vec!["enable"];
+                args.extend(parts.iter().copied());
+                let output = run_innerwarden_cli(&args).await;
+                let text = format!(
+                    "🔧 <b>innerwarden enable {cap_args}</b>\n\n<pre>{output}</pre>",
+                    cap_args = cap_args,
+                    output = output.chars().take(2000).collect::<String>()
+                );
+                if let Some(ref tg) = tg {
+                    let _ = tg.send_text_message(&text).await;
+                }
+            });
+        }
+        return;
+    }
+
+    // /disable <capability> — run innerwarden disable <cap> as subprocess
+    if let Some(cap_args) = result.incident_id.strip_prefix("__disable__:") {
+        let cap_args = cap_args.trim().to_string();
+        info!(operator = %result.operator_name, cap = %cap_args, "Telegram /disable command received");
+        if cfg.telegram.bot.enabled {
+            let tg = state.telegram_client.clone();
+            tokio::spawn(async move {
+                if let Some(ref tg) = tg {
+                    tg.send_typing().await;
+                }
+                let parts: Vec<&str> = cap_args.split_whitespace().collect();
+                let mut args = vec!["disable"];
+                args.extend(parts.iter().copied());
+                let output = run_innerwarden_cli(&args).await;
+                let text = format!(
+                    "🔧 <b>innerwarden disable {cap_args}</b>\n\n<pre>{output}</pre>",
+                    cap_args = cap_args,
+                    output = output.chars().take(2000).collect::<String>()
+                );
+                if let Some(ref tg) = tg {
+                    let _ = tg.send_text_message(&text).await;
+                }
+            });
+        }
+        return;
+    }
+
+    // /doctor — run innerwarden doctor and show output
+    if result.incident_id == "__doctor__" {
+        info!(operator = %result.operator_name, "Telegram /doctor command received");
+        if cfg.telegram.bot.enabled {
+            let tg = state.telegram_client.clone();
+            tokio::spawn(async move {
+                if let Some(ref tg) = tg {
+                    tg.send_typing().await;
+                }
+                let output = run_innerwarden_cli(&["doctor"]).await;
+                let text = format!(
+                    "🩺 <b>System health check</b>\n\n<pre>{}</pre>",
+                    output.chars().take(3000).collect::<String>()
+                );
+                if let Some(ref tg) = tg {
+                    let _ = tg.send_text_message(&text).await;
+                }
+            });
+        }
+        return;
+    }
+
+    // /capabilities — list all capabilities with their status
+    if result.incident_id == "__capabilities__" {
+        info!(operator = %result.operator_name, "Telegram /capabilities command received");
+        if cfg.telegram.bot.enabled {
+            let tg = state.telegram_client.clone();
+            tokio::spawn(async move {
+                if let Some(ref tg) = tg {
+                    tg.send_typing().await;
+                }
+                let output = run_innerwarden_cli(&["list"]).await;
+                let text = format!(
+                    "⚙️ <b>Capabilities</b>\n\n<pre>{}</pre>\n\n\
+                     Enable: <code>/enable &lt;id&gt;</code>\n\
+                     Disable: <code>/disable &lt;id&gt;</code>",
+                    output.chars().take(2500).collect::<String>()
+                );
+                if let Some(ref tg) = tg {
+                    let _ = tg.send_text_message(&text).await;
+                }
+            });
         }
         return;
     }

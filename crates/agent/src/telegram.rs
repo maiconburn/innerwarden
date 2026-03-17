@@ -465,14 +465,18 @@ impl TelegramClient {
     pub async fn set_commands(&self) {
         let body = serde_json::json!({
             "commands": [
-                { "command": "status",    "description": "How am I doing? Mode, AI, today's summary" },
-                { "command": "threats",   "description": "Recent threats detected" },
-                { "command": "decisions", "description": "Recent actions taken" },
-                { "command": "blocked",   "description": "Currently blocked IPs" },
-                { "command": "guard",     "description": "Activate auto-defend mode" },
-                { "command": "watch",     "description": "Switch to monitor-only mode" },
-                { "command": "ask",       "description": "Ask me anything about your server" },
-                { "command": "help",      "description": "What can I do?" }
+                { "command": "status",       "description": "Guardian status — mode, AI, threat intel" },
+                { "command": "threats",      "description": "Recent intrusion attempts" },
+                { "command": "decisions",    "description": "Actions I've taken" },
+                { "command": "blocked",      "description": "Threat actors currently contained" },
+                { "command": "capabilities", "description": "List all capabilities and their status" },
+                { "command": "enable",       "description": "Enable a capability — /enable block-ip" },
+                { "command": "disable",      "description": "Disable a capability — /disable ai" },
+                { "command": "doctor",       "description": "Full health check with fix hints" },
+                { "command": "guard",        "description": "Activate auto-defend mode" },
+                { "command": "watch",        "description": "Switch to passive monitor mode" },
+                { "command": "ask",          "description": "Ask me anything — I know my config" },
+                { "command": "help",         "description": "Operator command playbook" }
             ]
         });
         let _ = self.post_json("setMyCommands", &body).await;
@@ -594,6 +598,18 @@ impl TelegramClient {
                                     "__guard__".to_string()
                                 } else if text == "/watch" || text.starts_with("/watch ") {
                                     "__watch__".to_string()
+                                } else if text == "/doctor" || text.starts_with("/doctor ") {
+                                    "__doctor__".to_string()
+                                } else if text == "/capabilities"
+                                    || text.starts_with("/capabilities ")
+                                    || text == "/list"
+                                    || text.starts_with("/list ")
+                                {
+                                    "__capabilities__".to_string()
+                                } else if let Some(cap) = text.strip_prefix("/enable ") {
+                                    format!("__enable__:{cap}")
+                                } else if let Some(cap) = text.strip_prefix("/disable ") {
+                                    format!("__disable__:{cap}")
                                 } else if text == "/start" || text.starts_with("/start ") {
                                     // Telegram sends /start when user first opens the bot
                                     "__start__".to_string()
