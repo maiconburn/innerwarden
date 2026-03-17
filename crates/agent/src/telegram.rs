@@ -13,6 +13,39 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
+// Guardian mode
+// ---------------------------------------------------------------------------
+
+/// Operating mode of the InnerWarden agent — drives notification style.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuardianMode {
+    /// Responder enabled, live — agent acts autonomously and reports decisions.
+    Guard,
+    /// Responder enabled, dry-run — simulates actions, asks for confirmation.
+    DryRun,
+    /// Responder disabled — monitors and asks operator what to do.
+    Watch,
+}
+
+impl GuardianMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GuardianMode::Guard => "🟢 GUARD",
+            GuardianMode::DryRun => "🟡 DRY-RUN",
+            GuardianMode::Watch => "🔵 WATCH",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            GuardianMode::Guard => "I act on threats automatically",
+            GuardianMode::DryRun => "I simulate actions — no real changes",
+            GuardianMode::Watch => "I alert you and wait for your call",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -83,9 +116,12 @@ impl TelegramClient {
     // -----------------------------------------------------------------------
 
     /// Send a notification message for a High/Critical incident.
+    /// In GUARD mode the alert is compact — no action buttons, the agent will
+    /// act and follow up with send_action_report(). In WATCH/DryRun mode the
+    /// alert includes Block/Ignore quick-action buttons.
     /// Failures are logged as warnings and never propagate — fail-open.
-    pub async fn send_incident_alert(&self, incident: &Incident) -> Result<()> {
-        let text = format_incident_message(incident, self.dashboard_url.as_deref());
+    pub async fn send_incident_alert(&self, incident: &Incident, mode: GuardianMode) -> Result<()> {
+        let text = format_incident_message(incident, self.dashboard_url.as_deref(), mode);
 
         let mut body = serde_json::json!({
             "chat_id": self.chat_id,
@@ -94,43 +130,162 @@ impl TelegramClient {
             "disable_web_page_preview": true,
         });
 
-        // Add Block/Ignore quick-action buttons when there's an IP entity
-        if let Some(ip) = first_ip_entity(incident) {
-            let mut keyboard: Vec<Vec<serde_json::Value>> = vec![vec![
-                serde_json::json!({
-                    "text": format!("🛡 Block {ip}"),
-                    "callback_data": format!("quick:block:{ip}")
-                }),
-                serde_json::json!({
-                    "text": "🙈 Ignore",
-                    "callback_data": "quick:ignore"
-                }),
-            ]];
-
-            // Add investigate deep-link row if dashboard URL is configured
-            if let Some(ref base_url) = self.dashboard_url {
-                let link = format!(
-                    "{base_url}/?subject_type=ip&subject={ip}&date={}",
-                    incident.ts.format("%Y-%m-%d")
-                );
-                keyboard.push(vec![serde_json::json!({
-                    "text": "🔍 Investigate in dashboard",
-                    "url": link
-                })]);
+        match mode {
+            GuardianMode::Guard => {
+                // GUARD: agent will act — show investigate button only, no Block/Ignore
+                if let Some(ip) = first_ip_entity(incident) {
+                    if let Some(ref base_url) = self.dashboard_url {
+                        let link = format!(
+                            "{base_url}/?subject_type=ip&subject={ip}&date={}",
+                            incident.ts.format("%Y-%m-%d")
+                        );
+                        body["reply_markup"] = serde_json::json!({
+                            "inline_keyboard": [[{
+                                "text": "🔍 Investigate",
+                                "url": link
+                            }]]
+                        });
+                    }
+                }
             }
+            GuardianMode::Watch | GuardianMode::DryRun => {
+                // WATCH/DryRun: operator makes the call — add Block/Ignore buttons
+                if let Some(ip) = first_ip_entity(incident) {
+                    let mut keyboard: Vec<Vec<serde_json::Value>> = vec![vec![
+                        serde_json::json!({
+                            "text": format!("🛡 Block {ip}"),
+                            "callback_data": format!("quick:block:{ip}")
+                        }),
+                        serde_json::json!({
+                            "text": "🙈 Ignore",
+                            "callback_data": "quick:ignore"
+                        }),
+                    ]];
 
-            body["reply_markup"] = serde_json::json!({ "inline_keyboard": keyboard });
-        } else if let Some(ref base_url) = self.dashboard_url {
-            // No IP entity but dashboard URL configured — keep the investigate button
-            let link = format!("{base_url}/?date={}", incident.ts.format("%Y-%m-%d"));
-            body["reply_markup"] = serde_json::json!({
-                "inline_keyboard": [[{
-                    "text": "🔍 Investigate in dashboard",
-                    "url": link
-                }]]
-            });
+                    if let Some(ref base_url) = self.dashboard_url {
+                        let link = format!(
+                            "{base_url}/?subject_type=ip&subject={ip}&date={}",
+                            incident.ts.format("%Y-%m-%d")
+                        );
+                        keyboard.push(vec![serde_json::json!({
+                            "text": "🔍 Investigate in dashboard",
+                            "url": link
+                        })]);
+                    }
+
+                    body["reply_markup"] = serde_json::json!({ "inline_keyboard": keyboard });
+                } else if let Some(ref base_url) = self.dashboard_url {
+                    let link = format!("{base_url}/?date={}", incident.ts.format("%Y-%m-%d"));
+                    body["reply_markup"] = serde_json::json!({
+                        "inline_keyboard": [[{
+                            "text": "🔍 Investigate in dashboard",
+                            "url": link
+                        }]]
+                    });
+                }
+            }
         }
 
+        self.post_json("sendMessage", &body).await
+    }
+
+    /// Send a post-execution report when the agent autonomously acted on a threat.
+    /// Called in GUARD mode after execute_decision succeeds.
+    pub async fn send_action_report(
+        &self,
+        action_label: &str,
+        target: &str,
+        incident_title: &str,
+        confidence: f32,
+        host: &str,
+        dry_run: bool,
+    ) -> Result<()> {
+        let pct = (confidence * 100.0) as u32;
+        let text = if dry_run {
+            format!(
+                "🧪 <b>DRY RUN</b> — <b>{host}</b>\n\
+                 Would have {action_label} <code>{target}</code>\n\
+                 <i>{incident_title}</i>\n\
+                 Confidence: {pct}%",
+                host = escape_html(host),
+                action_label = action_label,
+                target = escape_html(target),
+                incident_title = escape_html(incident_title),
+            )
+        } else {
+            format!(
+                "✅ <b>Done</b> — <b>{host}</b>\n\
+                 {action_label} <code>{target}</code>\n\
+                 <i>{incident_title}</i>\n\
+                 Confidence: {pct}%",
+                host = escape_html(host),
+                action_label = action_label,
+                target = escape_html(target),
+                incident_title = escape_html(incident_title),
+            )
+        };
+
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+        self.post_json("sendMessage", &body).await
+    }
+
+    /// Send the onboarding/welcome message when the operator opens the bot.
+    /// Shows current mode, today's stats, and quick-action buttons.
+    pub async fn send_onboarding(
+        &self,
+        host: &str,
+        incident_count: usize,
+        decision_count: usize,
+        mode: GuardianMode,
+    ) -> Result<()> {
+        let mode_label = mode.label();
+        let mode_desc = mode.description();
+
+        let today_line = if incident_count == 0 {
+            "All quiet today — no threats detected.".to_string()
+        } else {
+            format!(
+                "Today: <b>{incident_count}</b> threat{} detected, <b>{decision_count}</b> action{}.",
+                if incident_count == 1 { "" } else { "s" },
+                if decision_count == 1 { "" } else { "s" },
+            )
+        };
+
+        let text = format!(
+            "🛡 Hey! I'm <b>InnerWarden</b>, your server's security guardian.\n\
+             Watching <b>{host}</b> right now.\n\
+             \n\
+             {today_line}\n\
+             \n\
+             Mode: {mode_label}\n\
+             <i>{mode_desc}</i>\n\
+             \n\
+             Ask me anything or use the buttons below.",
+            host = escape_html(host),
+        );
+
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        { "text": "📊 Status",    "callback_data": "menu:status"    },
+                        { "text": "🚨 Threats",   "callback_data": "menu:threats"   }
+                    ],
+                    [
+                        { "text": "⚖️ Decisions", "callback_data": "menu:decisions" },
+                        { "text": "❓ Help",       "callback_data": "menu:help"      }
+                    ]
+                ]
+            }
+        });
         self.post_json("sendMessage", &body).await
     }
 
@@ -271,7 +426,7 @@ impl TelegramClient {
                 "inline_keyboard": [
                     [
                         { "text": "📊 Status",    "callback_data": "menu:status"    },
-                        { "text": "🚨 Incidents", "callback_data": "menu:incidents" }
+                        { "text": "🚨 Threats",   "callback_data": "menu:threats"   }
                     ],
                     [
                         { "text": "⚖️ Decisions", "callback_data": "menu:decisions" },
@@ -307,12 +462,14 @@ impl TelegramClient {
     pub async fn set_commands(&self) {
         let body = serde_json::json!({
             "commands": [
-                { "command": "menu",      "description": "Interactive button menu" },
-                { "command": "status",    "description": "System overview" },
-                { "command": "incidents", "description": "Last 5 incidents" },
-                { "command": "decisions", "description": "Last 5 decisions" },
-                { "command": "ask",       "description": "Ask the AI a question" },
-                { "command": "help",      "description": "Available commands" }
+                { "command": "status",    "description": "How am I doing? Mode, AI, today's summary" },
+                { "command": "threats",   "description": "Recent threats detected" },
+                { "command": "decisions", "description": "Recent actions taken" },
+                { "command": "blocked",   "description": "Currently blocked IPs" },
+                { "command": "guard",     "description": "Activate auto-defend mode" },
+                { "command": "watch",     "description": "Switch to monitor-only mode" },
+                { "command": "ask",       "description": "Ask me anything about your server" },
+                { "command": "help",      "description": "What can I do?" }
             ]
         });
         let _ = self.post_json("setMyCommands", &body).await;
@@ -420,13 +577,23 @@ impl TelegramClient {
                                     "__help__".to_string()
                                 } else if text == "/menu" || text.starts_with("/menu ") {
                                     "__menu__".to_string()
-                                } else if text == "/incidents" || text.starts_with("/incidents ") {
-                                    "__incidents__".to_string()
+                                } else if text == "/incidents"
+                                    || text.starts_with("/incidents ")
+                                    || text == "/threats"
+                                    || text.starts_with("/threats ")
+                                {
+                                    "__threats__".to_string()
                                 } else if text == "/decisions" || text.starts_with("/decisions ") {
                                     "__decisions__".to_string()
+                                } else if text == "/blocked" || text.starts_with("/blocked ") {
+                                    "__blocked__".to_string()
+                                } else if text == "/guard" || text.starts_with("/guard ") {
+                                    "__guard__".to_string()
+                                } else if text == "/watch" || text.starts_with("/watch ") {
+                                    "__watch__".to_string()
                                 } else if text == "/start" || text.starts_with("/start ") {
                                     // Telegram sends /start when user first opens the bot
-                                    "__menu__".to_string()
+                                    "__start__".to_string()
                                 } else if !text.starts_with('/') || text.starts_with("/ask ") {
                                     // Free-form text or /ask <question> — route to AI
                                     let question =
@@ -594,16 +761,35 @@ struct User {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-fn format_incident_message(incident: &Incident, dashboard_url: Option<&str>) -> String {
+fn format_incident_message(
+    incident: &Incident,
+    dashboard_url: Option<&str>,
+    mode: GuardianMode,
+) -> String {
     let sev = severity_label(incident);
     let source_icon = source_icon(&incident.tags);
     let entity_line = entity_summary(incident);
-    let quip = incident_quip(incident);
 
     let summary_trunc = if incident.summary.len() > 200 {
         format!("{}…", &incident.summary[..200])
     } else {
         incident.summary.clone()
+    };
+
+    // Mode-specific header and call-to-action
+    let (mode_prefix, cta) = match mode {
+        GuardianMode::Guard => (
+            "⚡ Analyzing…",
+            String::new(), // No CTA — action report will follow
+        ),
+        GuardianMode::DryRun => (
+            "🧪 Dry-run mode —",
+            "\n<i>No real action taken — configure responder to go live</i>".to_string(),
+        ),
+        GuardianMode::Watch => {
+            let quip = incident_quip(incident);
+            ("", quip.to_string())
+        }
     };
 
     let link_line = dashboard_url
@@ -618,20 +804,27 @@ fn format_incident_message(incident: &Incident, dashboard_url: Option<&str>) -> 
         })
         .unwrap_or_default();
 
+    let prefix_line = if mode_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{mode_prefix} ")
+    };
+
     format!(
-        "{source_icon} {sev} — <b>{host}</b>\n\
+        "{source_icon} {prefix_line}{sev} — <b>{host}</b>\n\
          <b>{title}</b>\n\
          {entity_line}\n\
          <i>{summary}</i>\n\
          \n\
-         {quip}{link_line}",
+         {cta}{link_line}",
         host = escape_html(&incident.host),
         title = escape_html(&incident.title),
         summary = escape_html(&summary_trunc),
         entity_line = entity_line,
         sev = sev,
         source_icon = source_icon,
-        quip = quip,
+        prefix_line = prefix_line,
+        cta = cta,
         link_line = link_line,
     )
 }
@@ -782,11 +975,11 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
             operator_name: operator.to_string(),
         });
     }
-    // Inline-keyboard menu buttons: "menu:status", "menu:incidents", etc.
+    // Inline-keyboard menu buttons: "menu:status", "menu:threats", etc.
     if let Some(cmd) = data.strip_prefix("menu:") {
         let incident_id = match cmd {
             "status" => "__status__",
-            "incidents" => "__incidents__",
+            "incidents" | "threats" => "__threats__",
             "decisions" => "__decisions__",
             "help" => "__help__",
             _ => "__unknown_cmd__",
@@ -859,7 +1052,7 @@ mod tests {
             vec!["falco".to_string()],
             vec![EntityRef::ip("1.2.3.4".to_string())],
         );
-        let msg = format_incident_message(&inc, None);
+        let msg = format_incident_message(&inc, None, GuardianMode::Watch);
         assert!(msg.contains("CRITICAL"));
         assert!(msg.contains("web-server-01"));
         assert!(msg.contains("SSH brute force"));
@@ -874,11 +1067,26 @@ mod tests {
             vec!["suricata".to_string()],
             vec![EntityRef::ip("203.0.113.10".to_string())],
         );
-        let msg = format_incident_message(&inc, Some("http://127.0.0.1:8787"));
+        let msg = format_incident_message(&inc, Some("http://127.0.0.1:8787"), GuardianMode::Watch);
         assert!(msg.contains("HIGH"));
         assert!(msg.contains("🌐"), "suricata icon");
         assert!(msg.contains("Investigate"));
         assert!(msg.contains("203.0.113.10"));
+    }
+
+    #[test]
+    fn format_guard_mode_shows_analyzing_prefix() {
+        let inc = make_incident(
+            Severity::High,
+            vec!["ssh".to_string()],
+            vec![EntityRef::ip("1.2.3.4".to_string())],
+        );
+        let msg = format_incident_message(&inc, None, GuardianMode::Guard);
+        assert!(
+            msg.contains("Analyzing"),
+            "GUARD mode shows analyzing prefix"
+        );
+        assert!(!msg.contains("Block"), "GUARD mode has no block CTA");
     }
 
     #[test]
@@ -917,8 +1125,12 @@ mod tests {
         assert_eq!(r.incident_id, "__status__");
         assert!(r.approved);
 
+        // Both "threats" and "incidents" route to __threats__
+        let r = parse_callback("menu:threats", "Alice").unwrap();
+        assert_eq!(r.incident_id, "__threats__");
+
         let r = parse_callback("menu:incidents", "Alice").unwrap();
-        assert_eq!(r.incident_id, "__incidents__");
+        assert_eq!(r.incident_id, "__threats__");
 
         let r = parse_callback("menu:decisions", "Alice").unwrap();
         assert_eq!(r.incident_id, "__decisions__");
@@ -929,6 +1141,15 @@ mod tests {
         // Unknown menu command → unknown cmd sentinel
         let r = parse_callback("menu:bogus", "Alice").unwrap();
         assert_eq!(r.incident_id, "__unknown_cmd__");
+    }
+
+    #[test]
+    fn guardian_mode_labels_and_descriptions() {
+        assert_eq!(GuardianMode::Guard.label(), "🟢 GUARD");
+        assert_eq!(GuardianMode::DryRun.label(), "🟡 DRY-RUN");
+        assert_eq!(GuardianMode::Watch.label(), "🔵 WATCH");
+        assert!(GuardianMode::Guard.description().contains("automatically"));
+        assert!(GuardianMode::Watch.description().contains("your call"));
     }
 
     #[test]

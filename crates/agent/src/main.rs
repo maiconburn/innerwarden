@@ -147,6 +147,17 @@ fn incident_detector(incident_id: &str) -> &str {
     incident_id.split(':').next().unwrap_or("unknown")
 }
 
+/// Returns the current guardian mode based on responder configuration.
+fn guardian_mode(cfg: &config::AgentConfig) -> telegram::GuardianMode {
+    if !cfg.responder.enabled {
+        telegram::GuardianMode::Watch
+    } else if cfg.responder.dry_run {
+        telegram::GuardianMode::DryRun
+    } else {
+        telegram::GuardianMode::Guard
+    }
+}
+
 fn decision_cooldown_key(action: &str, detector: &str, entity_kind: &str, entity: &str) -> String {
     format!("{action}:{detector}:{entity_kind}:{entity}")
 }
@@ -1105,7 +1116,8 @@ async fn process_incidents(
                 // Clone the Arc to avoid holding a borrow on state during the await
                 let tg = state.telegram_client.clone();
                 if let Some(tg) = tg {
-                    if let Err(e) = tg.send_incident_alert(incident).await {
+                    let mode = guardian_mode(cfg);
+                    if let Err(e) = tg.send_incident_alert(incident, mode).await {
                         warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
                     }
                 }
@@ -1431,6 +1443,44 @@ async fn process_incidents(
             if let Err(e) = writer.write(&entry) {
                 state.telemetry.observe_error("decision_writer");
                 warn!("failed to write decision entry: {e:#}");
+            }
+        }
+
+        // In GUARD/DryRun mode, send a post-execution Telegram report so the
+        // operator knows what was done (action report replaces a manual ask).
+        let was_executed = !execution_result.starts_with("skipped");
+        if was_executed && cfg.telegram.bot.enabled {
+            if let Some(ref tg) = state.telegram_client {
+                use ai::AiAction;
+                let (action_label, target) = match &decision.action {
+                    AiAction::BlockIp { ip, .. } => ("Blocked".to_string(), ip.clone()),
+                    AiAction::Monitor { ip } => ("Monitoring traffic from".to_string(), ip.clone()),
+                    AiAction::Honeypot { ip } => ("Redirected to honeypot".to_string(), ip.clone()),
+                    AiAction::SuspendUserSudo { user, .. } => {
+                        ("Suspended sudo for".to_string(), user.clone())
+                    }
+                    AiAction::Ignore { .. } => ("Ignored".to_string(), "—".to_string()),
+                    AiAction::RequestConfirmation { .. } => {
+                        ("Requested confirmation for".to_string(), "—".to_string())
+                    }
+                };
+                let tg = tg.clone();
+                let title = incident.title.clone();
+                let host = incident.host.clone();
+                let confidence = decision.confidence;
+                let dry_run = cfg.responder.dry_run;
+                tokio::spawn(async move {
+                    let _ = tg
+                        .send_action_report(
+                            &action_label,
+                            &target,
+                            &title,
+                            confidence,
+                            &host,
+                            dry_run,
+                        )
+                        .await;
+                });
             }
         }
 
@@ -1904,14 +1954,32 @@ async fn process_telegram_approval(
                 .to_string();
             let incident_count = count_jsonl_lines(data_dir, &format!("incidents-{today}.jsonl"));
             let decision_count = count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"));
-            let dry_run_label = if cfg.responder.dry_run { "on" } else { "off" };
+            let mode = guardian_mode(cfg);
+            let mode_label = mode.label();
+            let mode_desc = mode.description();
             let ai_label = if cfg.ai.enabled {
-                cfg.ai.provider.as_str()
+                format!("{} / {}", cfg.ai.provider, cfg.ai.model)
             } else {
-                "not configured"
+                "not configured".to_string()
+            };
+            let host = std::env::var("HOSTNAME")
+                .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+                .unwrap_or_else(|_| "unknown".to_string());
+            let today_line = if incident_count == 0 {
+                "All quiet today — no threats.".to_string()
+            } else {
+                format!("{incident_count} threats detected, {decision_count} actions taken")
             };
             let text = format!(
-                "🛡 InnerWarden Status\n\nToday: {incident_count} incidents, {decision_count} decisions\nDry-run: {dry_run_label}\nAI: {ai_label}\n\nUse /help for commands.",
+                "🛡 <b>InnerWarden</b> — <b>{host}</b>\n\
+                 ━━━━━━━━━━━━━━━━\n\
+                 Mode: <b>{mode_label}</b>\n\
+                 <i>{mode_desc}</i>\n\
+                 \n\
+                 AI: {ai_label}\n\
+                 Today: {today_line}\n\
+                 \n\
+                 /threats · /decisions · /blocked",
             );
             tg_reply!(text);
         }
@@ -1921,21 +1989,25 @@ async fn process_telegram_approval(
     if result.incident_id == "__help__" {
         info!(operator = %result.operator_name, "Telegram /help command received");
         if cfg.telegram.bot.enabled {
-            let text = "🤖 InnerWarden Bot Commands\n\n\
-                /menu — interactive button menu\n\
-                /status — system overview\n\
-                /incidents — last 5 incidents\n\
-                /decisions — last 5 decisions\n\
-                /ask <question> — ask the AI anything\n  or just type your question directly\n\n\
-                I can answer questions about your server's security, explain incidents, \
-                suggest actions, and help you configure InnerWarden.";
+            let text = "🛡 <b>InnerWarden Commands</b>\n\n\
+                /status — mode, AI, today's summary\n\
+                /threats — recent threats detected\n\
+                /decisions — recent actions taken\n\
+                /blocked — currently blocked IPs\n\
+                /guard — activate auto-defend mode\n\
+                /watch — switch to monitor-only mode\n\
+                /ask <question> — ask me anything\n\
+                <i>or just type your question directly</i>\n\n\
+                On threat notifications:\n\
+                🛡 <b>Block</b> — block the IP immediately\n\
+                🙈 <b>Ignore</b> — dismiss this alert";
             tg_reply!(text);
         }
         return;
     }
 
-    if result.incident_id == "__incidents__" {
-        info!(operator = %result.operator_name, "Telegram /incidents command received");
+    if result.incident_id == "__threats__" {
+        info!(operator = %result.operator_name, "Telegram /threats command received");
         if cfg.telegram.bot.enabled {
             let today = chrono::Local::now()
                 .date_naive()
@@ -1969,6 +2041,119 @@ async fn process_telegram_approval(
                     let _ = tg.send_menu().await;
                 });
             }
+        }
+        return;
+    }
+
+    if result.incident_id == "__start__" {
+        info!(operator = %result.operator_name, "Telegram /start command received");
+        if cfg.telegram.bot.enabled {
+            if let Some(ref tg) = state.telegram_client {
+                let today = chrono::Local::now()
+                    .date_naive()
+                    .format("%Y-%m-%d")
+                    .to_string();
+                let incident_count =
+                    count_jsonl_lines(data_dir, &format!("incidents-{today}.jsonl"));
+                let decision_count =
+                    count_jsonl_lines(data_dir, &format!("decisions-{today}.jsonl"));
+                let mode = guardian_mode(cfg);
+                let host = std::env::var("HOSTNAME")
+                    .or_else(|_| {
+                        std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
+                    })
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let tg = tg.clone();
+                tokio::spawn(async move {
+                    let _ = tg
+                        .send_onboarding(&host, incident_count, decision_count, mode)
+                        .await;
+                });
+            }
+        }
+        return;
+    }
+
+    if result.incident_id == "__guard__" {
+        info!(operator = %result.operator_name, "Telegram /guard command received");
+        if cfg.telegram.bot.enabled {
+            let mode = guardian_mode(cfg);
+            let text = match mode {
+                telegram::GuardianMode::Guard => "🟢 <b>Already in GUARD mode.</b>\n\
+                     I act on high-confidence threats automatically.\n\
+                     You'll get a report after each action.\n\n\
+                     To switch to WATCH mode:\n\
+                     <code>innerwarden enable block-ip --param backend=ufw</code>\n\
+                     then disable auto-execution in agent.toml"
+                    .to_string(),
+                _ => {
+                    format!(
+                        "🟢 <b>To activate GUARD mode</b>, run on your server:\n\
+                         <code>innerwarden configure responder</code>\n\
+                         Then select option 3 (Live mode).\n\n\
+                         Current mode: {}\n\
+                         <i>{}</i>",
+                        mode.label(),
+                        mode.description()
+                    )
+                }
+            };
+            tg_reply!(text);
+        }
+        return;
+    }
+
+    if result.incident_id == "__watch__" {
+        info!(operator = %result.operator_name, "Telegram /watch command received");
+        if cfg.telegram.bot.enabled {
+            let mode = guardian_mode(cfg);
+            let text = match mode {
+                telegram::GuardianMode::Watch => "🔵 <b>Already in WATCH mode.</b>\n\
+                     I detect threats and ask you what to do.\n\
+                     No actions taken without your approval.\n\n\
+                     To switch to GUARD mode:\n\
+                     <code>innerwarden configure responder</code>\n\
+                     Then select option 3 (Live mode)."
+                    .to_string(),
+                _ => {
+                    format!(
+                        "🔵 <b>To activate WATCH mode</b>, run on your server:\n\
+                         <code>innerwarden configure responder</code>\n\
+                         Then select option 1 (Observe only).\n\n\
+                         Current mode: {}\n\
+                         <i>{}</i>",
+                        mode.label(),
+                        mode.description()
+                    )
+                }
+            };
+            tg_reply!(text);
+        }
+        return;
+    }
+
+    if result.incident_id == "__blocked__" {
+        info!(operator = %result.operator_name, "Telegram /blocked command received");
+        if cfg.telegram.bot.enabled {
+            let blocked: Vec<String> = state.blocklist.as_vec();
+            let text = if blocked.is_empty() {
+                "📋 No IPs currently blocked in this session.\n\
+                 Blocks from previous sessions are in the firewall rules."
+                    .to_string()
+            } else {
+                let mut sorted = blocked;
+                sorted.sort();
+                let list = sorted
+                    .iter()
+                    .map(|ip| format!("• <code>{ip}</code>"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "🛡 <b>Blocked IPs</b> ({} this session)\n\n{list}",
+                    sorted.len()
+                )
+            };
+            tg_reply!(text);
         }
         return;
     }
