@@ -300,6 +300,98 @@ async fn run_innerwarden_cli(args: &[&str]) -> String {
     }
 }
 
+/// Build a Telegram-formatted capabilities list from the live agent config.
+/// Avoids running the CTL CLI subprocess (which may be stale) and produces
+/// clean HTML output suited for Telegram's parse_mode=HTML.
+fn format_capabilities(cfg: &config::AgentConfig) -> String {
+    let on = "🟢";
+    let off = "🔴";
+
+    // Core capabilities
+    let ai_line = if cfg.ai.enabled {
+        format!(
+            "{on} <b>AI Analysis</b>  <code>{} / {}</code>",
+            cfg.ai.provider, cfg.ai.model
+        )
+    } else {
+        format!("{off} <b>AI Analysis</b>  disabled\n    <i>/enable ai --param provider=openai</i>")
+    };
+
+    let block_line = if cfg.responder.enabled {
+        let mode = if cfg.responder.dry_run {
+            "dry-run"
+        } else {
+            "live"
+        };
+        format!(
+            "{on} <b>Block IP</b>  {} backend — {mode}",
+            cfg.responder.block_backend
+        )
+    } else {
+        format!("{off} <b>Block IP</b>  disabled\n    <i>/enable block-ip</i>")
+    };
+
+    let sudo_line = if cfg
+        .responder
+        .allowed_skills
+        .iter()
+        .any(|s| s.contains("suspend-user"))
+    {
+        format!("{on} <b>Sudo Protection</b>  active")
+    } else {
+        format!("{off} <b>Sudo Protection</b>  disabled\n    <i>/enable sudo-protection</i>")
+    };
+
+    // Integrations
+    let abuseipdb_line = if cfg.abuseipdb.enabled {
+        format!("{on} <b>AbuseIPDB</b>  IP reputation enrichment")
+    } else {
+        format!("{off} <b>AbuseIPDB</b>  disabled — <i>/enable abuseipdb</i>")
+    };
+
+    let geoip_line = if cfg.geoip.enabled {
+        format!("{on} <b>GeoIP</b>  ip-api.com (free)")
+    } else {
+        format!("{off} <b>GeoIP</b>  disabled — <i>/enable geoip</i>")
+    };
+
+    let fail2ban_line = if cfg.fail2ban.enabled {
+        format!("{on} <b>Fail2ban</b>  ban sync active")
+    } else {
+        format!("{off} <b>Fail2ban</b>  disabled — <i>/enable fail2ban</i>")
+    };
+
+    let slack_line = if cfg.slack.enabled {
+        format!("{on} <b>Slack</b>  notifications enabled")
+    } else {
+        format!("{off} <b>Slack</b>  disabled — <i>/enable slack</i>")
+    };
+
+    let cloudflare_line = if cfg.cloudflare.enabled {
+        format!("{on} <b>Cloudflare</b>  edge block push active")
+    } else {
+        format!("{off} <b>Cloudflare</b>  disabled — <i>/enable cloudflare</i>")
+    };
+
+    format!(
+        "⚙️ <b>Capabilities</b>\n\
+         \n\
+         <b>Core</b>\n\
+         {ai_line}\n\
+         {block_line}\n\
+         {sudo_line}\n\
+         \n\
+         <b>Integrations</b>\n\
+         {abuseipdb_line}\n\
+         {geoip_line}\n\
+         {fail2ban_line}\n\
+         {slack_line}\n\
+         {cloudflare_line}\n\
+         \n\
+         <code>/enable &lt;id&gt;</code>  ·  <code>/disable &lt;id&gt;</code>"
+    )
+}
+
 /// Strip ANSI escape codes from a string (for clean Telegram display).
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -2476,26 +2568,12 @@ async fn process_telegram_approval(
         return;
     }
 
-    // /capabilities — list all capabilities with their status
+    // /capabilities — list capabilities and integrations from live config
     if result.incident_id == "__capabilities__" {
         info!(operator = %result.operator_name, "Telegram /capabilities command received");
         if cfg.telegram.bot.enabled {
-            let tg = state.telegram_client.clone();
-            tokio::spawn(async move {
-                if let Some(ref tg) = tg {
-                    tg.send_typing().await;
-                }
-                let output = run_innerwarden_cli(&["list"]).await;
-                let text = format!(
-                    "⚙️ <b>Capabilities</b>\n\n<pre>{}</pre>\n\n\
-                     Enable: <code>/enable &lt;id&gt;</code>\n\
-                     Disable: <code>/disable &lt;id&gt;</code>",
-                    output.chars().take(2500).collect::<String>()
-                );
-                if let Some(ref tg) = tg {
-                    let _ = tg.send_text_message(&text).await;
-                }
-            });
+            let text = format_capabilities(cfg);
+            tg_reply!(text);
         }
         return;
     }
