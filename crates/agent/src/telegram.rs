@@ -202,27 +202,47 @@ impl TelegramClient {
         confidence: f32,
         host: &str,
         dry_run: bool,
+        reputation: Option<&crate::abuseipdb::IpReputation>,
+        geo: Option<&crate::geoip::GeoInfo>,
     ) -> Result<()> {
         let pct = (confidence * 100.0) as u32;
+
+        // Build optional enrichment block
+        let mut enrichment = String::new();
+        if let Some(rep) = reputation {
+            let bar = reputation_score_bar(rep.confidence_score);
+            let country_part = geo
+                .map(|g| {
+                    let flag = country_flag_emoji(&g.country_code);
+                    format!(" · {flag} {} · {}", g.country, g.isp)
+                })
+                .unwrap_or_default();
+            enrichment = format!(
+                "\n📊 AbuseIPDB: <b>{}/100</b> {bar}{country_part}",
+                rep.confidence_score
+            );
+        } else if let Some(g) = geo {
+            let flag = country_flag_emoji(&g.country_code);
+            enrichment = format!("\n🌐 {flag} {} · {}", g.country, escape_html(&g.isp));
+        }
+
         let text = if dry_run {
             format!(
                 "🧪 <b>Simulated</b> — <b>{host}</b>\n\
-                 Would've {action_label} <code>{target}</code>\n\
+                 Would've {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
                  Confidence: {pct}% | No real action taken (dry-run mode)",
                 host = escape_html(host),
-                action_label = action_label,
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
             )
         } else {
             format!(
                 "✅ <b>Threat neutralized</b> — <b>{host}</b>\n\
-                 {action_label} <code>{target}</code>\n\
+                 {action_label} <code>{target}</code>{enrichment}\n\
                  <i>{incident_title}</i>\n\
                  Confidence: {pct}% | This actor won't be back.",
                 host = escape_html(host),
-                action_label = action_label,
                 target = escape_html(target),
                 incident_title = escape_html(incident_title),
             )
@@ -577,6 +597,83 @@ impl TelegramClient {
     }
 
     // -----------------------------------------------------------------------
+    // AbuseIPDB auto-block notification
+    // -----------------------------------------------------------------------
+
+    /// Notify operator when an IP is auto-blocked via AbuseIPDB threshold
+    /// (no AI call was made — pure reputation gate).
+    pub async fn send_abuseipdb_autoblock(
+        &self,
+        ip: &str,
+        score: u8,
+        threshold: u8,
+        total_reports: u32,
+        country: Option<&str>,
+        isp: Option<&str>,
+        incident_title: &str,
+        dry_run: bool,
+        dashboard_url: Option<&str>,
+    ) -> Result<()> {
+        let country_flag = country
+            .map(|c| format!(" {} ·", country_flag_emoji(c)))
+            .unwrap_or_default();
+        let isp_line = isp
+            .map(|i| format!(" · <i>{}</i>", escape_html(i)))
+            .unwrap_or_default();
+        let reports_line = if total_reports > 0 {
+            format!(" · {} reports worldwide", total_reports)
+        } else {
+            String::new()
+        };
+
+        let (action_line, header) = if dry_run {
+            (
+                format!("Would've blocked <code>{}</code> — dry-run mode, no real action.", escape_html(ip)),
+                "🧪 <b>Simulation</b> — AbuseIPDB auto-block",
+            )
+        } else {
+            (
+                format!("Blocked <code>{}</code> instantly — no AI token wasted.", escape_html(ip)),
+                "🛡 <b>Auto-blocked</b> — AbuseIPDB gate",
+            )
+        };
+
+        let score_bar = reputation_score_bar(score);
+
+        let text = format!(
+            "{header}\n\
+             \n\
+             🌐{country_flag} <code>{ip}</code>{isp_line}\n\
+             📊 Score: <b>{score}/100</b> {score_bar}{reports_line}\n\
+             🔍 <i>{incident_title}</i>\n\
+             \n\
+             {action_line}\n\
+             <i>Score ≥ {threshold} — handled before AI analysis.</i>",
+            ip = escape_html(ip),
+            incident_title = escape_html(incident_title),
+        );
+
+        let mut body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+
+        // Deep-link to dashboard journey for this IP
+        if let Some(base_url) = dashboard_url {
+            let today = chrono::Utc::now().format("%Y-%m-%d");
+            body["reply_markup"] = serde_json::json!({
+                "inline_keyboard": [[{
+                    "text": "🔍 View threat timeline",
+                    "url": format!("{base_url}/?subject_type=ip&subject={ip}&date={today}", ip = ip)
+                }]]
+            });
+        }
+
+        self.post_json("sendMessage", &body).await
+    }
+
     // T.3 — Daily digest
     // -----------------------------------------------------------------------
 
@@ -1285,6 +1382,30 @@ fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Visual score bar for AbuseIPDB confidence (e.g. "████░░░░ 80/100").
+fn reputation_score_bar(score: u8) -> String {
+    let filled = (score as usize * 8 / 100).min(8);
+    let empty = 8 - filled;
+    let bar = "█".repeat(filled) + &"░".repeat(empty);
+    format!("[{bar}]")
+}
+
+/// Convert a 2-letter ISO country code to a flag emoji.
+fn country_flag_emoji(code: &str) -> String {
+    if code.len() != 2 {
+        return String::new();
+    }
+    let bytes = code.to_uppercase();
+    let mut chars = bytes.chars();
+    if let (Some(a), Some(b)) = (chars.next(), chars.next()) {
+        let base: u32 = 0x1F1E6 - b'A' as u32;
+        let fa = char::from_u32(base + a as u32).unwrap_or(' ');
+        let fb = char::from_u32(base + b as u32).unwrap_or(' ');
+        return format!("{fa}{fb}");
+    }
+    String::new()
 }
 
 // ---------------------------------------------------------------------------

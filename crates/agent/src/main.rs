@@ -1765,6 +1765,47 @@ async fn process_incidents(
                             warn!("failed to write abuseipdb auto-block decision: {e:#}");
                         }
                     }
+
+                    // Telegram notification for auto-block
+                    if cfg.telegram.bot.enabled {
+                        if let Some(ref tg) = state.telegram_client {
+                            let tg = tg.clone();
+                            let ip_clone = ip.clone();
+                            let score = rep.confidence_score;
+                            let total_reports = rep.total_reports;
+                            let title_clone = incident.title.clone();
+                            let dry_run = cfg.responder.dry_run;
+                            let dashboard_url = if cfg.telegram.dashboard_url.is_empty() {
+                                None
+                            } else {
+                                Some(cfg.telegram.dashboard_url.clone())
+                            };
+                            // Resolve GeoIP synchronously (already have client ref)
+                            let geo = if let Some(ref gc) = state.geoip_client {
+                                gc.lookup(&ip).await
+                            } else {
+                                None
+                            };
+                            let country = geo.as_ref().map(|g| g.country_code.clone());
+                            let isp = geo.as_ref().map(|g| g.isp.clone());
+                            tokio::spawn(async move {
+                                let _ = tg
+                                    .send_abuseipdb_autoblock(
+                                        &ip_clone,
+                                        score,
+                                        threshold,
+                                        total_reports,
+                                        country.as_deref(),
+                                        isp.as_deref(),
+                                        &title_clone,
+                                        dry_run,
+                                        dashboard_url.as_deref(),
+                                    )
+                                    .await;
+                            });
+                        }
+                    }
+
                     handled += 1;
                     continue;
                 }
@@ -1799,8 +1840,8 @@ async fn process_incidents(
                     applicable_to: s.applicable_to.clone(),
                 })
                 .collect(),
-            ip_reputation,
-            ip_geo,
+            ip_reputation: ip_reputation.clone(),
+            ip_geo: ip_geo.clone(),
         };
 
         state.telemetry.observe_ai_sent();
@@ -1986,6 +2027,8 @@ async fn process_incidents(
                 let host = incident.host.clone();
                 let confidence = decision.confidence;
                 let dry_run = cfg.responder.dry_run;
+                let rep_clone = ip_reputation.as_ref().cloned();
+                let geo_clone = ip_geo.as_ref().cloned();
                 tokio::spawn(async move {
                     let _ = tg
                         .send_action_report(
@@ -1995,6 +2038,8 @@ async fn process_incidents(
                             confidence,
                             &host,
                             dry_run,
+                            rep_clone.as_ref(),
+                            geo_clone.as_ref(),
                         )
                         .await;
                 });
