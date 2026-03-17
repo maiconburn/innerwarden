@@ -445,6 +445,7 @@ mod tests {
             host: "host".into(),
             data_dir: data_dir.to_path_buf(),
             honeypot: crate::skills::HoneypotRuntimeConfig::default(),
+            ai_provider: None,
         }
     }
 

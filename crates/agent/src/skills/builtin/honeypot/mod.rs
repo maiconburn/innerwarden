@@ -66,7 +66,7 @@ struct RedirectRuleStatus {
     cleanup_verified_absent: Option<bool>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct SessionRuntime {
     session_id: String,
     target_ip: IpAddr,
@@ -77,10 +77,13 @@ struct SessionRuntime {
     transcript_preview_bytes: usize,
     isolation_profile: String,
     evidence_path: PathBuf,
-    /// `banner` | `medium`
+    /// `banner` | `medium` | `llm_shell`
     interaction: String,
     ssh_max_auth_attempts: usize,
     http_max_requests: usize,
+    /// AI provider used when `interaction = "llm_shell"`.
+    /// Not serialized — only available in the direct (non-sandbox) listener path.
+    ai_provider: Option<std::sync::Arc<dyn crate::ai::AiProvider>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -636,6 +639,7 @@ impl ResponseSkill for Honeypot {
                 interaction: normalize_interaction(&ctx.honeypot.interaction),
                 ssh_max_auth_attempts: ctx.honeypot.ssh_max_auth_attempts,
                 http_max_requests: ctx.honeypot.http_max_requests,
+                ai_provider: ctx.honeypot.ai_provider.clone(),
             };
 
             let metadata_path_bg = metadata_path.clone();
@@ -952,6 +956,9 @@ pub(crate) async fn run_sandbox_worker(spec_path: &Path, result_path: &Path) -> 
             interaction: normalize_interaction(&spec.interaction),
             ssh_max_auth_attempts: spec.ssh_max_auth_attempts,
             http_max_requests: spec.http_max_requests,
+            // Sandbox workers run in a subprocess — AI provider is not available.
+            // llm_shell interaction falls back to RejectAll in the sandbox path.
+            ai_provider: None,
         };
 
         let stats = run_listeners_from_endpoints(endpoints, runtime)
@@ -1931,9 +1938,12 @@ async fn run_listener(
     };
 
     let is_medium = runtime.interaction == "medium";
+    let is_llm_shell = runtime.interaction == "llm_shell";
+    let needs_russh = is_medium || is_llm_shell;
 
     // Build SSH config once for this listener (ephemeral key per session).
-    let ssh_config: Option<Arc<russh::server::Config>> = if is_medium && endpoint.service == "ssh" {
+    let ssh_config: Option<Arc<russh::server::Config>> = if needs_russh && endpoint.service == "ssh"
+    {
         Some(ssh_interact::build_ssh_config(
             runtime.ssh_max_auth_attempts,
         ))
@@ -1987,14 +1997,28 @@ async fn run_listener(
 
         stats.accepted += 1;
 
-        if is_medium {
-            // Medium interaction: full protocol emulation.
+        if needs_russh {
+            // Medium / LLM-shell interaction: full protocol emulation.
             let entry = match endpoint.service.as_str() {
                 "ssh" => {
                     let cfg = ssh_config
                         .clone()
-                        .expect("SSH config must be set for medium mode");
-                    let evidence = ssh_interact::handle_connection(socket, cfg, conn_timeout).await;
+                        .expect("SSH config must be set for medium/llm_shell mode");
+                    let mode = if is_llm_shell {
+                        if let Some(ai) = runtime.ai_provider.clone() {
+                            ssh_interact::SshInteractionMode::LlmShell {
+                                ai,
+                                hostname: "srv-prod-01".to_string(),
+                            }
+                        } else {
+                            // No AI provider available — fall back to RejectAll.
+                            ssh_interact::SshInteractionMode::RejectAll
+                        }
+                    } else {
+                        ssh_interact::SshInteractionMode::RejectAll
+                    };
+                    let evidence =
+                        ssh_interact::handle_connection(socket, cfg, conn_timeout, mode).await;
                     serde_json::json!({
                         "ts": Utc::now().to_rfc3339(),
                         "type": "ssh_connection",
@@ -2006,10 +2030,12 @@ async fn run_listener(
                         "target_ip": runtime.target_ip.to_string(),
                         "target_match": is_target,
                         "accepted": true,
-                        "interaction": "medium",
+                        "interaction": runtime.interaction.clone(),
                         "isolation_profile": runtime.isolation_profile.clone(),
                         "auth_attempts": evidence.auth_attempts,
                         "auth_attempts_count": evidence.auth_attempts.len(),
+                        "shell_commands": evidence.shell_commands,
+                        "shell_commands_count": evidence.shell_commands.len(),
                     })
                 }
                 "http" => {
@@ -2032,17 +2058,18 @@ async fn run_listener(
                         "target_ip": runtime.target_ip.to_string(),
                         "target_match": is_target,
                         "accepted": true,
-                        "interaction": "medium",
+                        "interaction": runtime.interaction.clone(),
                         "isolation_profile": runtime.isolation_profile.clone(),
                         "http_requests": evidence.requests,
                         "http_requests_count": evidence.requests.len(),
                     })
                 }
                 other => {
-                    // Unsupported service in medium mode: fallback to banner.
+                    // Unsupported service in this interaction mode: fallback to banner.
                     warn!(
                         service = other,
-                        "medium interaction not supported for service, falling back to banner"
+                        interaction = %runtime.interaction,
+                        "interaction mode not supported for service, falling back to banner"
                     );
                     let payload = capture_payload(
                         &mut socket,
@@ -2077,7 +2104,7 @@ async fn run_listener(
                 }
             };
             if let Err(e) = append_json_line(&runtime.evidence_path, &entry).await {
-                warn!(path = %runtime.evidence_path.display(), "failed to append medium evidence: {e}");
+                warn!(path = %runtime.evidence_path.display(), "failed to append connection evidence: {e}");
             }
         } else {
             // Banner mode (default): read one payload, send static banner.
@@ -2316,6 +2343,8 @@ fn normalize_isolation_profile(profile: &str) -> &'static str {
 pub(crate) fn normalize_interaction(level: &str) -> String {
     if level.eq_ignore_ascii_case("medium") {
         "medium".to_string()
+    } else if level.eq_ignore_ascii_case("llm_shell") {
+        "llm_shell".to_string()
     } else {
         "banner".to_string()
     }
@@ -2848,7 +2877,9 @@ mod tests {
                 interaction: "banner".to_string(),
                 ssh_max_auth_attempts: 6,
                 http_max_requests: 10,
+                ai_provider: None,
             },
+            ai_provider: None,
         }
     }
 
@@ -3048,6 +3079,7 @@ mod tests {
             interaction: "banner".to_string(),
             ssh_max_auth_attempts: 6,
             http_max_requests: 10,
+            ai_provider: None,
         };
         let challenge = "challenge-1";
         let receiver = "receiver-a";
@@ -3100,6 +3132,9 @@ mod tests {
         assert_eq!(normalize_interaction("BANNER"), "banner");
         assert_eq!(normalize_interaction("unknown"), "banner");
         assert_eq!(normalize_interaction(""), "banner");
+        assert_eq!(normalize_interaction("llm_shell"), "llm_shell");
+        assert_eq!(normalize_interaction("LLM_SHELL"), "llm_shell");
+        assert_eq!(normalize_interaction("Llm_Shell"), "llm_shell");
     }
 
     #[tokio::test]
@@ -3121,5 +3156,19 @@ mod tests {
         assert_eq!(runtime.interaction, "banner");
         assert_eq!(runtime.ssh_max_auth_attempts, 6);
         assert_eq!(runtime.http_max_requests, 10);
+        assert!(runtime.ai_provider.is_none());
+    }
+
+    #[tokio::test]
+    async fn listener_llm_shell_dry_run_shows_interaction() {
+        let mut context = ctx("listener");
+        context.honeypot.interaction = "llm_shell".to_string();
+        let result = Honeypot.execute(&context, true).await;
+        assert!(result.success);
+        assert!(
+            result.message.contains("interaction=llm_shell"),
+            "message: {}",
+            result.message
+        );
     }
 }

@@ -347,6 +347,7 @@ mod tests {
             host: "host".to_string(),
             data_dir: std::env::temp_dir(),
             honeypot: crate::skills::HoneypotRuntimeConfig::default(),
+            ai_provider: None,
         };
 
         let res = SuspendUserSudo.execute(&ctx, true).await;

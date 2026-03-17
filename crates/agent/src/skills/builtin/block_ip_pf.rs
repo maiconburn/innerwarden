@@ -119,6 +119,7 @@ mod tests {
             host: "h".into(),
             data_dir: std::env::temp_dir(),
             honeypot: HoneypotRuntimeConfig::default(),
+            ai_provider: None,
         }
     }
 

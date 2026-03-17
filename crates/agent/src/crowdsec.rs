@@ -235,6 +235,7 @@ pub async fn sync_tick(
                     host: host.to_string(),
                     data_dir: std::path::PathBuf::new(),
                     honeypot: skills::HoneypotRuntimeConfig::default(),
+                    ai_provider: None,
                 };
                 let result = skill.execute(&ctx, cfg.responder.dry_run).await;
                 if result.success {

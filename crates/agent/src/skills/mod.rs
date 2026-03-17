@@ -41,9 +41,11 @@ pub struct SkillContext {
     pub data_dir: PathBuf,
     /// Runtime honeypot config (used only by honeypot skill).
     pub honeypot: HoneypotRuntimeConfig,
+    /// AI provider passed to skills that require it (e.g. honeypot llm_shell).
+    pub ai_provider: Option<std::sync::Arc<dyn crate::ai::AiProvider>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HoneypotRuntimeConfig {
     /// `demo` | `listener`
     pub mode: String,
@@ -137,12 +139,27 @@ pub struct HoneypotRuntimeConfig {
     pub redirect_enabled: bool,
     /// Redirect backend identifier.
     pub redirect_backend: String,
-    /// Interaction level: `banner` (static banner only) | `medium` (protocol emulation).
+    /// Interaction level: `banner` (static banner only) | `medium` (protocol emulation) | `llm_shell` (AI-backed interactive shell).
     pub interaction: String,
     /// Max SSH auth attempts before disconnecting client (medium interaction only).
     pub ssh_max_auth_attempts: usize,
     /// Max HTTP requests per connection (medium interaction only).
     pub http_max_requests: usize,
+    /// AI provider for `llm_shell` interaction mode.
+    /// When `interaction = "llm_shell"` and this is `None`, the skill falls back to `RejectAll`.
+    pub ai_provider: Option<std::sync::Arc<dyn crate::ai::AiProvider>>,
+}
+
+impl std::fmt::Debug for HoneypotRuntimeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HoneypotRuntimeConfig")
+            .field("mode", &self.mode)
+            .field("interaction", &self.interaction)
+            .field("bind_addr", &self.bind_addr)
+            .field("port", &self.port)
+            .field("ai_provider", &self.ai_provider.as_ref().map(|p| p.name()))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for HoneypotRuntimeConfig {
@@ -201,6 +218,7 @@ impl Default for HoneypotRuntimeConfig {
             interaction: "banner".to_string(),
             ssh_max_auth_attempts: 6,
             http_max_requests: 10,
+            ai_provider: None,
         }
     }
 }
@@ -454,6 +472,7 @@ mod tests {
             host: "h".into(),
             data_dir: std::env::temp_dir(),
             honeypot: HoneypotRuntimeConfig::default(),
+            ai_provider: None,
         };
         let result = BlockIpUfw.execute(&ctx, true).await;
         assert!(result.success);

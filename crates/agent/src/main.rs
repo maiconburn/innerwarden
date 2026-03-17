@@ -1915,6 +1915,7 @@ async fn execute_decision(
                         host: incident.host.clone(),
                         data_dir: data_dir.to_path_buf(),
                         honeypot: honeypot_runtime(cfg),
+                        ai_provider: state.ai_provider.clone(),
                     };
                     let result = skill.execute(&ctx, cfg.responder.dry_run).await;
                     // Always track the IP in the in-memory blocklist regardless of dry_run
@@ -1947,6 +1948,7 @@ async fn execute_decision(
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
                     honeypot: honeypot_runtime(cfg),
+                    ai_provider: state.ai_provider.clone(),
                 };
                 skill.execute(&ctx, cfg.responder.dry_run).await.message
             } else {
@@ -1955,7 +1957,9 @@ async fn execute_decision(
         }
         AiAction::Honeypot { ip } => {
             if let Some(skill) = state.skill_registry.get("honeypot") {
-                let runtime = honeypot_runtime(cfg);
+                let mut runtime = honeypot_runtime(cfg);
+                // Thread the AI provider into the runtime so llm_shell interaction works.
+                runtime.ai_provider = state.ai_provider.clone();
                 let ctx = skills::SkillContext {
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
@@ -1964,6 +1968,7 @@ async fn execute_decision(
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
                     honeypot: runtime.clone(),
+                    ai_provider: state.ai_provider.clone(),
                 };
                 let result = skill.execute(&ctx, cfg.responder.dry_run).await;
                 if result.success {
@@ -2014,6 +2019,7 @@ async fn execute_decision(
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
                     honeypot: honeypot_runtime(cfg),
+                    ai_provider: state.ai_provider.clone(),
                 };
                 skill.execute(&ctx, cfg.responder.dry_run).await.message
             } else {
@@ -2157,6 +2163,8 @@ fn honeypot_runtime(cfg: &config::AgentConfig) -> skills::HoneypotRuntimeConfig 
         interaction: cfg.honeypot.interaction.trim().to_ascii_lowercase(),
         ssh_max_auth_attempts: cfg.honeypot.ssh_max_auth_attempts,
         http_max_requests: cfg.honeypot.http_max_requests,
+        // Populated at the call site when the AI provider is available.
+        ai_provider: None,
     }
 }
 
@@ -2796,6 +2804,7 @@ async fn process_telegram_approval(
             host: inc.host.clone(),
             data_dir: data_dir.to_path_buf(),
             honeypot: honeypot_runtime(cfg),
+            ai_provider: state.ai_provider.clone(),
         };
 
         let exec_result = skill.execute(&ctx, cfg.responder.dry_run).await;

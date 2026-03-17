@@ -1478,6 +1478,7 @@ async fn execute_block_ip(
         host: hostname(),
         data_dir: data_dir.to_path_buf(),
         honeypot: HoneypotRuntimeConfig::default(),
+        ai_provider: None,
     };
 
     let skill: Box<dyn ResponseSkill> = match cfg.block_backend.as_str() {
@@ -1564,6 +1565,7 @@ async fn execute_suspend_user(
         host: hostname(),
         data_dir: data_dir.to_path_buf(),
         honeypot: HoneypotRuntimeConfig::default(),
+        ai_provider: None,
     };
 
     let skill = SuspendUserSudo;

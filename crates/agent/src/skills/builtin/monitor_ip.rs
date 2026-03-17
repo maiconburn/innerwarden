@@ -218,6 +218,7 @@ mod tests {
             host: "host-a".to_string(),
             data_dir: std::env::temp_dir(),
             honeypot: crate::skills::HoneypotRuntimeConfig::default(),
+            ai_provider: None,
         }
     }
 
