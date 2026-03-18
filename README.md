@@ -1,5 +1,8 @@
 # Inner Warden
 
+[![CI](https://github.com/maiconburn/innerwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/maiconburn/innerwarden/actions/workflows/ci.yml)
+[![Security](https://github.com/maiconburn/innerwarden/actions/workflows/security.yml/badge.svg)](https://github.com/maiconburn/innerwarden/actions/workflows/security.yml)
+
 **Your server should defend itself.**
 
 Inner Warden is an autonomous security agent for Linux and macOS. It detects attacks, alerts you, and — when you allow it — responds automatically. No cloud. No dependencies. Just two Rust daemons and a CLI.
