@@ -1,0 +1,5 @@
+# Build artifacts contain test keys embedded in compiled crypto libraries
+target/
+
+# Cargo.lock contains checksums that trigger generic-api-key false positives
+Cargo.lock

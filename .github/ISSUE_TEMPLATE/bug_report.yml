@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible bug or regression
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest sequence of steps that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, deployment mode, commit/version, and whether responder actions were enabled.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: Tell us what you already checked (`make test`, `make check`, logs, replay, etc.).

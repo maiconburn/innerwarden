@@ -1,0 +1,28 @@
+[module]
+id          = "crowdsec-integration"
+name        = "CrowdSec Integration"
+version     = "0.1.0"
+description = "Polls the CrowdSec Local API for crowd-sourced ban decisions and enforces them via InnerWarden's block skills"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = []
+detectors  = []
+skills     = []
+
+[requires]
+event_sources = []
+
+[security]
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/bin/cscli"
+reason = "CrowdSec must be installed (cscli binary expected at /usr/bin/cscli)"

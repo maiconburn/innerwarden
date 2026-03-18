@@ -1,0 +1,26 @@
+[module]
+id          = "suricata-integration"
+name        = "Suricata IDS Integration"
+version     = "0.1.0"
+description = "Ingests Suricata network IDS alerts from eve.json. Suricata inspects network traffic at line rate; InnerWarden provides AI-assisted triage and response. High/Critical alerts are promoted directly to incidents."
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["suricata-eve"]
+
+[requires]
+event_sources = ["suricata_eve"]
+
+[security]
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/bin/suricata"
+reason = "Suricata must be installed. See https://suricata.io/download/"

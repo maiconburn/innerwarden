@@ -1,0 +1,4 @@
+[geoip]
+enabled = true
+# Uses ip-api.com free tier: 45 requests/minute, no API key needed.
+# Only IPs that trigger High/Critical incidents are looked up.

@@ -1,0 +1,42 @@
+[Unit]
+Description=Inner Warden - Agent (AI-assisted response)
+After=network-online.target innerwarden-sensor.service
+Wants=network-online.target
+Documentation=https://github.com/maiconburn/innerwarden
+
+[Service]
+Type=simple
+User=innerwarden
+Group=innerwarden
+SupplementaryGroups=systemd-journal
+ExecStart=/usr/local/bin/innerwarden-agent --data-dir /var/lib/innerwarden --config /etc/innerwarden/agent.toml
+Restart=on-failure
+RestartSec=5
+
+# Environment — API keys and dashboard credentials
+EnvironmentFile=-/etc/innerwarden/agent.env
+
+# Give it time to flush state and audit trail on shutdown
+TimeoutStopSec=15
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+# Logging — journald captures stdout/stderr automatically
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=innerwarden-agent
+
+# Hardening
+# NoNewPrivileges is intentionally omitted: block-ip skills call `sudo ufw/iptables/nftables`
+# which requires the ability to gain privileges via sudoers. Enable only if using iptables
+# directly without sudo (e.g. CAP_NET_ADMIN) or if no block-ip skills are needed.
+PrivateTmp=yes
+ProtectSystem=strict
+# /run     — UFW needs /run/ufw.lock
+# /etc/ufw — UFW writes updated rules to /etc/ufw/user{6}.rules
+ReadWritePaths=/var/lib/innerwarden /run /etc/ufw
+ReadOnlyPaths=/etc/innerwarden
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

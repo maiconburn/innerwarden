@@ -1,0 +1,23 @@
+[module]
+id          = "geoip-enrichment"
+name        = "GeoIP Enrichment"
+version     = "0.1.0"
+description = "Enriches AI triage context with IP geolocation data (country, city, ISP, ASN) via ip-api.com — no API key required"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = []
+detectors  = []
+skills     = []
+
+[requires]
+event_sources = []
+
+[security]
+allowed_commands        = []
+require_sudo_validation = false
+forbid_shell_expansion  = true

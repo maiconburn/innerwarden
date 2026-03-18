@@ -1,0 +1,27 @@
+[module]
+id          = "falco-integration"
+name        = "Falco Runtime Security Integration"
+version     = "0.1.0"
+description = "Ingests Falco eBPF/syscall alerts as InnerWarden events. Falco provides kernel-level visibility; InnerWarden provides AI-assisted triage and response. High/Critical Falco alerts are promoted directly to incidents."
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["falco-log"]
+
+[requires]
+event_sources = ["falco_log"]
+
+[security]
+# No privileged commands — this is a read-only collector
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/bin/falco"
+reason = "Falco must be installed. See https://falco.org/docs/getting-started/installation/"

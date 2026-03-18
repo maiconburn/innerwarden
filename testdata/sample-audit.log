@@ -1,0 +1,2 @@
+type=EXECVE msg=audit(1711800000.123:4242): argc=3 a0="sudo" a1="ufw" a2="status"
+type=TTY msg=audit(1711800100.456:5001): tty=pts0 uid=1000 auid=1000 msg='6c73202d6c610d'

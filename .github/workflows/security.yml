@@ -1,0 +1,30 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: Dependency & license audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  gitleaks:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,16 @@
+[workspace]
+members = [
+  "crates/core",
+  "crates/sensor",
+  "crates/agent",
+  "crates/ctl",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/InnerWarden/innerwarden"
+homepage = "https://www.innerwarden.com"
+readme = "README.md"

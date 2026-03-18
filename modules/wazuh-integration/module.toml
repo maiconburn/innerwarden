@@ -1,0 +1,27 @@
+[module]
+id          = "wazuh-integration"
+name        = "Wazuh Integration"
+version     = "0.1.0"
+description = "Ingests Wazuh HIDS alerts from alerts.json and routes High+ severity incidents through InnerWarden's AI triage and response pipeline."
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["wazuh-alerts"]
+
+[requires]
+event_sources = ["wazuh_alerts"]
+
+[security]
+# No privileged commands — this is a read-only collector
+allowed_commands        = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/var/ossec/bin/wazuh-control"
+reason = "Wazuh agent or manager must be installed. See https://documentation.wazuh.com/current/installation-guide/index.html"

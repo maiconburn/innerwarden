@@ -1,0 +1,16 @@
+# sudo-protection — sensor config snippet
+
+[collectors.journald]
+enabled = true
+units   = ["sudo"]   # captures all sudo commands
+
+# Optional: full shell audit trail (high privacy impact — explicit consent required)
+[collectors.exec_audit]
+enabled     = false
+path        = "/var/log/audit/audit.log"
+include_tty = false  # never enable without explicit authorization
+
+[detectors.sudo_abuse]
+enabled        = true
+threshold      = 3      # suspicious sudo commands per user in window
+window_seconds = 300

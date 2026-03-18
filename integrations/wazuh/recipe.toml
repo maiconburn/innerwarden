@@ -1,0 +1,162 @@
+# Integration Recipe — Wazuh HIDS
+#
+# Wazuh writes alerts to /var/ossec/logs/alerts/alerts.json (JSON per line).
+# InnerWarden ingests these as events; Wazuh's own rule engine performs detection,
+# so high-severity alerts are passed through directly as incidents.
+
+[recipe]
+id               = "wazuh"
+name             = "Wazuh HIDS"
+description      = "Ingests Wazuh alerts from alerts.json. Wazuh provides HIDS, FIM, vulnerability detection, and MITRE ATT&CK mapping; InnerWarden provides AI-assisted triage and response."
+tool             = "wazuh"
+tool_url         = "https://wazuh.com"
+tool_version_min = "4.7"
+collector_id     = "wazuh_alerts"
+author           = ""
+license          = "Apache-2.0"
+
+[input]
+mechanism       = "file_tail"
+path_config_key = "path"
+path_default    = "/var/ossec/logs/alerts/alerts.json"
+format          = "jsonl"
+restart_on_eof  = true
+reconnect_secs  = 5
+
+[event_schema]
+ts_field       = "timestamp"     # ISO 8601 with timezone offset
+ts_format      = "rfc3339"
+summary_field  = "rule.description"
+severity_field = "rule.level"    # integer 0–15; see severity_map below
+kind_field     = "rule.groups"   # array — join with "." or use first element
+extra_fields   = ["rule", "agent", "data", "location"]
+
+[event_schema.example]
+raw = '''
+{
+  "timestamp": "2026-03-15T15:00:00.000+0000",
+  "rule": {
+    "level": 10,
+    "description": "Multiple authentication failures.",
+    "id": "5763",
+    "mitre": { "id": ["T1110"], "tactic": ["Credential Access"], "technique": ["Brute Force"] },
+    "groups": ["authentication_failures", "sshd", "mitre_credential_access"]
+  },
+  "agent": { "id": "001", "name": "web-server-01", "ip": "10.0.0.5" },
+  "manager": { "name": "wazuh-manager" },
+  "id": "1741788000.12345",
+  "location": "/var/log/auth.log",
+  "data": {
+    "srcip": "203.0.113.10",
+    "srcport": "55123",
+    "dstuser": "root"
+  }
+}
+'''
+
+# Wazuh levels are integers 0–15.
+# 0–2: debug/informational, 3–6: low, 7–11: medium/high, 12–15: critical
+# The severity_map below handles integer keys as strings (TOML).
+[severity_map]
+"0"  = "debug"
+"1"  = "debug"
+"2"  = "debug"
+"3"  = "low"
+"4"  = "low"
+"5"  = "low"
+"6"  = "low"
+"7"  = "medium"
+"8"  = "medium"
+"9"  = "medium"
+"10" = "high"
+"11" = "high"
+"12" = "critical"
+"13" = "critical"
+"14" = "critical"
+"15" = "critical"
+_default = "info"
+
+[kind_format]
+# Use first element of rule.groups array, prefix with "wazuh."
+# e.g. ["authentication_failures","sshd"] → wazuh.authentication_failures
+template   = "wazuh.{kind_slug}"
+kind_source = "rule.groups[0]"
+
+[[entity_extraction.rules]]
+field       = "data.srcip"
+entity_type = "ip"
+optional    = true
+
+[[entity_extraction.rules]]
+field       = "agent.ip"
+entity_type = "ip"
+optional    = true
+# Note: agent.ip is the monitored host, not the attacker. Tag it differently.
+tag_as      = "monitored_host"
+
+[[entity_extraction.rules]]
+field       = "data.dstuser"
+entity_type = "user"
+optional    = true
+
+[[entity_extraction.rules]]
+field       = "agent.name"
+entity_type = "service"   # agent name identifies the source host
+optional    = true
+
+[tags]
+static             = ["wazuh", "hids"]
+dynamic_from_event = true
+dynamic_field      = "rule.groups"  # use groups array as tags
+
+[[config_schema.fields]]
+key         = "enabled"
+type        = "bool"
+required    = false
+default     = "false"
+description = "Enable the Wazuh alerts collector"
+
+[[config_schema.fields]]
+key         = "path"
+type        = "string"
+required    = false
+default     = "/var/ossec/logs/alerts/alerts.json"
+description = "Path to Wazuh JSON alerts file. Requires alerts_log_format=json in ossec.conf."
+
+[[prerequisites]]
+kind   = "binary_exists"
+value  = "/var/ossec/bin/wazuh-control"
+reason = "Wazuh agent or manager must be installed"
+
+[[prerequisites]]
+kind   = "file_readable"
+value  = "{config.path}"
+reason = "Wazuh alerts.json must be readable. Ensure alerts_log_format: json in ossec.conf."
+
+[setup_notes]
+required_tool_config = """
+In /var/ossec/etc/ossec.conf, inside <global>:
+  <alerts_log>yes</alerts_log>
+  <logall_json>yes</logall_json>
+
+Or set via Wazuh manager configuration. Restart with:
+  sudo /var/ossec/bin/wazuh-control restart
+"""
+
+[module_manifest]
+module_id             = "wazuh-integration"
+module_tier           = "open"
+incident_passthrough  = true
+incident_min_severity = "high"   # Wazuh level ≥ 10
+
+[ai_generation_hints]
+struct_name = "WazuhAlertsCollector"
+run_signature = "pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()>"
+state_fields  = ["host: String", "path: PathBuf"]
+
+# rule.level is an integer in the JSON — parse it as u8 then look it up in
+# the severity map using its string representation.
+severity_parse_note = "Parse rule.level as u64, convert to string (\"10\"), look up in severity_map"
+
+# rule.groups is an array; take the first element for kind_slug.
+kind_parse_note = "rule.groups is a Vec<String>; use [0] for kind slug, all elements as tags"

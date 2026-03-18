@@ -1,0 +1,34 @@
+[Unit]
+Description=Inner Warden - Sensor (host observability)
+After=network.target syslog.target
+Documentation=https://github.com/maiconburn/innerwarden
+
+[Service]
+Type=simple
+User=innerwarden
+Group=innerwarden
+SupplementaryGroups=systemd-journal docker
+ExecStart=/usr/local/bin/innerwarden-sensor --config /etc/innerwarden/config.toml
+Restart=on-failure
+RestartSec=5
+
+# Give it time to flush state on shutdown
+TimeoutStopSec=10
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+# Logging — journald captures stdout/stderr automatically
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=innerwarden-sensor
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/innerwarden
+ReadOnlyPaths=/var/log /etc/innerwarden
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

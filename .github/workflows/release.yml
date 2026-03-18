@@ -1,0 +1,224 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'      # stable:     v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'    # pre-release: v1.2.3-rc.1
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # needed to create the GitHub Release
+
+    steps:
+      # ── Source ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # ── Rust + cross-compilation targets ──────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      # ── Zig (required by cargo-zigbuild for cross-linking) ─────────────────
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      # ── cargo-zigbuild (cached via cargo bin dir) ──────────────────────────
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # also persist the installed cargo-zigbuild binary across runs
+          cache-directories: ~/.cargo/bin
+
+      - name: Install cargo-zigbuild
+        run: |
+          if ! command -v cargo-zigbuild &>/dev/null; then
+            cargo install cargo-zigbuild --locked
+          fi
+
+      # ── Tests (fast gate before expensive cross-builds) ────────────────────
+      - name: Run tests
+        run: cargo test --workspace
+
+      # ── Build x86_64 ───────────────────────────────────────────────────────
+      - name: Build (x86_64-unknown-linux-gnu)
+        run: |
+          cargo zigbuild --release \
+            --target x86_64-unknown-linux-gnu \
+            -p innerwarden-sensor \
+            -p innerwarden-agent \
+            -p innerwarden-ctl
+
+      # ── Build aarch64 ──────────────────────────────────────────────────────
+      - name: Build (aarch64-unknown-linux-gnu)
+        run: |
+          cargo zigbuild --release \
+            --target aarch64-unknown-linux-gnu \
+            -p innerwarden-sensor \
+            -p innerwarden-agent \
+            -p innerwarden-ctl
+
+      # ── Stage assets with SHA-256 sidecars ────────────────────────────────
+      #
+      # Asset naming matches what `innerwarden upgrade` expects:
+      #   innerwarden-{sensor,agent,ctl}-linux-{x86_64,aarch64}
+      #   innerwarden-{sensor,agent,ctl}-linux-{x86_64,aarch64}.sha256
+      #
+      - name: Stage release assets
+        run: |
+          mkdir -p dist
+
+          for arch in x86_64 aarch64; do
+            if [ "$arch" = "x86_64" ]; then
+              target="x86_64-unknown-linux-gnu"
+            else
+              target="aarch64-unknown-linux-gnu"
+            fi
+            for binary in innerwarden-sensor innerwarden-agent innerwarden-ctl; do
+              src="target/$target/release/$binary"
+              dest="dist/${binary}-linux-${arch}"
+              cp "$src" "$dest"
+              sha256sum "$dest" | awk '{print $1}' > "${dest}.sha256"
+            done
+          done
+
+          # Include install.sh for zero-to-running bootstrap
+          cp install.sh dist/install.sh
+
+          echo "=== Release assets ==="
+          ls -lh dist/
+
+      # ── Verify asset names match what upgrade.rs expects ──────────────────
+      - name: Verify asset manifest
+        run: |
+          expected=(
+            innerwarden-sensor-linux-x86_64
+            innerwarden-agent-linux-x86_64
+            innerwarden-ctl-linux-x86_64
+            innerwarden-sensor-linux-aarch64
+            innerwarden-agent-linux-aarch64
+            innerwarden-ctl-linux-aarch64
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if [[ ! -f "dist/$name" ]]; then
+              echo "MISSING: $name"
+              missing=1
+            fi
+            if [[ ! -f "dist/${name}.sha256" ]]; then
+              echo "MISSING: ${name}.sha256"
+              missing=1
+            fi
+          done
+          if [[ $missing -ne 0 ]]; then
+            echo "Asset manifest verification failed."
+            exit 1
+          fi
+          # install.sh
+          if [[ ! -f "dist/install.sh" ]]; then
+            echo "MISSING: install.sh"
+            missing=1
+          fi
+
+          if [[ $missing -ne 0 ]]; then
+            echo "Asset manifest verification failed."
+            exit 1
+          fi
+          echo "All 13 assets present (6 binaries + 6 SHA-256 sidecars + install.sh)."
+
+      # ── Create GitHub Release ─────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false
+          # tags containing '-' (e.g. v1.0.0-rc.1) are marked as pre-release
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  build-release-macos:
+    name: Build and publish (macOS)
+    runs-on: macos-latest
+    needs: build-release
+
+    permissions:
+      contents: write   # needed to upload assets to existing release
+
+    steps:
+      # ── Source ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # ── Rust + macOS targets ───────────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      # ── Cache ──────────────────────────────────────────────────────────────
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # ── Tests ──────────────────────────────────────────────────────────────
+      - name: Run tests
+        run: cargo test --workspace
+
+      # ── Build x86_64-apple-darwin ──────────────────────────────────────────
+      - name: Build (x86_64-apple-darwin)
+        run: |
+          cargo build --release \
+            --target x86_64-apple-darwin \
+            -p innerwarden-sensor \
+            -p innerwarden-agent \
+            -p innerwarden-ctl
+
+      # ── Build aarch64-apple-darwin ─────────────────────────────────────────
+      # aarch64-apple-darwin cross-compilation from x86_64 macOS runner works
+      # with just --target because Xcode provides the required SDK.
+      - name: Build (aarch64-apple-darwin)
+        run: |
+          cargo build --release \
+            --target aarch64-apple-darwin \
+            -p innerwarden-sensor \
+            -p innerwarden-agent \
+            -p innerwarden-ctl
+
+      # ── Stage assets with SHA-256 sidecars ────────────────────────────────
+      - name: Stage release assets
+        run: |
+          mkdir -p dist
+
+          for arch in x86_64 aarch64; do
+            if [ "$arch" = "x86_64" ]; then
+              target="x86_64-apple-darwin"
+            else
+              target="aarch64-apple-darwin"
+            fi
+            for binary in innerwarden-sensor innerwarden-agent innerwarden-ctl; do
+              src="target/$target/release/$binary"
+              dest="dist/${binary}-macos-${arch}"
+              cp "$src" "$dest"
+              shasum -a 256 "$dest" | awk '{print $1}' > "${dest}.sha256"
+            done
+          done
+
+          echo "=== macOS release assets ==="
+          ls -lh dist/
+
+      # ── Upload macOS assets to existing release ────────────────────────────
+      - name: Upload macOS assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

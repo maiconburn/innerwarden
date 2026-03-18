@@ -1,0 +1,194 @@
+# Integration Recipe — osquery
+#
+# osquery can stream differential query results to a log file in JSON format
+# via its "differential" logger. InnerWarden ingests these as observability
+# events; specific query names map to security-relevant kinds.
+
+[recipe]
+id               = "osquery"
+name             = "osquery"
+description      = "Ingests osquery differential log results as InnerWarden events. Useful for process, network, and file system observability from the host."
+tool             = "osquery"
+tool_url         = "https://osquery.io"
+tool_version_min = "5.0"
+collector_id     = "osquery_log"
+author           = ""
+license          = "Apache-2.0"
+
+[input]
+# osquery writes differential results to a results log file
+mechanism       = "file_tail"
+path_config_key = "path"
+path_default    = "/var/log/osquery/osqueryd.results.log"
+format          = "jsonl"
+restart_on_eof  = true
+reconnect_secs  = 5
+
+[event_schema]
+ts_field       = "unixTime"      # integer unix timestamp
+ts_format      = "unix_sec"
+summary_field  = "name"          # query name (e.g. "pack/incident-response/processes")
+severity_field = "action"        # "added" | "removed" — not a real severity; see severity_map
+kind_field     = "name"
+extra_fields   = ["action", "columns", "decorations", "diffResults"]
+
+[event_schema.example]
+raw = '''
+{
+  "name":     "pack/incident-response/listening_ports",
+  "action":   "added",
+  "hostIdentifier": "web-server-01",
+  "calendarTime": "Sun Mar 15 15:00:00 2026 UTC",
+  "unixTime":  1741788000,
+  "epoch":     0,
+  "counter":   1,
+  "numerics":  false,
+  "decorations": { "host_uuid": "abc-123", "username": "root" },
+  "columns": {
+    "pid":       "1234",
+    "port":      "4444",
+    "protocol":  "6",
+    "address":   "0.0.0.0",
+    "family":    "2",
+    "socket":    "5678",
+    "path":      "/usr/bin/nc"
+  }
+}
+'''
+
+# osquery's "action" is not a severity — map it to coarse severity.
+# The actual severity should come from a query name → severity mapping
+# (see severity_by_query_prefix below).
+[severity_map]
+"added"   = "info"    # new row appeared in differential result
+"removed" = "debug"   # row disappeared
+"snapshot"= "debug"
+_default  = "debug"
+
+# Override severity for specific query name prefixes:
+# If the query name contains any of these substrings, use the mapped severity.
+# Checked in order; first match wins.
+[[severity_by_query_prefix]]
+prefix   = "listening_ports"
+severity = "medium"
+
+[[severity_by_query_prefix]]
+prefix   = "process_open_sockets"
+severity = "low"
+
+[[severity_by_query_prefix]]
+prefix   = "startup_items"
+severity = "medium"
+
+[[severity_by_query_prefix]]
+prefix   = "crontab"
+severity = "medium"
+
+[[severity_by_query_prefix]]
+prefix   = "sudoers"
+severity = "high"
+
+[[severity_by_query_prefix]]
+prefix   = "suid_bin"
+severity = "high"
+
+[[severity_by_query_prefix]]
+prefix   = "shell_history"
+severity = "medium"
+
+[kind_format]
+# Convert query name to kind slug:
+# "pack/incident-response/listening_ports" → osquery.listening_ports
+# Take the last path component, replace non-alnum with underscore.
+template    = "osquery.{kind_slug}"
+kind_source = "name"
+kind_slug_from = "last_path_component"   # split on "/" take last
+
+[[entity_extraction.rules]]
+field       = "columns.address"
+entity_type = "ip"
+optional    = true
+skip_values = ["0.0.0.0", "::", "127.0.0.1", "::1"]
+
+[[entity_extraction.rules]]
+field       = "columns.remote_address"
+entity_type = "ip"
+optional    = true
+skip_values = ["0.0.0.0", "::", "127.0.0.1", "::1"]
+
+[[entity_extraction.rules]]
+field       = "decorations.username"
+entity_type = "user"
+optional    = true
+skip_values = ["root", "<NA>"]
+
+[[entity_extraction.rules]]
+field       = "columns.path"
+entity_type = "path"
+optional    = true
+
+[tags]
+static             = ["osquery", "host-observability"]
+dynamic_from_event = false
+
+[[config_schema.fields]]
+key         = "enabled"
+type        = "bool"
+required    = false
+default     = "false"
+description = "Enable the osquery results log collector"
+
+[[config_schema.fields]]
+key         = "path"
+type        = "string"
+required    = false
+default     = "/var/log/osquery/osqueryd.results.log"
+description = "Path to osquery differential results log"
+
+[[prerequisites]]
+kind   = "binary_exists"
+value  = "/usr/bin/osqueryd"
+reason = "osquery must be installed"
+
+[[prerequisites]]
+kind   = "file_readable"
+value  = "{config.path}"
+reason = "osquery results log must be readable"
+
+[setup_notes]
+required_tool_config = """
+In /etc/osquery/osquery.conf (or osquery.flags), enable JSON differential logging:
+
+  {
+    "options": {
+      "logger_plugin": "filesystem",
+      "logger_path": "/var/log/osquery",
+      "disable_logging": "false",
+      "log_result_events": "true"
+    }
+  }
+
+Restart osqueryd:
+  sudo systemctl restart osqueryd
+"""
+
+[module_manifest]
+module_id             = "osquery-integration"
+module_tier           = "open"
+incident_passthrough  = false   # osquery results are observability events,
+                                 # not detections. They feed InnerWarden detectors
+                                 # (or are used as context by the AI layer).
+incident_min_severity = "high"
+
+[ai_generation_hints]
+struct_name   = "OsqueryLogCollector"
+run_signature = "pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()>"
+state_fields  = ["host: String", "path: PathBuf"]
+
+# unixTime is an integer. Use:
+#   let ts = Utc.timestamp_opt(unix_ts, 0).single().unwrap_or_else(Utc::now);
+ts_parse_note = "unixTime is i64; use Utc.timestamp_opt(v, 0).single().unwrap_or_else(Utc::now)"
+
+# Severity requires two lookups: first check severity_by_query_prefix,
+# then fall back to the severity_map for the "action" field.
+severity_note = "Check severity_by_query_prefix first (substring match on name), then fall back to action-based severity_map"

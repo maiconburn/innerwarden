@@ -1,0 +1,59 @@
+name: Validate Modules
+
+on:
+  pull_request:
+    paths:
+      - 'modules/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build CLI
+        run: cargo build --bin innerwarden --release
+
+      - name: Detect changed modules
+        id: changed
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          MODULES=$(git diff --name-only "$BASE" "$HEAD" \
+            | grep '^modules/' \
+            | cut -d/ -f2 \
+            | sort -u \
+            | tr '\n' ' ')
+          echo "list=$MODULES" >> "$GITHUB_OUTPUT"
+
+      - name: Validate changed modules
+        if: steps.changed.outputs.list != ''
+        run: |
+          FAILED=0
+          for module_id in ${{ steps.changed.outputs.list }}; do
+            path="modules/$module_id"
+            if [ ! -d "$path" ]; then
+              echo "::warning::$path was removed or renamed — skipping"
+              continue
+            fi
+            echo "::group::Validating $module_id"
+            if ! ./target/release/innerwarden module validate --strict "$path"; then
+              echo "::error::$module_id failed validation"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $FAILED
+
+      - name: No module changes detected
+        if: steps.changed.outputs.list == ''
+        run: echo "No module directories changed — skipping validation"

@@ -1,0 +1,3 @@
+# Test sudoers — watched by integrity collector
+root ALL=(ALL:ALL) ALL
+%sudo ALL=(ALL:ALL) ALL

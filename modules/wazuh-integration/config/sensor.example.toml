@@ -1,0 +1,6 @@
+# Wazuh HIDS integration — sensor config snippet
+# Copy into your sensor config.toml under [collectors]
+
+[collectors.wazuh_alerts]
+enabled = true
+path    = "/var/ossec/logs/alerts/alerts.json"

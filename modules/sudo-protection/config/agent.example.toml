@@ -1,0 +1,12 @@
+# sudo-protection — agent config snippet
+
+[responder]
+enabled        = true
+dry_run        = true
+allowed_skills = ["suspend-user-sudo"]
+
+[ai]
+enabled              = true
+provider             = "openai"
+model                = "gpt-4o-mini"
+confidence_threshold = 0.85   # higher threshold: privilege actions are sensitive

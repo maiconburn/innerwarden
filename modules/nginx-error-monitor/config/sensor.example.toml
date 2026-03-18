@@ -1,0 +1,8 @@
+[collectors.nginx_error]
+enabled = true
+path    = "/var/log/nginx/error.log"
+
+[detectors.web_scan]
+enabled        = true
+threshold      = 15   # HTTP errors from a single IP before triggering
+window_seconds = 60   # sliding window in seconds

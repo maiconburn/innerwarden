@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an improvement or new capability
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want and any constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and rollout considerations
+      description: Mention any privacy, auto-response, privileged execution, or migration impact.

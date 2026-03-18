@@ -1,0 +1,8 @@
+[crowdsec]
+enabled   = true
+url       = "http://localhost:8080"
+# api_key is read from CROWDSEC_API_KEY env var if not set here.
+# Find your key in: /etc/crowdsec/local_api_credentials.yaml (password field)
+# Or create a new bouncer key: sudo cscli bouncers add innerwarden
+api_key   = ""
+poll_secs = 60

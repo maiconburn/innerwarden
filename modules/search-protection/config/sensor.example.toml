@@ -1,0 +1,11 @@
+# search-protection — sensor config snippet
+
+[collectors.nginx_access]
+enabled = true
+path    = "/var/log/nginx/access.log"   # adjust to your nginx log path
+
+[detectors.search_abuse]
+enabled        = true
+threshold      = 30     # requests per IP to path_prefix in window before triggering
+window_seconds = 60     # 1-minute sliding window
+path_prefix    = "/api/search"   # monitor requests starting with this path; "" = any path

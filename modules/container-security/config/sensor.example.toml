@@ -1,0 +1,7 @@
+# container-security — sensor config snippet
+
+[collectors.docker]
+enabled = true
+# No additional config required.
+# The collector streams: docker events --format '{{json .}}'
+# Events captured: start, stop, die, OOM

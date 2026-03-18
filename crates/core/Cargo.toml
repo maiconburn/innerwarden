@@ -1,0 +1,16 @@
+[package]
+name = "innerwarden_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Shared event, incident, and entity types for InnerWarden — a self-defending security agent."
+keywords = ["security", "incident-response", "defense", "host-security", "rust"]
+categories = ["data-structures", "network-programming"]
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

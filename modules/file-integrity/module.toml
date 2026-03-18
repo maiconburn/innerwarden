@@ -1,0 +1,27 @@
+[module]
+id          = "file-integrity"
+name        = "File Integrity Monitoring"
+version     = "0.1.0"
+description = "Monitors critical files for unexpected changes via SHA-256 polling"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["integrity"]
+detectors  = []     # collector emits file.changed events directly; no sliding-window detector needed
+skills     = []     # response is via webhook notification; no block/suspend skill applies
+
+[requires]
+event_sources = ["integrity"]
+
+# No automated response rules — file integrity changes require human review.
+# Use webhook to route alerts to your notification channel.
+# [[rules]] is intentionally empty for this module.
+
+[security]
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true

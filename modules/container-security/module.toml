@@ -1,0 +1,32 @@
+[module]
+id          = "container-security"
+name        = "Container Security"
+version     = "0.1.0"
+description = "Monitors Docker container lifecycle events (start, stop, die, OOM) for anomaly detection"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["docker"]
+detectors  = []     # no sliding-window detector yet; events are observable in dashboard and AI context
+skills     = []     # future: container isolation skill
+
+[requires]
+event_sources = ["docker"]
+
+# No automated response rules yet.
+# OOM and rapid-restart patterns are visible to AI in correlation context.
+# [[rules]] will be added when a container-specific detector is implemented.
+
+[security]
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/bin/docker"
+reason = "docker daemon must be installed and the innerwarden user must be in the docker group"

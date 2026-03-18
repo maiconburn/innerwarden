@@ -1,0 +1,14 @@
+pub mod auth_log;
+pub mod cloudtrail;
+pub mod docker;
+pub mod exec_audit;
+pub mod falco_log;
+pub mod integrity;
+pub mod journald;
+pub mod macos_log;
+pub mod nginx_access;
+pub mod nginx_error;
+pub mod osquery_log;
+pub mod suricata_eve;
+pub mod syslog_firewall;
+pub mod wazuh_alerts;

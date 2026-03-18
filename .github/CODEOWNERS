@@ -1,0 +1,12 @@
+# Default owner for everything
+* @InnerWarden
+
+# Core crates
+/crates/core/    @InnerWarden
+/crates/sensor/  @InnerWarden
+/crates/agent/   @InnerWarden
+/crates/ctl/     @InnerWarden
+
+# Integrations and modules — community contributions welcome
+/integrations/   @InnerWarden
+/modules/        @InnerWarden

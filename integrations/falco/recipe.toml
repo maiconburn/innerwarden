@@ -1,0 +1,266 @@
+# Integration Recipe — Falco Runtime Security
+#
+# This file describes how to integrate Falco alert output with InnerWarden.
+# It is precise enough that an AI assistant can generate a working
+# FalcoLogCollector from it.
+#
+# Generation prompt: see docs/integration-recipes.md → "Generating a Collector"
+
+[recipe]
+id               = "falco"
+name             = "Falco Runtime Security"
+description      = "Ingests Falco alerts from its JSON log output as InnerWarden events. Falco provides kernel-level syscall visibility via eBPF; InnerWarden provides response and AI-assisted triage."
+tool             = "falco"
+tool_url         = "https://falco.org"
+tool_version_min = "0.36"
+collector_id     = "falco_log"        # sensor config section: [collectors.falco_log]
+author           = ""
+license          = "Apache-2.0"
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+
+[input]
+# Falco writes JSON events one per line to a log file when configured with:
+#   json_output: true
+#   file_output.enabled: true
+mechanism       = "file_tail"
+path_config_key = "path"
+path_default    = "/var/log/falco/falco.log"
+format          = "jsonl"
+restart_on_eof  = true   # keep tailing after log rotation
+reconnect_secs  = 5
+
+# ---------------------------------------------------------------------------
+# Event schema
+# ---------------------------------------------------------------------------
+
+[event_schema]
+ts_field       = "time"          # RFC3339 with nanoseconds
+ts_format      = "rfc3339"
+summary_field  = "output"        # human-readable alert line (may include timestamps)
+severity_field = "priority"      # Falco uses syslog severity labels
+kind_field     = "rule"          # name of the Falco rule that fired
+tags_field     = "tags"          # array of strings (e.g. ["container","shell","mitre_execution"])
+extra_fields   = ["source", "output_fields"]  # go into Event.details verbatim
+
+# A real Falco JSON event for reference (falco --json-output):
+[event_schema.example]
+raw = '''
+{
+  "output": "15:00:00.123456789: Warning A shell was spawned in a container (user=root user_loginuid=-1 k8s.ns=default k8s.pod=nginx-abc container=abc123def456 shell=bash parent=runc cmdline=bash flags=0x0(0) terminal=34816 container_id=abc123def456 image=nginx)",
+  "priority": "Warning",
+  "rule": "Terminal shell in container",
+  "source": "syscall",
+  "tags": ["container", "shell", "mitre_execution", "T1059"],
+  "time": "2026-03-15T15:00:00.123456789Z",
+  "output_fields": {
+    "container.id":         "abc123def456",
+    "container.image.repo": "nginx",
+    "container.image.tag":  "latest",
+    "container.name":       "nginx",
+    "k8s.ns.name":          "default",
+    "k8s.pod.name":         "nginx-abc",
+    "proc.cmdline":         "bash",
+    "proc.name":            "bash",
+    "proc.pname":           "runc",
+    "user.loginuid":        -1,
+    "user.name":            "root"
+  }
+}
+'''
+
+# Another common event — network connection:
+[event_schema.example_network]
+raw = '''
+{
+  "output": "15:01:00.000000000: Notice Outbound connection to suspicious IP (command=curl user=www-data connection=1.2.3.4:443)",
+  "priority": "Notice",
+  "rule": "Outbound Connection to Suspicious IP",
+  "source": "syscall",
+  "tags": ["network", "mitre_command_and_control"],
+  "time": "2026-03-15T15:01:00.000000000Z",
+  "output_fields": {
+    "fd.sip":      "1.2.3.4",
+    "fd.sport":    443,
+    "fd.cip":      "10.0.0.5",
+    "proc.name":   "curl",
+    "user.name":   "www-data"
+  }
+}
+'''
+
+# ---------------------------------------------------------------------------
+# Severity mapping
+# Falco uses syslog priority labels (RFC 5424 names, capitalized)
+# ---------------------------------------------------------------------------
+
+[severity_map]
+"Emergency"     = "critical"
+"Alert"         = "critical"
+"Critical"      = "critical"
+"Error"         = "high"
+"Warning"       = "high"
+"Notice"        = "medium"
+"Informational" = "low"
+"Debug"         = "debug"
+# fallback for any unmapped value:
+_default        = "info"
+
+# ---------------------------------------------------------------------------
+# Kind format — Event.kind string
+# ---------------------------------------------------------------------------
+
+[kind_format]
+# {rule_slug} = rule name lowercased, spaces and special chars → underscores
+# Examples:
+#   "Terminal shell in container"       → falco.terminal_shell_in_container
+#   "Outbound Connection to Suspicious IP" → falco.outbound_connection_to_suspicious_ip
+template = "falco.{rule_slug}"
+
+# ---------------------------------------------------------------------------
+# Entity extraction
+# All rules are optional — many Falco events have no network entities
+# ---------------------------------------------------------------------------
+
+[[entity_extraction.rules]]
+field       = "output_fields.fd.sip"        # server/remote IP
+entity_type = "ip"
+optional    = true
+
+[[entity_extraction.rules]]
+field       = "output_fields.fd.cip"        # client IP
+entity_type = "ip"
+optional    = true
+
+[[entity_extraction.rules]]
+field       = "output_fields.user.name"
+entity_type = "user"
+optional    = true
+# Skip synthetic users that indicate no real user context:
+skip_values = ["<NA>", "root"]  # note: "root" still goes in details; just not as an entity
+
+[[entity_extraction.rules]]
+field       = "output_fields.container.id"
+entity_type = "container"
+optional    = true
+transform   = "short_id_12"   # truncate to first 12 chars
+
+[[entity_extraction.rules]]
+field       = "output_fields.k8s.pod.name"
+entity_type = "service"        # closest entity type for k8s workloads
+optional    = true
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+[tags]
+static             = ["falco", "kernel", "ebpf"]
+dynamic_from_event = true   # also forward the event's tags[] array
+
+# ---------------------------------------------------------------------------
+# Sensor config surface
+# ---------------------------------------------------------------------------
+
+[[config_schema.fields]]
+key         = "enabled"
+type        = "bool"
+required    = false
+default     = "false"
+description = "Enable the Falco log collector"
+
+[[config_schema.fields]]
+key         = "path"
+type        = "string"
+required    = false
+default     = "/var/log/falco/falco.log"
+description = "Path to Falco's JSON output log. Requires json_output: true in falco.yaml."
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+
+[[prerequisites]]
+kind   = "binary_exists"
+value  = "/usr/bin/falco"
+reason = "Falco must be installed. See https://falco.org/docs/getting-started/installation/"
+
+[[prerequisites]]
+kind   = "file_readable"
+value  = "{config.path}"
+reason = "Falco log file must be readable. Ensure json_output is enabled in falco.yaml."
+
+# ---------------------------------------------------------------------------
+# Required Falco configuration
+# ---------------------------------------------------------------------------
+
+[setup_notes]
+required_tool_config = """
+Add to /etc/falco/falco.yaml (or your falco config file):
+
+  json_output: true
+  json_include_output_property: true
+
+  file_output:
+    enabled: true
+    keep_alive: false
+    filename: /var/log/falco/falco.log
+
+Then restart Falco:
+  sudo systemctl restart falco
+"""
+
+innerwarden_sensor_config = """
+[collectors.falco_log]
+enabled = true
+path    = "/var/log/falco/falco.log"
+"""
+
+# ---------------------------------------------------------------------------
+# Module manifest — how this recipe becomes a module
+# ---------------------------------------------------------------------------
+
+[module_manifest]
+module_id            = "falco-integration"
+module_tier          = "open"
+
+# Falco already performs detection. High/Critical events are promoted directly
+# to incidents-YYYY-MM-DD.jsonl without going through an additional InnerWarden
+# detector. The AI triage layer then sees them normally.
+incident_passthrough = true
+incident_min_severity = "high"
+
+# ---------------------------------------------------------------------------
+# AI generation hints
+# Extra context for an AI generating the Rust collector from this recipe
+# ---------------------------------------------------------------------------
+
+[ai_generation_hints]
+# The collector struct name to use:
+struct_name = "FalcoLogCollector"
+
+# The collector function signature to use (matches the established pattern):
+run_signature = "pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()>"
+
+# State the collector needs beyond what's in the recipe:
+state_fields = [
+  "host: String",          # from SensorConfig.agent.host_id
+  "path: PathBuf",         # from config.path
+]
+
+# The output.summary field from Falco includes a leading timestamp
+# like "15:00:00.123456789: Warning <message>". Strip it to get a
+# clean summary — match and discard up to the first ": " after the
+# syslog priority word.
+summary_cleanup = "strip_falco_output_prefix"
+
+# The time field in Falco JSON has nanosecond precision ("...Z" suffix).
+# Use DateTime::parse_from_rfc3339 — chrono handles sub-second precision.
+ts_parse_note = "chrono::DateTime::parse_from_rfc3339 handles nanosecond precision"
+
+# output_fields keys use dots (e.g. "container.id") which are not valid
+# as serde field names. Access them via serde_json::Value indexing, not
+# via a typed struct.
+output_fields_access = "serde_json::Value index with string keys (not typed struct)"

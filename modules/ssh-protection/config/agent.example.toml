@@ -1,0 +1,16 @@
+# ssh-protection — agent config snippet
+# Add these sections to your agent.toml
+
+[responder]
+enabled       = true
+dry_run       = true          # set false only after validating decisions in dry_run
+block_backend = "ufw"         # ufw | iptables | nftables
+allowed_skills = [
+  "block-ip-ufw",             # or block-ip-iptables / block-ip-nftables
+]
+
+[ai]
+enabled              = true
+provider             = "openai"
+model                = "gpt-4o-mini"
+confidence_threshold = 0.8

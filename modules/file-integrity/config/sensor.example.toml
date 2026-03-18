@@ -1,0 +1,14 @@
+# file-integrity — sensor config snippet
+
+[collectors.integrity]
+enabled      = true
+poll_seconds = 60   # how often to re-hash watched files
+
+# Files to monitor — add any path that must not change unexpectedly
+paths = [
+  "/etc/ssh/sshd_config",
+  "/etc/sudoers",
+  "/etc/passwd",
+  "/etc/shadow",
+  "/etc/crontab",
+]

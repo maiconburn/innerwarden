@@ -1,0 +1,9 @@
+# Wazuh HIDS integration — agent config snippet
+# No agent-side config is required for this collector.
+# Wazuh alerts are ingested by the sensor; the agent's AI triage
+# handles High/Critical incidents automatically.
+
+# Ensure your responder is enabled to act on Wazuh-sourced incidents:
+# [responder]
+# enabled = true
+# dry_run = true   # set false only when ready for live blocking

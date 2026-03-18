@@ -1,0 +1,28 @@
+[module]
+id          = "fail2ban-integration"
+name        = "Fail2ban Integration"
+version     = "0.1.0"
+description = "Polls fail2ban for active bans and enforces them via InnerWarden's block skills — unifies ban decisions into a single audit trail"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = []
+detectors  = []
+skills     = []
+
+[requires]
+event_sources = []
+
+[security]
+allowed_commands        = ["/usr/bin/fail2ban-client"]
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/bin/fail2ban-client"
+reason = "fail2ban must be installed (fail2ban-client binary expected at /usr/bin/fail2ban-client)"

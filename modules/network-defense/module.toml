@@ -1,0 +1,35 @@
+[module]
+id          = "network-defense"
+name        = "Network Defense"
+version     = "0.1.0"
+description = "Detects and blocks port scanning via firewall log analysis (kernel/netfilter events via journald)"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["journald"]
+detectors  = ["port-scan"]
+skills     = ["block-ip-ufw", "block-ip-iptables", "block-ip-nftables"]
+
+[requires]
+# journald must include "kernel" unit to receive firewall/netfilter events
+event_sources = ["journald.kernel"]
+
+[[rules]]
+detector       = "port-scan"
+skill          = "block-ip-ufw"
+min_confidence = 0.8
+auto_execute   = false
+
+[security]
+allowed_commands     = ["/usr/sbin/ufw", "/sbin/iptables", "/usr/sbin/nft"]
+require_sudo_validation = true
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/sbin/ufw"
+reason = "ufw required for default block backend (or configure iptables/nftables)"

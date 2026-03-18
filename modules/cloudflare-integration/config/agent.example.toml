@@ -1,0 +1,6 @@
+[cloudflare]
+enabled = true
+zone_id = "your-zone-id-from-dashboard"
+api_token = ""        # or set CLOUDFLARE_API_TOKEN env var
+auto_push_blocks = true
+block_notes_prefix = "innerwarden"

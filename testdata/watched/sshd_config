@@ -1,0 +1,6 @@
+# Test sshd_config — watched by integrity collector
+Port 22
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+# MODIFIED

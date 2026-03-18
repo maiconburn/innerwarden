@@ -1,0 +1,39 @@
+[module]
+id          = "openclaw-protection"
+name        = "AI Agent Protection"
+version     = "0.1.0"
+description = "Monitor and protect servers running OpenClaw, n8n, Langchain, or any autonomous AI agent — detects dangerous commands, suspicious execution patterns, and config tampering"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.26"
+
+[provides]
+collectors = ["exec-audit", "journald", "integrity"]
+detectors  = ["execution-guard"]
+skills     = []   # observe mode — incidents go to AI pipeline and agent API for review
+
+[requires]
+event_sources = ["exec_audit", "journald.sudo", "integrity"]
+
+# Observe mode: no automatic response. AI agents query the /api/agent/*
+# endpoints to check command safety before executing. When a Critical
+# incident is detected, notifications fire via Telegram/Slack/webhook.
+#
+# Future: add rules to kill dangerous processes on high confidence:
+# [[rules]]
+# detector       = "execution-guard"
+# skill          = "kill-process"
+# min_confidence = 0.90
+# auto_execute   = false
+
+[security]
+allowed_commands        = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/sbin/auditd"
+reason = "auditd must be running to generate EXECVE records for exec_audit collector"

@@ -1,0 +1,35 @@
+[module]
+id          = "sudo-protection"
+name        = "Sudo Protection"
+version     = "0.1.0"
+description = "Detects privilege abuse via sudo burst analysis and temporarily suspends sudo access for the offending user"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["journald", "exec-audit"]
+detectors  = ["sudo-abuse"]
+skills     = ["suspend-user-sudo"]
+
+[requires]
+event_sources = ["journald.sudo"]   # exec-audit is optional (adds exec.command context)
+
+[[rules]]
+detector       = "sudo-abuse"
+skill          = "suspend-user-sudo"
+min_confidence = 0.85
+auto_execute   = false
+
+[security]
+# suspend-user-sudo writes drop-ins under /etc/sudoers.d/ and validates with visudo
+allowed_commands     = ["/usr/bin/install", "/usr/sbin/visudo", "/bin/rm"]
+require_sudo_validation = true
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/sbin/visudo"
+reason = "visudo required to validate sudoers drop-in before installation"

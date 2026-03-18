@@ -1,0 +1,11 @@
+# network-defense — sensor config snippet
+# Requires kernel firewall logs via journald (netfilter/iptables LOG target)
+
+[collectors.journald]
+enabled = true
+units   = ["kernel"]   # enables firewall/netfilter event collection
+
+[detectors.port_scan]
+enabled        = true
+threshold      = 12     # distinct destination ports per source IP in window
+window_seconds = 60     # 1-minute sliding window

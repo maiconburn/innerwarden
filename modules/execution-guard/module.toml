@@ -1,0 +1,41 @@
+[module]
+id          = "execution-guard"
+name        = "Execution Guard"
+version     = "0.1.0"
+description = "Monitors command execution patterns and detects suspicious activity using structural AST analysis (tree-sitter-bash) and behavioral risk scoring"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true   # code lives in crates/sensor/src/detectors/execution_guard.rs
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["exec-audit", "journald"]
+detectors  = ["execution-guard"]
+skills     = []   # observe mode only — future: suspend-user-sudo (contain), exec-firewall (strict)
+
+[requires]
+# exec-audit provides shell.command_exec events (auditd EXECVE records)
+# journald provides sudo.command events
+event_sources = ["exec_audit", "journald.sudo"]
+
+# No automatic response skills in the initial version.
+# The detector emits incidents to the AI pipeline for analysis and human review.
+# Future rule example (contain mode):
+# [[rules]]
+# detector       = "execution-guard"
+# skill          = "suspend-user-sudo"
+# min_confidence = 0.90
+# auto_execute   = false
+
+[security]
+# Observe mode requires no privileged commands.
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+# exec-audit requires /var/log/audit/audit.log read access (auditd must be running)
+[[preflights]]
+kind   = "binary_exists"
+value  = "/sbin/auditd"
+reason = "auditd must be running to generate EXECVE records for exec_audit collector"

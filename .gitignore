@@ -1,0 +1,15 @@
+/target
+/data
+*.swp
+*.swo
+.DS_Store
+.env
+.claude/
+trial-report-*.md
+trial-report-*.json
+/local/
+/reports/
+/reports-innerwarden/
+docs/assets/screenshots/IMG_*
+docs/assets/screenshots/*copy*
+docs/assets/screenshots/4A0525*

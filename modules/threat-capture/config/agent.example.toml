@@ -1,0 +1,31 @@
+# threat-capture — agent config snippet
+
+[responder]
+enabled        = true
+dry_run        = true
+allowed_skills = [
+  "monitor-ip",   # passive capture
+  "honeypot",     # active engagement
+]
+
+[honeypot]
+mode          = "listener"
+bind_addr     = "127.0.0.1"
+port          = 2222
+http_port     = 8080
+duration_secs = 300
+services      = ["ssh"]
+interaction   = "medium"        # medium: real SSH key exchange + fake HTTP login page
+isolation_profile = "strict_local"
+forensics_keep_days = 7
+forensics_max_total_mb = 128
+
+[honeypot.containment]
+mode              = "process"
+require_success   = false
+
+[ai]
+enabled              = true
+provider             = "openai"
+model                = "gpt-4o-mini"
+confidence_threshold = 0.9   # very high threshold: these are invasive skills

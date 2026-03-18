@@ -1,0 +1,19 @@
+[module]
+id          = "cloudflare-integration"
+name        = "Cloudflare Integration"
+version     = "0.1.0"
+description = "Push IP block decisions to Cloudflare's edge. When innerwarden blocks an attacking IP at the host firewall, it is also blocked at the CDN level via IP Access Rules before reaching the server."
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+notifiers = ["cloudflare_push"]
+
+[security]
+requires_network        = true
+requires_sudo           = false
+forbid_shell_expansion  = true
+audit_writes            = ["cloudflare_push"]

@@ -1,0 +1,34 @@
+[module]
+id          = "threat-capture"
+name        = "Threat Capture"
+version     = "0.1.0"
+description = "Premium skills for deeper threat intelligence: passive traffic capture (monitor-ip) and active attacker engagement (honeypot)"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "premium"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = []
+detectors  = []
+skills     = ["monitor-ip", "honeypot"]
+
+[requires]
+# monitor-ip requires tcpdump; honeypot requires a free port and optional russh
+event_sources = []   # responds to incidents from any other module
+
+# Rules are intentionally not set to defaults here.
+# These skills are activated by the AI when it judges a threat warrants deeper engagement.
+# Add to agent.toml [responder].allowed_skills to enable.
+# [[rules]] with auto_execute = true is strongly discouraged for these skills.
+
+[security]
+allowed_commands     = ["/usr/bin/timeout", "/usr/sbin/tcpdump"]
+require_sudo_validation = true
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/sbin/tcpdump"
+reason = "tcpdump required for monitor-ip packet capture"

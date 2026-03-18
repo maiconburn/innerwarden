@@ -1,0 +1,100 @@
+# Inner Warden — smoke-test config for Ollama local testing
+# Usage: innerwarden-agent --data-dir ./data --config agent-ollama-test.toml
+
+[narrative]
+enabled = true
+keep_days = 3
+
+[webhook]
+enabled = false
+
+[ai]
+enabled = true
+provider = "ollama"
+model = "qwen3-coder:480b-cloud"
+base_url = "http://localhost:11434"
+context_events = 10
+confidence_threshold = 0.7
+incident_poll_secs = 2
+
+[correlation]
+enabled = true
+window_seconds = 300
+max_related_incidents = 8
+
+[telemetry]
+enabled = true
+
+[honeypot]
+mode = "demo"
+bind_addr = "127.0.0.1"
+port = 2222
+http_port = 8080
+duration_secs = 300
+services = ["ssh"]
+strict_target_only = true
+allow_public_listener = false
+max_connections = 64
+max_payload_bytes = 512
+isolation_profile = "strict_local"
+require_high_ports = true
+forensics_keep_days = 7
+forensics_max_total_mb = 128
+transcript_preview_bytes = 96
+lock_stale_secs = 1800
+
+[honeypot.sandbox]
+enabled = false
+runner_path = ""
+clear_env = true
+
+[honeypot.pcap_handoff]
+enabled = false
+timeout_secs = 15
+max_packets = 120
+
+[honeypot.containment]
+mode = "process"
+require_success = false
+namespace_runner = "unshare"
+namespace_args = ["--fork", "--pid", "--mount-proc"]
+jail_runner = "bwrap"
+jail_args = []
+jail_profile = "standard"
+allow_namespace_fallback = true
+
+[honeypot.external_handoff]
+enabled = false
+command = "/usr/local/bin/iw-handoff"
+args = ["--session-id", "{session_id}", "--target", "{target_ip}", "--metadata", "{metadata_path}", "--evidence", "{evidence_path}", "--pcap", "{pcap_path}"]
+timeout_secs = 20
+require_success = false
+clear_env = true
+allowed_commands = ["/usr/local/bin/iw-handoff"]
+enforce_allowlist = false
+signature_enabled = false
+signature_key_env = "INNERWARDEN_HANDOFF_SIGNING_KEY"
+attestation_enabled = false
+attestation_key_env = "INNERWARDEN_HANDOFF_ATTESTATION_KEY"
+attestation_prefix = "IW_ATTEST"
+attestation_expected_receiver = ""
+
+[honeypot.redirect]
+enabled = false
+backend = "iptables"
+
+[responder]
+enabled = true
+dry_run = true
+block_backend = "pf"
+allowed_skills = ["block-ip-pf", "monitor-ip"]
+
+[telegram]
+enabled = false
+
+[data]
+events_keep_days = 7
+incidents_keep_days = 30
+decisions_keep_days = 90
+telemetry_keep_days = 14
+reports_keep_days = 30

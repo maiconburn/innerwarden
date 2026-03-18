@@ -1,0 +1,31 @@
+# Execution Guard — sensor configuration snippet
+# Copy relevant sections into your config.toml
+
+# ── exec_audit collector (required for shell.command_exec events) ─────────────
+[collectors.exec_audit]
+enabled = true
+path    = "/var/log/audit/audit.log"
+# include_tty: captures terminal input line-by-line — high privacy impact.
+# Only enable with explicit host owner authorization.
+include_tty = false
+
+# ── journald collector (required for sudo.command events) ────────────────────
+[collectors.journald]
+enabled = true
+units   = ["sshd", "sudo", "kernel"]
+
+# ── execution_guard detector ──────────────────────────────────────────────────
+[detectors.execution_guard]
+enabled = true
+
+# mode controls detector response behavior.
+# "observe" — detect and emit incidents only. No blocking actions taken.
+#             Safe for production; recommended starting point.
+# "contain" — FUTURE: automatically suspend sudo + isolate user session.
+# "strict"  — FUTURE: pre-execution interception (deny before command runs).
+mode = "observe"
+
+# Sliding window (seconds) for per-user command timeline correlation.
+# Events within this window are correlated to detect sequences like:
+#   wget payload → chmod +x payload → ./payload
+window_seconds = 300

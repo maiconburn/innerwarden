@@ -1,0 +1,18 @@
+[module]
+id          = "slack-notify"
+name        = "Slack Notify"
+version     = "0.1.0"
+description = "Sends incident alerts to a Slack channel via Incoming Webhook. Fires for all incidents at or above the configured severity threshold."
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+notifiers = ["slack"]
+
+[security]
+allowed_commands        = []
+require_sudo_validation = false
+forbid_shell_expansion  = true

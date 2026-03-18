@@ -1,0 +1,20 @@
+# ssh-protection — sensor config snippet
+# Add these sections to your config.toml
+
+[collectors.auth_log]
+enabled = true
+path    = "/var/log/auth.log"
+
+[collectors.journald]
+enabled = true
+units   = ["sshd"]
+
+[detectors.ssh_bruteforce]
+enabled        = true
+threshold      = 8      # failed attempts per IP in window
+window_seconds = 300    # 5-minute sliding window
+
+[detectors.credential_stuffing]
+enabled        = true
+threshold      = 6      # distinct usernames per IP in window
+window_seconds = 300

@@ -1,0 +1,30 @@
+[package]
+name = "innerwarden-sensor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Deterministic threat detection sensor for InnerWarden — a self-defending security agent."
+keywords = ["security", "intrusion-detection", "linux", "host-security", "rust"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+innerwarden_core = { path = "../core" }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Structural command analysis (AST) for execution-guard detector
+tree-sitter = "0.26"
+tree-sitter-bash = "0.25"
+
+[dev-dependencies]
+tempfile = "3"

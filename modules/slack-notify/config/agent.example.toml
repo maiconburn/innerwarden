@@ -1,0 +1,5 @@
+[slack]
+enabled       = true
+webhook_url   = ""        # or set SLACK_WEBHOOK_URL env var
+min_severity  = "high"    # debug | info | low | medium | high | critical
+dashboard_url = ""        # optional: "http://your-server:8787" for deep-links

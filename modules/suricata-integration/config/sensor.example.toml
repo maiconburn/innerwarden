@@ -1,0 +1,27 @@
+# Suricata integration — sensor config snippet
+#
+# 1. Install Suricata: https://suricata.io/download/
+#    Ubuntu: sudo apt-get install suricata
+#
+# 2. Ensure EVE JSON output is enabled in /etc/suricata/suricata.yaml:
+#
+#    outputs:
+#      - eve-log:
+#          enabled: yes
+#          filetype: regular
+#          filename: eve.json
+#          types:
+#            - alert
+#            - dns
+#            - http
+#            - tls
+#
+# 3. Restart Suricata: sudo systemctl restart suricata
+#
+# 4. Add the section below to your sensor config.toml
+
+[collectors.suricata_eve]
+enabled     = true
+path        = "/var/log/suricata/eve.json"
+# Optional: restrict event types to ingest (default: alert, dns, http, tls, anomaly)
+# event_types = ["alert"]

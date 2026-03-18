@@ -1,0 +1,56 @@
+[agent]
+host_id = "test-host"
+
+[output]
+data_dir = "./data"
+write_events = true
+
+[collectors.auth_log]
+enabled = true
+path = "./testdata/sample-auth.log"
+
+[collectors.macos_log]
+# macOS only — streams real SSH/sudo events via `log stream`.
+# On Linux this exits silently (no-op). On macOS may need sudo or
+# Full Disk Access granted in System Preferences → Privacy & Security.
+enabled = true
+
+[collectors.integrity]
+enabled = true
+poll_seconds = 2
+paths = [
+  "./testdata/watched/sshd_config",
+  "./testdata/watched/sudoers",
+]
+
+[collectors.journald]
+enabled = false  # no journald on macOS
+units = ["sshd", "sudo"]
+
+[collectors.exec_audit]
+enabled = false
+path = "./testdata/sample-audit.log"
+include_tty = false
+
+[collectors.docker]
+enabled = true   # docker binary present; collector exits gracefully if daemon is down
+
+[detectors.ssh_bruteforce]
+enabled = true
+threshold = 5
+window_seconds = 300
+
+[detectors.credential_stuffing]
+enabled = true
+threshold = 3
+window_seconds = 300
+
+[detectors.port_scan]
+enabled = true
+threshold = 3
+window_seconds = 60
+
+[detectors.sudo_abuse]
+enabled = false
+threshold = 2
+window_seconds = 300

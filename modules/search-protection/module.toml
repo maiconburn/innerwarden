@@ -1,0 +1,45 @@
+[module]
+id          = "search-protection"
+name        = "Search Route Protection"
+version     = "0.1.0"
+description = "Detects and blocks automated abuse of high-cost HTTP routes (e.g. search APIs) via sliding window analysis of nginx access logs"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true   # code lives in crates/sensor/src/collectors/nginx_access.rs and crates/sensor/src/detectors/search_abuse.rs
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["nginx-access-log"]
+detectors  = ["search-abuse"]
+skills     = ["rate-limit-nginx", "block-ip-ufw", "block-ip-iptables", "block-ip-nftables"]
+
+[requires]
+event_sources = ["nginx_access"]
+
+[[rules]]
+detector       = "search-abuse"
+skill          = "rate-limit-nginx"   # preferred: application-layer deny (HTTP 403)
+min_confidence = 0.8
+auto_execute   = false
+
+[[rules]]
+detector       = "search-abuse"
+skill          = "block-ip-ufw"       # fallback: network-layer block if nginx skill not configured
+min_confidence = 0.9                  # higher threshold for full block
+auto_execute   = false
+
+[security]
+allowed_commands     = ["/usr/sbin/ufw", "/sbin/iptables", "/usr/sbin/nft"]
+require_sudo_validation = true
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/sbin/nginx"
+reason = "nginx must be installed and configured to write access logs"
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/sbin/ufw"
+reason = "ufw required for default block backend (or configure iptables/nftables)"

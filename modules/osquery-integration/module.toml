@@ -1,0 +1,26 @@
+[module]
+id          = "osquery-integration"
+name        = "osquery Host Observability Integration"
+version     = "0.1.0"
+description = "Ingests osquery differential query results as InnerWarden events. Provides deep host observability: listening ports, open sockets, crontab, sudoers, startup items, authorized keys, and more."
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["osquery-log"]
+
+[requires]
+event_sources = ["osquery_log"]
+
+[security]
+allowed_commands     = []
+require_sudo_validation = false
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/bin/osqueryd"
+reason = "osquery must be installed. See https://osquery.io"

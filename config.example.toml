@@ -1,0 +1,61 @@
+[agent]
+# Unique id for this host
+host_id = "demo-host"
+
+[output]
+# Directory where JSONL + state live
+data_dir = "./data"
+# Keep raw events? (if false, only incidents)
+write_events = true
+
+[collectors.auth_log]
+enabled = true
+path = "/var/log/auth.log"
+
+[collectors.journald]
+enabled = true
+# Optional: only these systemd units
+units = ["sshd", "sudo", "kernel"]
+
+[collectors.exec_audit]
+enabled = false
+path = "/var/log/audit/audit.log"
+# Requires explicit legal authorization; only parse type=TTY when enabled.
+include_tty = false
+
+[collectors.docker]
+enabled = true
+socket = "/var/run/docker.sock"
+
+[collectors.integrity]
+enabled = true
+paths = [
+  "/etc/ssh/sshd_config",
+  "/etc/sudoers",
+  "/etc/sudoers.d",
+  "/etc/cron.d",
+]
+
+[detectors.ssh_bruteforce]
+enabled = true
+# attempts per window triggers incident
+threshold = 8
+window_seconds = 300
+
+[detectors.credential_stuffing]
+enabled = false
+# distinct usernames targeted by one source IP within window
+threshold = 6
+window_seconds = 300
+
+[detectors.port_scan]
+enabled = false
+# distinct destination ports hit by one source IP within window
+threshold = 12
+window_seconds = 60
+
+[detectors.sudo_abuse]
+enabled = false
+# suspicious sudo commands by same user in window
+threshold = 3
+window_seconds = 300

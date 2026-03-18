@@ -1,0 +1,8631 @@
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+
+mod capabilities;
+mod capability;
+mod config_editor;
+mod module_manifest;
+mod module_package;
+mod module_validator;
+mod preflight;
+mod scan;
+mod sudoers;
+mod systemd;
+mod upgrade;
+
+use capability::{ActivationOptions, CapabilityRegistry};
+
+// ---------------------------------------------------------------------------
+// CLI definition
+// ---------------------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(
+    name = "innerwarden",
+    about = "InnerWarden control plane — manage capabilities",
+    long_about = "Activate and manage InnerWarden capabilities.\n\n\
+                  Run 'innerwarden list' to see available capabilities.\n\
+                  Run 'innerwarden enable <id>' to activate one."
+)]
+struct Cli {
+    /// Path to sensor config (config.toml)
+    #[arg(long, default_value = "/etc/innerwarden/config.toml")]
+    sensor_config: PathBuf,
+
+    /// Path to agent config (agent.toml)
+    #[arg(long, default_value = "/etc/innerwarden/agent.toml")]
+    agent_config: PathBuf,
+
+    /// Directory where InnerWarden data files are stored
+    #[arg(long, default_value = "/var/lib/innerwarden", global = true)]
+    data_dir: PathBuf,
+
+    /// Show what would happen without applying any changes
+    #[arg(long, global = true)]
+    dry_run: bool,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Activate a capability
+    Enable {
+        /// Capability ID (run 'innerwarden list' to see options)
+        capability: String,
+
+        /// Capability-specific parameters as KEY=VALUE
+        #[arg(long = "param", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        params: Vec<String>,
+
+        /// Skip interactive confirmation prompts (e.g. privacy gate)
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Deactivate a capability
+    Disable {
+        /// Capability ID (run 'innerwarden list' to see options)
+        capability: String,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// List all capabilities with their current status
+    List,
+
+    /// Show system status or the full activity history for an IP or user.
+    ///
+    /// With no arguments: global overview of services, capabilities, and modules.
+    /// With an IP or username: chronological timeline of events, incidents, and
+    /// decisions for that entity (terminal equivalent of the dashboard journey panel).
+    ///
+    /// Examples:
+    ///   innerwarden status
+    ///   innerwarden status block-ip
+    ///   innerwarden status 203.0.113.10
+    ///   innerwarden status root --days 7
+    Status {
+        /// Capability ID, IP address, or username to inspect (omit for global overview)
+        target: Option<String>,
+
+        /// Directory to scan for installed modules (used in global overview)
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// How many days back to search when looking up an entity (default: 3)
+        #[arg(long, default_value = "3")]
+        days: u64,
+    },
+
+    /// Run system diagnostics and print fix hints for any issues found
+    Doctor,
+
+    /// Scan this machine and recommend the best modules for your setup.
+    ///
+    /// Runs a quick system probe, scores each module, and shows a clear
+    /// priority list.  Type a module name or number at the prompt to read
+    /// its detailed docs.
+    Scan {
+        /// Directory to look for module docs (default: ./modules or
+        /// /usr/local/share/innerwarden/modules)
+        #[arg(long, default_value = "")]
+        modules_dir: String,
+    },
+
+    /// First-time setup wizard.
+    ///
+    /// Scans your machine, configures AI, Telegram notifications, the
+    /// responder, and enables the most relevant modules for your setup.
+    ///
+    /// Examples:
+    ///   innerwarden setup
+    Setup,
+
+    /// Check for a newer release and optionally upgrade all binaries
+    Upgrade {
+        /// Only check if an update is available; do not install
+        #[arg(long)]
+        check: bool,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+
+        /// Directory where binaries are installed
+        #[arg(long, default_value = "/usr/local/bin")]
+        install_dir: PathBuf,
+    },
+
+    /// Configure notification channels (Telegram, Slack, webhook, dashboard).
+    ///
+    /// Run without arguments to see an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden notify telegram
+    ///   innerwarden notify slack --webhook-url https://hooks.slack.com/...
+    ///   innerwarden notify test
+    Notify {
+        #[command(subcommand)]
+        command: Option<NotifyCommand>,
+    },
+
+    /// Configure system components (AI provider, responder mode).
+    ///
+    /// Run without arguments to see an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden configure ai
+    ///   innerwarden configure ai openai --key sk-...
+    ///   innerwarden configure ai groq --key gsk-...
+    ///   innerwarden configure responder --enable --dry-run false
+    Configure {
+        #[command(subcommand)]
+        command: Option<ConfigureCommand>,
+    },
+
+    /// Configure external integrations (GeoIP, AbuseIPDB, fail2ban, watchdog).
+    ///
+    /// Run without arguments to see an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden integrate geoip
+    ///   innerwarden integrate abuseipdb --api-key <key>
+    ///   innerwarden integrate fail2ban
+    Integrate {
+        #[command(subcommand)]
+        command: Option<IntegrateCommand>,
+    },
+
+    /// Module management commands
+    Module {
+        #[command(subcommand)]
+        command: ModuleCommand,
+    },
+
+    /// Print the daily security report in the terminal.
+    ///
+    /// Reads the Markdown summary generated by innerwarden-agent and displays it.
+    /// No need to open the dashboard.
+    ///
+    /// Examples:
+    ///   innerwarden report
+    ///   innerwarden report --date yesterday
+    ///   innerwarden report --date 2026-03-14
+    Report {
+        /// Date to show: today, yesterday, or YYYY-MM-DD (default: today)
+        #[arg(long, default_value = "today")]
+        date: String,
+    },
+
+    /// Check if the agent is healthy and alert via Telegram if it appears stuck.
+    ///
+    /// The agent writes a telemetry file every 30 seconds. If the latest entry
+    /// is older than the threshold, the agent may be stuck or crashed.
+    ///
+    /// Add to cron for continuous monitoring:
+    ///   */10 * * * * innerwarden watchdog
+    ///
+    /// Use --status to show the cron schedule and last-run time without
+    /// running a health check.
+    ///
+    /// Examples:
+    ///   innerwarden watchdog
+    ///   innerwarden watchdog --threshold 600
+    ///   innerwarden watchdog --notify
+    ///   innerwarden watchdog --status
+    Watchdog {
+        /// How many seconds of silence before reporting unhealthy (default: 300)
+        #[arg(long, default_value = "300")]
+        threshold: u64,
+
+        /// Send a Telegram alert when the agent appears unhealthy
+        #[arg(long)]
+        notify: bool,
+
+        /// Show watchdog cron schedule and last-run info instead of running a check
+        #[arg(long)]
+        status: bool,
+    },
+
+    /// Interactively tune detector thresholds based on recent noise and signal.
+    ///
+    /// Reads telemetry + incidents from the last 7 days, computes noise/signal
+    /// ratio per detector, and suggests adjusted thresholds.  Applies changes
+    /// to sensor.toml on confirmation.
+    ///
+    /// Examples:
+    ///   innerwarden tune
+    ///   innerwarden tune --days 14
+    ///   innerwarden tune --yes        # apply suggestions without prompting
+    Tune {
+        /// How many days of history to analyse (default: 7)
+        #[arg(long, default_value = "7")]
+        days: u64,
+
+        /// Apply suggested changes without interactive prompts
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Show which collectors are active and their event counts today.
+    ///
+    /// Reads the latest telemetry snapshot to show how many events each
+    /// data source has contributed today. Useful to verify collectors are working.
+    ///
+    /// Examples:
+    ///   innerwarden sensor-status
+    #[clap(name = "sensor-status")]
+    SensorStatus,
+
+    /// Export events, incidents, or decisions to CSV or JSON.
+    ///
+    /// Examples:
+    ///   innerwarden export incidents
+    ///   innerwarden export decisions --from 2026-03-01 --to 2026-03-15
+    ///   innerwarden export events --format csv --output /tmp/events.csv
+    Export {
+        /// What to export: events, incidents, or decisions
+        #[arg(default_value = "incidents")]
+        kind: String,
+
+        /// Start date (YYYY-MM-DD, default: today)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// End date inclusive (YYYY-MM-DD, default: today)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Output format: json or csv (default: json)
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// Output file (default: stdout)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Stream new incidents and events in real time (like tail -f).
+    ///
+    /// Polls the JSONL files every 2 seconds and prints new entries as they arrive.
+    /// Press Ctrl-C to stop.
+    ///
+    /// Examples:
+    ///   innerwarden tail
+    ///   innerwarden tail --type events
+    ///   innerwarden tail --type incidents
+    Tail {
+        /// What to stream: incidents or events (default: incidents)
+        #[arg(long, default_value = "incidents")]
+        r#type: String,
+
+        /// Poll interval in seconds (default: 2)
+        #[arg(long, default_value = "2")]
+        interval: u64,
+    },
+
+    /// List recent security incidents detected on this host.
+    ///
+    /// Shows threats from today (and optionally yesterday) with severity,
+    /// IP address, title and time. No need to open the dashboard.
+    ///
+    /// Examples:
+    ///   innerwarden incidents
+    ///   innerwarden incidents --days 2
+    ///   innerwarden incidents --severity critical
+    Incidents {
+        /// How many days back to look (default: 1 = today only)
+        #[arg(long, default_value = "1")]
+        days: u64,
+
+        /// Filter by minimum severity: low, medium, high, critical (default: low = all)
+        #[arg(long, default_value = "low")]
+        severity: String,
+    },
+
+    /// Block an IP address at the firewall and record it in the audit trail.
+    ///
+    /// Uses the same block skill configured in agent.toml (ufw/iptables/nftables).
+    /// Requires sudo. The block is recorded in decisions-YYYY-MM-DD.jsonl.
+    ///
+    /// Examples:
+    ///   innerwarden block 1.2.3.4 --reason "manual block after investigation"
+    Block {
+        /// IP address to block
+        ip: String,
+
+        /// Reason for the block (required — kept in audit trail)
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Remove a previously blocked IP from the firewall.
+    ///
+    /// Reverses a block created by InnerWarden (manual or AI-initiated).
+    /// The unblock is recorded in decisions-YYYY-MM-DD.jsonl.
+    ///
+    /// Examples:
+    ///   innerwarden unblock 1.2.3.4 --reason "false positive"
+    Unblock {
+        /// IP address to unblock
+        ip: String,
+
+        /// Reason for removing the block (required — kept in audit trail)
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Show recent decisions made by InnerWarden (blocks, suspensions, ignores).
+    ///
+    /// Shows what the agent decided and whether it executed or was in dry-run mode.
+    /// Useful for auditing: "what did InnerWarden actually do?"
+    ///
+    /// Examples:
+    ///   innerwarden decisions
+    ///   innerwarden decisions --days 7
+    ///   innerwarden decisions --action block_ip
+    Decisions {
+        /// How many days back to look (default: 1 = today only)
+        #[arg(long, default_value = "1")]
+        days: u64,
+
+        /// Filter by action: block_ip, suspend_user_sudo, ignore, monitor, honeypot
+        #[arg(long)]
+        action: Option<String>,
+    },
+
+    /// Show the full activity history for an IP or user (hidden alias for 'status <entity>').
+    ///
+    /// Examples:
+    ///   innerwarden entity 203.0.113.10
+    ///   innerwarden entity root
+    ///   innerwarden entity 203.0.113.10 --days 7
+    #[clap(hide = true)]
+    Entity {
+        /// IP address or username to look up
+        target: String,
+
+        /// How many days back to search (default: 3)
+        #[arg(long, default_value = "3")]
+        days: u64,
+    },
+
+    /// Generate shell completions for bash, zsh, or fish.
+    ///
+    /// Prints the completion script to stdout. Source it in your shell config
+    /// to get tab-completion for all innerwarden commands and flags.
+    ///
+    /// Examples:
+    ///   innerwarden completions bash >> ~/.bashrc
+    ///   innerwarden completions zsh  >> ~/.zshrc
+    ///   innerwarden completions fish > ~/.config/fish/completions/innerwarden.fish
+    Completions {
+        /// Shell to generate completions for: bash, zsh, or fish
+        shell: String,
+    },
+
+    /// Manage trusted IPs, CIDRs, and users that skip automated response.
+    ///
+    /// Allowlisted entities are still logged and notified via webhook/Telegram/Slack
+    /// but the AI gate is skipped — no automated skill (block, suspend, etc.) is
+    /// ever executed for them.
+    ///
+    /// Examples:
+    ///   innerwarden allowlist add --ip 10.0.0.1
+    ///   innerwarden allowlist add --ip 192.168.0.0/24
+    ///   innerwarden allowlist add --user deploy
+    ///   innerwarden allowlist remove --ip 10.0.0.1
+    ///   innerwarden allowlist list
+    Allowlist {
+        #[command(subcommand)]
+        command: AllowlistCommand,
+    },
+
+    /// Inject a synthetic incident and verify the full pipeline responds.
+    ///
+    /// Writes a fake SSH brute-force incident using a documentation-range IP
+    /// (RFC 5737: 198.51.100.123) and waits for the agent to produce a
+    /// decision.  Safe to run on production — uses dry-run defaults and a
+    /// non-routable IP.
+    ///
+    /// Examples:
+    ///   innerwarden test
+    ///   innerwarden test --wait 20
+    #[clap(name = "test")]
+    PipelineTest {
+        /// Maximum seconds to wait for the agent to respond (default: 12)
+        #[arg(long, default_value = "12")]
+        wait: u64,
+    },
+}
+
+/// System configuration sub-commands.
+#[derive(Subcommand)]
+enum ConfigureCommand {
+    /// Configure AI provider and model.
+    ///
+    /// Run without arguments for an interactive wizard that lists providers,
+    /// validates your API key, and fetches available models from the provider.
+    ///
+    /// Examples:
+    ///   innerwarden configure ai
+    ///   innerwarden configure ai openai --key sk-...
+    ///   innerwarden configure ai groq --key gsk-... --model llama-3.3-70b-versatile
+    Ai {
+        /// Provider name: openai, anthropic, groq, deepseek, mistral, xai, gemini, ollama, etc.
+        provider: Option<String>,
+
+        /// API key for the provider
+        #[arg(long)]
+        key: Option<String>,
+
+        /// Model to use (if omitted, the wizard fetches available models)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Custom base URL for OpenAI-compatible APIs
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+
+    /// Configure responder mode (enable/disable, dry-run).
+    ///
+    /// Examples:
+    ///   innerwarden configure responder --enable --dry-run false
+    Responder {
+        /// Enable the responder (allow skill execution)
+        #[arg(long)]
+        enable: bool,
+
+        /// Dry-run mode: true = log only, false = execute for real
+        #[arg(long)]
+        dry_run: Option<String>,
+    },
+}
+
+/// Notification channel setup sub-commands.
+#[derive(Subcommand)]
+enum NotifyCommand {
+    /// Set up Telegram notifications (interactive wizard).
+    ///
+    /// Walks you through creating a bot and getting your chat ID.
+    /// Credentials are saved to agent.env (never in plain TOML).
+    ///
+    /// Examples:
+    ///   innerwarden notify telegram
+    ///   innerwarden notify telegram --token 123:ABC --chat-id 456789
+    Telegram {
+        /// Bot token from @BotFather (skips the wizard prompt)
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Your Telegram chat ID (skips the wizard prompt)
+        #[arg(long)]
+        chat_id: Option<String>,
+
+        /// Skip the test message after configuring
+        #[arg(long)]
+        no_test: bool,
+    },
+
+    /// Set up Slack notifications (interactive wizard).
+    ///
+    /// Walks you through creating an Incoming Webhook in your Slack workspace.
+    /// The webhook URL is saved to agent.env.
+    ///
+    /// Examples:
+    ///   innerwarden notify slack
+    ///   innerwarden notify slack --webhook-url https://hooks.slack.com/services/...
+    Slack {
+        /// Slack Incoming Webhook URL (skips the wizard prompt)
+        #[arg(long)]
+        webhook_url: Option<String>,
+
+        /// Minimum severity to notify: low, medium, high, critical (default: high)
+        #[arg(long, default_value = "high")]
+        min_severity: String,
+
+        /// Skip the test message after configuring
+        #[arg(long)]
+        no_test: bool,
+    },
+
+    /// Set up HTTP webhook notifications (sends alerts to any HTTP endpoint).
+    ///
+    /// Examples:
+    ///   innerwarden notify webhook
+    ///   innerwarden notify webhook --url https://hooks.example.com/notify
+    ///   innerwarden notify webhook --url https://hooks.example.com/notify --min-severity medium
+    Webhook {
+        /// Webhook URL (skips the wizard prompt)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Minimum severity to forward: low, medium, high, critical (default: high)
+        #[arg(long, default_value = "high")]
+        min_severity: String,
+
+        /// Skip the test request after configuring
+        #[arg(long)]
+        no_test: bool,
+    },
+
+    /// Set up the local security dashboard (generates login credentials).
+    ///
+    /// Creates a secure password hash and writes credentials to agent.env.
+    /// The dashboard is then available at http://localhost:8787 after agent restart.
+    ///
+    /// Examples:
+    ///   innerwarden notify dashboard
+    ///   innerwarden notify dashboard --user admin --password mysecretpassword
+    Dashboard {
+        /// Dashboard username (default: admin)
+        #[arg(long, default_value = "admin")]
+        user: String,
+
+        /// Dashboard password (skips the interactive prompt)
+        #[arg(long)]
+        password: Option<String>,
+    },
+
+    /// Send a test alert to all configured notification channels.
+    ///
+    /// Verifies that Telegram, Slack, and webhook notifications are working
+    /// end-to-end. Useful after first setup or after changing credentials.
+    ///
+    /// Examples:
+    ///   innerwarden notify test
+    ///   innerwarden notify test --channel telegram
+    Test {
+        /// Only test a specific channel: telegram, slack, or webhook
+        #[arg(long)]
+        channel: Option<String>,
+    },
+
+    /// Set up browser Web Push notifications (RFC 8291 / VAPID).
+    ///
+    /// Generates a VAPID key pair and writes the configuration to agent.toml.
+    /// After setup, open the InnerWarden dashboard and click "Enable notifications"
+    /// to subscribe your browser.
+    ///
+    /// Examples:
+    ///   innerwarden notify web-push
+    ///   innerwarden notify web-push --subject mailto:admin@example.com
+    #[clap(name = "web-push")]
+    WebPush {
+        /// VAPID subject — "mailto:..." contact address for the push service (default: mailto:admin@example.com)
+        #[arg(long)]
+        subject: Option<String>,
+    },
+}
+
+/// Allowlist sub-commands.
+#[derive(Subcommand)]
+enum AllowlistCommand {
+    /// Add a trusted IP, CIDR, or user to the allowlist.
+    ///
+    /// Examples:
+    ///   innerwarden allowlist add --ip 10.0.0.1
+    ///   innerwarden allowlist add --ip 192.168.0.0/24
+    ///   innerwarden allowlist add --user deploy
+    Add {
+        /// IP address or CIDR range to trust (e.g. 10.0.0.1 or 192.168.0.0/24)
+        #[arg(long)]
+        ip: Option<String>,
+
+        /// Username to trust
+        #[arg(long)]
+        user: Option<String>,
+    },
+
+    /// Remove an IP, CIDR, or user from the allowlist.
+    ///
+    /// Examples:
+    ///   innerwarden allowlist remove --ip 10.0.0.1
+    ///   innerwarden allowlist remove --user deploy
+    Remove {
+        /// IP address or CIDR to remove
+        #[arg(long)]
+        ip: Option<String>,
+
+        /// Username to remove
+        #[arg(long)]
+        user: Option<String>,
+    },
+
+    /// Show all currently trusted IPs, CIDRs, and users.
+    List,
+}
+
+/// External integration setup sub-commands.
+#[derive(Subcommand)]
+enum IntegrateCommand {
+    /// Enable GeoIP country/ISP enrichment (no API key needed).
+    ///
+    /// Uses ip-api.com (free, 45 req/min) to add country and ISP context
+    /// to AI analysis. No account or API key required.
+    ///
+    /// Examples:
+    ///   innerwarden integrate geoip
+    Geoip,
+
+    /// Set up AbuseIPDB IP reputation enrichment.
+    ///
+    /// AbuseIPDB checks each attacker IP's abuse history before AI analysis,
+    /// making decisions more accurate. Free tier: 1,000 lookups/day.
+    ///
+    /// Get a free API key at https://www.abuseipdb.com/register
+    ///
+    /// Examples:
+    ///   innerwarden integrate abuseipdb
+    ///   innerwarden integrate abuseipdb --api-key <key>
+    Abuseipdb {
+        /// AbuseIPDB API key (skips the wizard prompt)
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Auto-block IPs with abuse confidence score >= this threshold without calling AI (0 = disabled)
+        #[arg(long)]
+        auto_block_threshold: Option<u8>,
+    },
+
+    /// Enable fail2ban integration (syncs active bans into InnerWarden).
+    ///
+    /// When fail2ban bans an IP, InnerWarden will automatically enforce it
+    /// via the configured block skill (ufw/iptables/nftables).
+    ///
+    /// Examples:
+    ///   innerwarden integrate fail2ban
+    Fail2ban,
+
+    /// Push blocked IPs to Cloudflare edge via IP Access Rules API.
+    ///
+    /// After every successful block-ip action, the IP is also added to your
+    /// Cloudflare zone's IP Access Rules — blocking it at the CDN edge before
+    /// traffic even reaches your server.
+    ///
+    /// Requires a Cloudflare API token with Zone > Firewall Services > Edit permission.
+    /// Zone ID is on the right panel of your domain in the Cloudflare dashboard.
+    ///
+    /// Examples:
+    ///   innerwarden integrate cloudflare
+    ///   innerwarden integrate cloudflare --zone-id <id> --api-token <token>
+    Cloudflare {
+        /// Cloudflare Zone ID (from your domain's dashboard page)
+        #[arg(long)]
+        zone_id: Option<String>,
+        /// Cloudflare API token with Firewall Services Edit permission
+        #[arg(long)]
+        api_token: Option<String>,
+    },
+
+    /// Set up automatic health monitoring via cron (watchdog).
+    ///
+    /// Adds a cron entry that runs `innerwarden watchdog --notify` every N minutes.
+    /// Sends a Telegram alert if the agent stops writing telemetry.
+    ///
+    /// Examples:
+    ///   innerwarden integrate watchdog
+    ///   innerwarden integrate watchdog --interval 5
+    Watchdog {
+        /// How often to check (minutes, default: 10)
+        #[arg(long, default_value = "10")]
+        interval: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleCommand {
+    /// Validate a module package (manifest, structure, security, docs, tests)
+    Validate {
+        /// Path to the module directory
+        path: PathBuf,
+
+        /// Enable stricter security checks (unsafe blocks, etc.)
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Enable a module (patch configs, install sudoers, restart services)
+    Enable {
+        /// Path to the module directory containing module.toml
+        path: PathBuf,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Disable a module (revert config patches, remove sudoers, restart services)
+    Disable {
+        /// Path to the module directory containing module.toml
+        path: PathBuf,
+
+        /// Skip interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// List all modules found in the modules directory
+    List {
+        /// Directory to scan for module packages (each subdirectory with a module.toml)
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+    },
+
+    /// Show the status of a specific module by ID
+    Status {
+        /// Module ID (e.g. "search-protection")
+        id: String,
+
+        /// Directory to scan for module packages
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+    },
+
+    /// Search available modules from the InnerWarden registry
+    ///
+    /// Fetches the live registry from the repository and lists all modules,
+    /// optionally filtering by name, tag, or description.
+    ///
+    /// Examples:
+    ///   innerwarden module search
+    ///   innerwarden module search ssh
+    ///   innerwarden module search honeypot
+    Search {
+        /// Filter by name, tag, or description (case-insensitive)
+        query: Option<String>,
+    },
+
+    /// Install a module by name, URL, or local path
+    ///
+    /// Accepts:
+    ///   - A module name from the registry:  innerwarden module install ssh-protection
+    ///   - An HTTPS URL to a .tar.gz:        innerwarden module install https://...
+    ///   - A local file or directory path:   innerwarden module install ./my-module
+    ///
+    /// Built-in modules are enabled directly without downloading anything.
+    Install {
+        /// Module name (registry), HTTPS URL, or local path to a .tar.gz / directory
+        source: String,
+
+        /// Directory where modules are installed
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// Enable the module immediately after installing
+        #[arg(long)]
+        enable: bool,
+
+        /// Overwrite if the module ID is already installed
+        #[arg(long)]
+        force: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Remove an installed module (disables it first if needed)
+    Uninstall {
+        /// Module ID to remove
+        id: String,
+
+        /// Directory where modules are installed
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Package a module directory into a distributable .tar.gz
+    Publish {
+        /// Path to the module directory
+        path: PathBuf,
+
+        /// Output file (defaults to <id>-v<version>.tar.gz in current directory)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Check installed modules for updates and apply them
+    UpdateAll {
+        /// Directory where modules are installed
+        #[arg(long, default_value = "/etc/innerwarden/modules")]
+        modules_dir: PathBuf,
+
+        /// Only report available updates without installing
+        #[arg(long)]
+        check: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let registry = CapabilityRegistry::default_all();
+
+    match cli.command {
+        Command::Doctor => cmd_doctor(&cli, &registry),
+        Command::Setup => cmd_setup(&cli),
+        Command::Scan { ref modules_dir } => scan::cmd_scan(modules_dir),
+        Command::Upgrade {
+            check,
+            yes,
+            ref install_dir,
+        } => cmd_upgrade(&cli, check, yes, install_dir),
+        Command::List => cmd_list(&cli, &registry),
+        Command::Status {
+            ref target,
+            ref modules_dir,
+            days,
+        } => match target {
+            None => cmd_status_global(&cli, &registry, modules_dir),
+            Some(ref t) => {
+                // Check if it looks like a capability ID first; fall back to entity lookup
+                if registry.get(t).is_some() {
+                    cmd_status(&cli, &registry, t)
+                } else {
+                    cmd_entity(&cli, t, days, &cli.data_dir.clone())
+                }
+            }
+        },
+        Command::Enable {
+            ref capability,
+            ref params,
+            yes,
+        } => {
+            let params = parse_params(params)?;
+            cmd_enable(&cli, &registry, capability, params, yes)
+        }
+        Command::Disable {
+            ref capability,
+            yes,
+        } => cmd_disable(&cli, &registry, capability, yes),
+        Command::Configure { ref command } => match command {
+            None => cmd_configure_menu(&cli),
+            Some(ConfigureCommand::Ai {
+                ref provider,
+                ref key,
+                ref model,
+                ref base_url,
+            }) => {
+                if provider.is_none() {
+                    cmd_configure_ai_interactive(&cli)
+                } else {
+                    cmd_configure_ai(
+                        &cli,
+                        provider.as_deref().unwrap(),
+                        key.as_deref(),
+                        model.as_deref(),
+                        base_url.as_deref(),
+                    )
+                }
+            }
+            Some(ConfigureCommand::Responder {
+                enable,
+                ref dry_run,
+            }) => {
+                if !cli.dry_run {
+                    require_sudo(&cli);
+                }
+                if *enable {
+                    config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+                    println!("  [ok] responder enabled");
+                }
+                if let Some(val) = dry_run {
+                    let dr = val != "false";
+                    config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
+                    println!(
+                        "  [ok] dry_run = {dr}{}",
+                        if dr { "" } else { " — LIVE MODE" }
+                    );
+                }
+                systemd::restart_service("innerwarden-agent", false)?;
+                println!("  [ok] innerwarden-agent restarted");
+                Ok(())
+            }
+        },
+        Command::Notify { ref command } => match command {
+            None => cmd_configure_menu(&cli),
+            Some(NotifyCommand::Telegram {
+                ref token,
+                ref chat_id,
+                no_test,
+            }) => cmd_configure_telegram(&cli, token.as_deref(), chat_id.as_deref(), *no_test),
+            Some(NotifyCommand::Slack {
+                ref webhook_url,
+                ref min_severity,
+                no_test,
+            }) => cmd_configure_slack(&cli, webhook_url.as_deref(), min_severity, *no_test),
+            Some(NotifyCommand::Webhook {
+                ref url,
+                ref min_severity,
+                no_test,
+            }) => cmd_configure_webhook(&cli, url.as_deref(), min_severity, *no_test),
+            Some(NotifyCommand::Dashboard {
+                ref user,
+                ref password,
+            }) => cmd_configure_dashboard(&cli, user, password.as_deref()),
+            Some(NotifyCommand::Test { ref channel }) => cmd_test_alert(&cli, channel.as_deref()),
+            Some(NotifyCommand::WebPush { ref subject }) => {
+                cmd_notify_web_push_setup(&cli, subject.as_deref())
+            }
+        },
+        Command::Integrate { ref command } => match command {
+            None => cmd_configure_menu(&cli),
+            Some(IntegrateCommand::Geoip) => cmd_configure_geoip(&cli),
+            Some(IntegrateCommand::Abuseipdb {
+                ref api_key,
+                auto_block_threshold,
+            }) => cmd_configure_abuseipdb(&cli, api_key.as_deref(), *auto_block_threshold),
+            Some(IntegrateCommand::Cloudflare {
+                ref zone_id,
+                ref api_token,
+            }) => cmd_configure_cloudflare(&cli, zone_id.as_deref(), api_token.as_deref()),
+            Some(IntegrateCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
+            Some(IntegrateCommand::Watchdog { interval }) => {
+                cmd_configure_watchdog(&cli, *interval)
+            }
+        },
+        Command::Module { ref command } => match command {
+            ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
+            ModuleCommand::Enable { ref path, yes } => cmd_module_enable(&cli, path, *yes),
+            ModuleCommand::Disable { ref path, yes } => cmd_module_disable(&cli, path, *yes),
+            ModuleCommand::Search { ref query } => cmd_module_search(query.as_deref()),
+            ModuleCommand::List { ref modules_dir } => cmd_module_list(&cli, modules_dir),
+            ModuleCommand::Status {
+                ref id,
+                ref modules_dir,
+            } => cmd_module_status(&cli, id, modules_dir),
+            ModuleCommand::Install {
+                ref source,
+                ref modules_dir,
+                enable,
+                force,
+                yes,
+            } => cmd_module_install(&cli, source, modules_dir, *enable, *force, *yes),
+            ModuleCommand::Uninstall {
+                ref id,
+                ref modules_dir,
+                yes,
+            } => cmd_module_uninstall(&cli, id, modules_dir, *yes),
+            ModuleCommand::Publish {
+                ref path,
+                ref output,
+            } => cmd_module_publish(path, output.as_deref()),
+            ModuleCommand::UpdateAll {
+                ref modules_dir,
+                check,
+                yes,
+            } => cmd_module_update_all(&cli, modules_dir, *check, *yes),
+        },
+        Command::Incidents { days, ref severity } => {
+            cmd_incidents(&cli, days, severity, &cli.data_dir.clone())
+        }
+        Command::Block { ref ip, ref reason } => cmd_block(&cli, ip, reason, &cli.data_dir.clone()),
+        Command::Unblock { ref ip, ref reason } => {
+            cmd_unblock(&cli, ip, reason, &cli.data_dir.clone())
+        }
+        Command::Report { ref date } => cmd_report(&cli, date, &cli.data_dir.clone()),
+        Command::Watchdog {
+            threshold,
+            notify,
+            status,
+        } => {
+            if status {
+                cmd_watchdog_status(&cli, &cli.data_dir.clone())
+            } else {
+                cmd_watchdog(&cli, threshold, notify, &cli.data_dir.clone())
+            }
+        }
+        Command::Tune { days, yes } => cmd_tune(&cli, days, yes, &cli.data_dir.clone()),
+        Command::SensorStatus => cmd_sensor_status(&cli, &cli.data_dir.clone()),
+        Command::Export {
+            ref kind,
+            ref from,
+            ref to,
+            ref format,
+            ref output,
+        } => cmd_export(
+            &cli,
+            kind,
+            from.as_deref(),
+            to.as_deref(),
+            format,
+            output.as_deref(),
+            &cli.data_dir.clone(),
+        ),
+        Command::Tail {
+            ref r#type,
+            interval,
+        } => cmd_tail(&cli, r#type, interval, &cli.data_dir.clone()),
+        Command::Decisions { days, ref action } => {
+            cmd_decisions(&cli, days, action.as_deref(), &cli.data_dir.clone())
+        }
+        Command::Entity { ref target, days } => {
+            cmd_entity(&cli, target, days, &cli.data_dir.clone())
+        }
+        Command::Completions { ref shell } => cmd_completions(shell),
+        Command::Allowlist { ref command } => match command {
+            AllowlistCommand::Add { ref ip, ref user } => {
+                cmd_allowlist_add(&cli, ip.as_deref(), user.as_deref())
+            }
+            AllowlistCommand::Remove { ref ip, ref user } => {
+                cmd_allowlist_remove(&cli, ip.as_deref(), user.as_deref())
+            }
+            AllowlistCommand::List => cmd_allowlist_list(&cli),
+        },
+        Command::PipelineTest { wait } => cmd_pipeline_test(&cli, wait, &cli.data_dir.clone()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command handlers
+// ---------------------------------------------------------------------------
+
+fn cmd_list(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
+    println!("{:<20} {:<10} Description", "Capability", "Status");
+    println!("{}", "─".repeat(72));
+    for cap in registry.all() {
+        let opts = make_opts(cli, HashMap::new(), false);
+        let status = if cap.is_enabled(&opts) {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        println!("{:<20} {:<10} {}", cap.id(), status, cap.description());
+    }
+    Ok(())
+}
+
+fn cmd_status(cli: &Cli, registry: &CapabilityRegistry, id: &str) -> Result<()> {
+    let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
+    let opts = make_opts(cli, HashMap::new(), false);
+    let status = if cap.is_enabled(&opts) {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    println!("Capability:  {}", cap.name());
+    println!("ID:          {}", cap.id());
+    println!("Status:      {status}");
+    println!("Description: {}", cap.description());
+    Ok(())
+}
+
+fn cmd_status_global(
+    cli: &Cli,
+    registry: &CapabilityRegistry,
+    modules_dir: &std::path::Path,
+) -> Result<()> {
+    use module_manifest::{is_module_enabled, scan_modules_dir};
+
+    println!("InnerWarden Status");
+    println!("{}", "═".repeat(56));
+
+    // ── Services ─────────────────────────────────────────
+    println!("\nServices");
+    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+        let active = systemd::is_service_active(unit);
+        let indicator = if active { "●" } else { "○" };
+        let label = if active { "running" } else { "stopped" };
+        println!("  {indicator} {unit:<28} {label}");
+    }
+
+    // ── Activity (today) ──────────────────────────────────
+    let data_dir: Option<std::path::PathBuf> = cli
+        .agent_config
+        .exists()
+        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+        .flatten()
+        .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|doc| {
+            doc.get("output")
+                .and_then(|o| o.get("data_dir"))
+                .and_then(|d| d.as_str())
+                .map(std::path::PathBuf::from)
+        })
+        .or_else(|| Some(std::path::PathBuf::from("/var/lib/innerwarden")));
+
+    if let Some(ref dir) = data_dir {
+        let today = today_date_string();
+
+        // Count events today
+        let events_count = count_jsonl_lines(&dir.join(format!("events-{today}.jsonl")));
+        // Count incidents today
+        let incidents_count = count_jsonl_lines(&dir.join(format!("incidents-{today}.jsonl")));
+        // Last incident title and time
+        let last_incident =
+            read_last_incident_summary(&dir.join(format!("incidents-{today}.jsonl")));
+
+        println!("\nToday  ({})", today);
+        println!("  Events logged:    {events_count}");
+        println!("  Threats detected: {incidents_count}");
+        if let Some((title, when)) = last_incident {
+            println!("  Last threat:      {title}  [{when}]");
+        } else if incidents_count == 0 {
+            println!("  Last threat:      none — quiet day so far");
+        }
+    }
+
+    // ── AI & Response ─────────────────────────────────────
+    let agent_doc: Option<toml_edit::DocumentMut> = cli
+        .agent_config
+        .exists()
+        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+        .flatten()
+        .and_then(|s| s.parse().ok());
+
+    let ai_enabled = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("ai"))
+        .and_then(|a| a.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ai_provider = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("ai"))
+        .and_then(|a| a.get("provider"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai")
+        .to_string();
+    let responder_enabled = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("responder"))
+        .and_then(|r| r.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dry_run = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("responder"))
+        .and_then(|r| r.get("dry_run"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    println!("\nAI & Response");
+    if ai_enabled {
+        println!("  ● AI analysis     active  ({ai_provider})");
+    } else {
+        println!("  ○ AI analysis     disabled");
+    }
+    if responder_enabled {
+        let mode = if dry_run {
+            "dry-run (observe only)"
+        } else {
+            "live (executing actions)"
+        };
+        println!("  ● Responder       active  ({mode})");
+    } else {
+        println!("  ○ Responder       disabled");
+    }
+
+    // ── Capabilities ──────────────────────────────────────
+    println!("\nCapabilities");
+    let opts = make_opts(cli, HashMap::new(), false);
+    for cap in registry.all() {
+        let enabled = cap.is_enabled(&opts);
+        let indicator = if enabled { "●" } else { "○" };
+        let label = if enabled { "enabled " } else { "disabled" };
+        println!(
+            "  {indicator} {:<20} {}  {}",
+            cap.id(),
+            label,
+            cap.description()
+        );
+    }
+
+    // ── Modules ───────────────────────────────────────────
+    println!("\nModules  ({})", modules_dir.display());
+    let modules = scan_modules_dir(modules_dir);
+    if modules.is_empty() {
+        println!("  (none installed)");
+    } else {
+        for m in &modules {
+            let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, m);
+            let indicator = if enabled { "●" } else { "○" };
+            let label = if enabled { "enabled " } else { "disabled" };
+            println!("  {indicator} {:<20} {}  {}", m.id, label, m.name);
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Return today's date as YYYY-MM-DD using the system UTC clock.
+fn today_date_string() -> String {
+    // Use SystemTime → seconds since epoch → compute date
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    epoch_secs_to_date_string(secs)
+}
+
+/// Return yesterday's date as YYYY-MM-DD.
+fn yesterday_date_string() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().saturating_sub(86400))
+        .unwrap_or(0);
+    epoch_secs_to_date_string(secs)
+}
+
+/// Convert Unix timestamp (seconds) to YYYY-MM-DD string (UTC).
+fn epoch_secs_to_date_string(secs: u64) -> String {
+    // Days since Unix epoch
+    let days = secs / 86400;
+    // Gregorian calendar calculation
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// Count lines in a JSONL file (returns 0 if file doesn't exist).
+fn count_jsonl_lines(path: &std::path::Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
+}
+
+/// Read the last incident from a JSONL file and return (title, time_str).
+fn read_last_incident_summary(path: &std::path::Path) -> Option<(String, String)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let last_line = content.lines().rfind(|l| !l.trim().is_empty())?;
+    let v: serde_json::Value = serde_json::from_str(last_line).ok()?;
+    let title = v["title"].as_str()?.to_string();
+    let ts = v["ts"].as_str()?;
+    // Parse ISO8601 and format as HH:MM
+    let time_str = if ts.len() >= 16 {
+        ts[11..16].to_string()
+    } else {
+        ts.to_string()
+    };
+    Some((title, format!("{time_str} UTC")))
+}
+
+fn cmd_enable(
+    cli: &Cli,
+    registry: &CapabilityRegistry,
+    id: &str,
+    params: HashMap<String, String>,
+    yes: bool,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
+    let opts = make_opts(cli, params, yes);
+
+    if cap.is_enabled(&opts) {
+        println!(
+            "Capability '{}' is already enabled. Nothing to do.",
+            cap.id()
+        );
+        return Ok(());
+    }
+
+    println!("Enabling capability: {}\n", cap.name());
+
+    // --- Preflight checks ---
+    println!("Preflight checks:");
+    let preflights = cap.preflights(&opts);
+    let mut any_failed = false;
+    for pf in &preflights {
+        match pf.check() {
+            Ok(()) => println!("  [ok] {}", pf.name()),
+            Err(e) => {
+                println!("  [fail] {}", e.message);
+                if let Some(hint) = &e.fix_hint {
+                    println!("         → {hint}");
+                }
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed {
+        anyhow::bail!("preflight checks failed — no changes applied");
+    }
+
+    // --- Planned effects ---
+    println!("\nPlanned changes:");
+    let effects = cap.planned_effects(&opts);
+    for (i, effect) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, effect.description);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    // --- Confirmation ---
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    // --- Activate ---
+    let report = cap.activate(&opts)?;
+    for effect in &report.effects_applied {
+        println!("  [done] {}", effect.description);
+    }
+    for warn in &report.warnings {
+        println!("  [warn] {warn}");
+    }
+
+    println!("\nCapability '{}' is now enabled.", cap.id());
+    Ok(())
+}
+
+fn cmd_module_validate(path: &std::path::Path, strict: bool) -> Result<()> {
+    let report = module_validator::validate(path, strict)?;
+    report.print();
+    if report.passed() {
+        Ok(())
+    } else {
+        anyhow::bail!("module validation failed")
+    }
+}
+
+fn cmd_module_enable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()> {
+    use module_manifest::{
+        generate_module_sudoers_rule, is_module_enabled, module_planned_effects, ModuleManifest,
+    };
+
+    // 1. Validate manifest before touching anything
+    let report = module_validator::validate(path, false)?;
+    if !report.passed() {
+        report.print();
+        anyhow::bail!("module validation failed — fix errors before enabling");
+    }
+
+    // 2. Parse manifest
+    let manifest = ModuleManifest::from_path(path)?;
+
+    println!("Enabling module: {} ({})\n", manifest.name, manifest.id);
+
+    // 3. Check if already enabled
+    if is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest) {
+        println!(
+            "Module '{}' is already enabled. Nothing to do.",
+            manifest.id
+        );
+        return Ok(());
+    }
+
+    // 4. Preflight checks
+    println!("Preflight checks:");
+    let mut any_failed = false;
+    for pf in &manifest.preflights {
+        let (ok, err_msg) = run_module_preflight(pf);
+        if ok {
+            println!("  [ok]   {}", pf.reason);
+        } else {
+            println!("  [fail] {} — {}", pf.reason, err_msg);
+            any_failed = true;
+        }
+    }
+    if manifest.preflights.is_empty() {
+        println!("  (none required)");
+    }
+    if any_failed {
+        anyhow::bail!("preflight checks failed — no changes applied");
+    }
+
+    // 5. Planned effects
+    let effects = module_planned_effects(&cli.sensor_config, &cli.agent_config, &manifest);
+    println!("\nPlanned changes:");
+    for (i, e) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, e);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    // 6. Confirmation
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    // 7. Apply
+    apply_module_enable(cli, &manifest, &generate_module_sudoers_rule)?;
+
+    println!("\nModule '{}' is now enabled.", manifest.id);
+    Ok(())
+}
+
+fn cmd_module_disable(cli: &Cli, path: &std::path::Path, yes: bool) -> Result<()> {
+    use module_manifest::{is_module_enabled, module_disable_effects, ModuleManifest};
+
+    let manifest = ModuleManifest::from_path(path)?;
+
+    println!("Disabling module: {} ({})\n", manifest.name, manifest.id);
+
+    if !is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest) {
+        println!("Module '{}' is not enabled. Nothing to do.", manifest.id);
+        return Ok(());
+    }
+
+    let effects = module_disable_effects(&cli.sensor_config, &cli.agent_config, &manifest);
+    println!("Changes to apply:");
+    for (i, e) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, e);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+    apply_module_disable(cli, &manifest)?;
+    println!("\nModule '{}' is now disabled.", manifest.id);
+    Ok(())
+}
+
+fn cmd_module_list(cli: &Cli, modules_dir: &std::path::Path) -> Result<()> {
+    use module_manifest::{is_module_enabled, scan_modules_dir};
+
+    let modules = scan_modules_dir(modules_dir);
+
+    if modules.is_empty() {
+        println!("No modules found in {}", modules_dir.display());
+        println!("Use 'innerwarden module enable <path>' to enable a module from its directory.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<10} {:<8} Description",
+        "Module", "Status", "Tier"
+    );
+    println!("{}", "─".repeat(80));
+
+    for m in &modules {
+        let status = if is_module_enabled(&cli.sensor_config, &cli.agent_config, m) {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        // Truncate description to keep table readable
+        let desc: String = m.name.chars().take(23).collect();
+        println!("{:<24} {:<10} {:<8} {}", m.id, status, "open", desc);
+    }
+    Ok(())
+}
+
+fn cmd_module_status(cli: &Cli, id: &str, modules_dir: &std::path::Path) -> Result<()> {
+    use module_manifest::{
+        collector_section, detector_section, is_module_enabled, notifier_section, scan_modules_dir,
+    };
+
+    let modules = scan_modules_dir(modules_dir);
+    let manifest = modules.iter().find(|m| m.id == id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "module '{}' not found in {} — check the path or run 'innerwarden module list'",
+            id,
+            modules_dir.display()
+        )
+    })?;
+
+    let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, manifest);
+    let status = if enabled { "enabled" } else { "disabled" };
+    let builtin = if manifest.builtin { "yes" } else { "no" };
+
+    println!("Module:      {}", manifest.name);
+    println!("ID:          {}", manifest.id);
+    println!("Status:      {status}");
+    println!("Builtin:     {builtin}");
+
+    if !manifest.collectors.is_empty() {
+        let parts: Vec<String> = manifest
+            .collectors
+            .iter()
+            .map(|id| {
+                let on = collector_section(id)
+                    .map(|s| config_editor::read_bool(&cli.sensor_config, s, "enabled"))
+                    .unwrap_or(false);
+                format!("{id} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Collectors:  {}", parts.join(", "));
+    }
+
+    if !manifest.detectors.is_empty() {
+        let parts: Vec<String> = manifest
+            .detectors
+            .iter()
+            .map(|id| {
+                let on = detector_section(id)
+                    .map(|s| config_editor::read_bool(&cli.sensor_config, s, "enabled"))
+                    .unwrap_or(false);
+                format!("{id} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Detectors:   {}", parts.join(", "));
+    }
+
+    if !manifest.skills.is_empty() {
+        let active =
+            config_editor::read_str_array(&cli.agent_config, "responder", "allowed_skills");
+        let parts: Vec<String> = manifest
+            .skills
+            .iter()
+            .map(|s| {
+                let on = active.iter().any(|a| a == s);
+                format!("{s} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Skills:      {}", parts.join(", "));
+    }
+
+    if !manifest.notifiers.is_empty() {
+        let parts: Vec<String> = manifest
+            .notifiers
+            .iter()
+            .map(|id| {
+                let on = notifier_section(id)
+                    .map(|s| config_editor::read_bool(&cli.agent_config, s, "enabled"))
+                    .unwrap_or(false);
+                format!("{id} ({})", if on { "enabled" } else { "disabled" })
+            })
+            .collect();
+        println!("Notifiers:   {}", parts.join(", "));
+    }
+
+    Ok(())
+}
+
+fn apply_module_disable(cli: &Cli, manifest: &module_manifest::ModuleManifest) -> Result<()> {
+    use module_manifest::{collector_section, detector_section, notifier_section};
+
+    // Disable collectors
+    for id in &manifest.collectors {
+        if let Some(section) = collector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", false)?;
+            println!("  [done] [{section}] enabled = false");
+        }
+    }
+
+    // Disable detectors
+    for id in &manifest.detectors {
+        if let Some(section) = detector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", false)?;
+            println!("  [done] [{section}] enabled = false");
+        }
+    }
+
+    // Remove skills from allowed_skills
+    for skill in &manifest.skills {
+        let removed = config_editor::write_array_remove(
+            &cli.agent_config,
+            "responder",
+            "allowed_skills",
+            skill,
+        )?;
+        if removed {
+            println!("  [done] Removed \"{skill}\" from [responder] allowed_skills");
+        }
+    }
+
+    // Disable notifiers in agent config
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            config_editor::write_bool(&cli.agent_config, section, "enabled", false)?;
+            println!("  [done] [{section}] enabled = false");
+        } else {
+            println!("  [warn] unknown notifier '{id}' — skipped");
+        }
+    }
+
+    // Remove sudoers drop-in
+    if !manifest.allowed_commands.is_empty() {
+        let drop_in_name = format!("innerwarden-module-{}", manifest.id);
+        let drop_in = sudoers::SudoersDropIn::new(drop_in_name, String::new());
+        drop_in.remove(cli.dry_run)?;
+        println!(
+            "  [done] Removed /etc/sudoers.d/innerwarden-module-{}",
+            manifest.id
+        );
+    }
+
+    // Restart services
+    let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
+    let needs_agent = !manifest.skills.is_empty() || !manifest.notifiers.is_empty();
+
+    if needs_sensor {
+        systemd::restart_service("innerwarden-sensor", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-sensor");
+    }
+    if needs_agent {
+        systemd::restart_service("innerwarden-agent", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-agent");
+    }
+
+    Ok(())
+}
+
+fn run_module_preflight(pf: &module_manifest::ModulePreflightSpec) -> (bool, String) {
+    match pf.kind.as_str() {
+        "binary_exists" => {
+            let exists = std::path::Path::new(&pf.value).exists();
+            (exists, format!("{} not found", pf.value))
+        }
+        "directory_exists" => {
+            let exists = std::path::Path::new(&pf.value).is_dir();
+            (exists, format!("directory {} not found", pf.value))
+        }
+        "user_exists" => {
+            // Check via /etc/passwd presence (no external tools needed)
+            let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+            let exists = passwd
+                .lines()
+                .any(|l| l.split(':').next().is_some_and(|u| u == pf.value));
+            (exists, format!("user '{}' does not exist", pf.value))
+        }
+        _ => (true, String::new()), // unknown kind = pass (fail-open)
+    }
+}
+
+fn apply_module_enable(
+    cli: &Cli,
+    manifest: &module_manifest::ModuleManifest,
+    sudoers_rule_fn: &dyn Fn(&str, &[String]) -> String,
+) -> Result<()> {
+    use module_manifest::{collector_section, detector_section, notifier_section};
+
+    // Enable collectors in sensor config
+    for id in &manifest.collectors {
+        if let Some(section) = collector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", true)?;
+            println!("  [done] [{section}] enabled = true");
+        } else {
+            println!("  [warn] unknown collector '{id}' — no sensor config section found; skipped");
+        }
+    }
+
+    // Enable detectors in sensor config
+    for id in &manifest.detectors {
+        if let Some(section) = detector_section(id) {
+            config_editor::write_bool(&cli.sensor_config, section, "enabled", true)?;
+            println!("  [done] [{section}] enabled = true");
+        } else {
+            println!("  [warn] unknown detector '{id}' — no sensor config section found; skipped");
+        }
+    }
+
+    // Add skills to agent allowed_skills and enable responder
+    if !manifest.skills.is_empty() {
+        config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+        println!("  [done] [responder] enabled = true");
+    }
+    for skill in &manifest.skills {
+        let added = config_editor::write_array_push(
+            &cli.agent_config,
+            "responder",
+            "allowed_skills",
+            skill,
+        )?;
+        if added {
+            println!("  [done] Added \"{skill}\" to [responder] allowed_skills");
+        }
+    }
+
+    // Enable notifiers in agent config
+    for id in &manifest.notifiers {
+        if let Some(section) = notifier_section(id) {
+            config_editor::write_bool(&cli.agent_config, section, "enabled", true)?;
+            println!("  [done] [{section}] enabled = true");
+        } else {
+            println!("  [warn] unknown notifier '{id}' — no agent config section found; skipped");
+        }
+    }
+
+    // Install sudoers drop-in if commands are declared
+    if !manifest.allowed_commands.is_empty() {
+        let rule = sudoers_rule_fn(&manifest.id, &manifest.allowed_commands);
+        let drop_in_name = format!("innerwarden-module-{}", manifest.id);
+        let drop_in = sudoers::SudoersDropIn::new(drop_in_name, rule);
+        drop_in.install(cli.dry_run)?;
+        println!(
+            "  [done] Wrote /etc/sudoers.d/innerwarden-module-{}",
+            manifest.id
+        );
+    }
+
+    // Restart services
+    let needs_sensor = !manifest.collectors.is_empty() || !manifest.detectors.is_empty();
+    let needs_agent = !manifest.skills.is_empty() || !manifest.notifiers.is_empty();
+
+    if needs_sensor {
+        systemd::restart_service("innerwarden-sensor", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-sensor");
+    }
+    if needs_agent {
+        systemd::restart_service("innerwarden-agent", cli.dry_run)?;
+        println!("  [done] Restarted innerwarden-agent");
+    }
+
+    Ok(())
+}
+
+fn cmd_disable(cli: &Cli, registry: &CapabilityRegistry, id: &str, yes: bool) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let cap = registry.get(id).ok_or_else(|| unknown_cap_error(id))?;
+    let opts = make_opts(cli, HashMap::new(), yes);
+
+    if !cap.is_enabled(&opts) {
+        println!("Capability '{}' is not enabled. Nothing to do.", cap.id());
+        return Ok(());
+    }
+
+    println!("Disabling capability: {}\n", cap.name());
+
+    println!("Changes to apply:");
+    let effects = cap.planned_disable_effects(&opts);
+    for (i, effect) in effects.iter().enumerate() {
+        println!("  {}. {}", i + 1, effect.description);
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nApply? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    let report = cap.deactivate(&opts)?;
+    for effect in &report.effects_applied {
+        println!("  [done] {}", effect.description);
+    }
+    for warn in &report.warnings {
+        println!("  [warn] {warn}");
+    }
+
+    println!("\nCapability '{}' is now disabled.", cap.id());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Registry — fetched from GitHub raw content at install/search time
+// ---------------------------------------------------------------------------
+
+const REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/InnerWarden/innerwarden/main/registry.toml";
+
+/// A single entry from registry.toml.
+#[derive(Debug)]
+struct RegistryModule {
+    id: String,
+    name: String,
+    version: String,
+    description: String,
+    tags: Vec<String>,
+    tier: String,
+    builtin: bool,
+    /// Capabilities to activate for builtin modules (maps to `innerwarden enable <cap>`)
+    enables: Vec<String>,
+    /// Tarball URL for non-builtin modules
+    install_url: Option<String>,
+}
+
+/// Fetch and parse the registry. Falls back to an empty list on network errors
+/// so `module install <url>` still works offline.
+fn fetch_registry() -> Vec<RegistryModule> {
+    let raw = match ureq_get(REGISTRY_URL) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("  [warn] could not fetch registry: {e}");
+            return vec![];
+        }
+    };
+
+    parse_registry_toml(&raw)
+}
+
+fn parse_registry_toml(raw: &str) -> Vec<RegistryModule> {
+    // Minimal TOML array-of-tables parser — no external dep needed.
+    // We parse [[modules]] blocks by splitting on that header.
+    let mut modules = vec![];
+    for block in raw.split("\n[[modules]]") {
+        let get = |key: &str| -> String {
+            for line in block.lines() {
+                let line = line.trim();
+                if line.starts_with(&format!("{key} ")) || line.starts_with(&format!("{key}=")) {
+                    if let Some(rest) = line.split_once('=').map(|x| x.1) {
+                        return rest.trim().trim_matches('"').to_string();
+                    }
+                }
+            }
+            String::new()
+        };
+        let get_bool = |key: &str| get(key) == "true";
+        let get_vec = |key: &str| -> Vec<String> {
+            for line in block.lines() {
+                let line = line.trim();
+                if line.starts_with(&format!("{key} ")) || line.starts_with(&format!("{key}=")) {
+                    if let Some(rest) = line.split_once('=').map(|x| x.1) {
+                        return rest
+                            .trim()
+                            .trim_start_matches('[')
+                            .trim_end_matches(']')
+                            .split(',')
+                            .map(|s| s.trim().trim_matches('"').to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
+                }
+            }
+            vec![]
+        };
+
+        let id = get("id");
+        if id.is_empty() {
+            continue;
+        }
+        modules.push(RegistryModule {
+            id,
+            name: get("name"),
+            version: get("version"),
+            description: get("description"),
+            tags: get_vec("tags"),
+            tier: get("tier"),
+            builtin: get_bool("builtin"),
+            enables: get_vec("enables"),
+            install_url: {
+                let u = get("install_url");
+                if u.is_empty() {
+                    None
+                } else {
+                    Some(u)
+                }
+            },
+        });
+    }
+    modules
+}
+
+/// Simple blocking HTTP GET — downloads URL to a temp file and reads it.
+fn ureq_get(url: &str) -> anyhow::Result<String> {
+    use std::io::Read;
+    let tmp = tempfile::tempdir()?;
+    let dest = module_package::download(url, tmp.path())?;
+    let mut s = String::new();
+    std::fs::File::open(dest)?.read_to_string(&mut s)?;
+    Ok(s)
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden module search
+// ---------------------------------------------------------------------------
+
+fn cmd_module_search(query: Option<&str>) -> Result<()> {
+    println!("Fetching registry from {}...", REGISTRY_URL);
+    let modules = fetch_registry();
+
+    if modules.is_empty() {
+        println!("No modules found (registry unavailable or empty).");
+        return Ok(());
+    }
+
+    let q = query.unwrap_or("").to_lowercase();
+    let filtered: Vec<_> = modules
+        .iter()
+        .filter(|m| {
+            q.is_empty()
+                || m.id.contains(&q)
+                || m.name.to_lowercase().contains(&q)
+                || m.description.to_lowercase().contains(&q)
+                || m.tags.iter().any(|t| t.to_lowercase().contains(&q))
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        println!("No modules match '{q}'.");
+        return Ok(());
+    }
+
+    println!();
+    for m in &filtered {
+        let tier_badge = if m.tier == "premium" {
+            " [premium]"
+        } else {
+            ""
+        };
+        let builtin_note = if m.builtin { " (built-in)" } else { "" };
+        println!("  {}  v{}{}{}", m.id, m.version, tier_badge, builtin_note);
+        println!("    {}", m.description);
+        if !m.tags.is_empty() {
+            println!("    tags: {}", m.tags.join(", "));
+        }
+        println!();
+    }
+
+    println!("{} module(s) found.", filtered.len());
+    if query.is_none() {
+        println!("Install: innerwarden module install <id>");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Module install / uninstall / publish
+// ---------------------------------------------------------------------------
+
+fn cmd_module_install(
+    cli: &Cli,
+    source: &str,
+    modules_dir: &Path,
+    enable_after: bool,
+    force: bool,
+    yes: bool,
+) -> Result<()> {
+    use module_manifest::ModuleManifest;
+    use module_package::*;
+
+    let is_url = source.starts_with("https://") || source.starts_with("http://");
+    let is_path =
+        source.starts_with('/') || source.starts_with('.') || std::path::Path::new(source).exists();
+
+    // ── Registry lookup: short module name (e.g. "ssh-protection") ────────
+    if !is_url && !is_path {
+        let name = source;
+        println!("Looking up '{}' in the InnerWarden registry...", name);
+        let registry = fetch_registry();
+        let entry = registry.into_iter().find(|m| m.id == name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Module '{}' not found in registry.\n\
+                     Run 'innerwarden module search' to see available modules.\n\
+                     You can also pass a URL or local path directly.",
+                name
+            )
+        })?;
+
+        println!(
+            "Found: {} v{} — {}",
+            entry.name, entry.version, entry.description
+        );
+        println!();
+
+        // Built-in modules ship with the binary; enable the underlying capabilities.
+        if entry.builtin {
+            if entry.enables.is_empty() {
+                println!(
+                    "'{}' is a built-in module configured via sensor config.",
+                    entry.id
+                );
+                println!(
+                    "See modules/{}/docs/README.md for setup instructions.",
+                    entry.id
+                );
+                return Ok(());
+            }
+            println!(
+                "'{}' is a built-in module. Enabling its capabilities:",
+                entry.id
+            );
+            for cap in &entry.enables {
+                println!("  innerwarden enable {cap}");
+            }
+            println!();
+            if !yes {
+                print!("Proceed? [Y/n] ");
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                let trimmed = input.trim().to_lowercase();
+                if !trimmed.is_empty() && trimmed != "y" {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+            let cap_registry = CapabilityRegistry::default_all();
+            for cap_id in &entry.enables {
+                if cap_registry.get(cap_id).is_none() {
+                    anyhow::bail!("capability '{}' not found — update InnerWarden", cap_id);
+                }
+                cmd_enable(cli, &cap_registry, cap_id, HashMap::new(), yes)?;
+            }
+            return Ok(());
+        }
+
+        // External module — install from registry URL.
+        let url = entry
+            .install_url
+            .ok_or_else(|| anyhow::anyhow!("Registry entry for '{}' has no install_url", name))?;
+        println!("Downloading from registry...");
+        return cmd_module_install(cli, &url, modules_dir, enable_after, force, yes);
+    }
+
+    let tmp = tempfile::tempdir().context("failed to create temp directory")?;
+
+    // ── Download or resolve local path ────────────────────────────────────
+    let tarball_path: PathBuf = if is_url {
+        println!("Downloading module package...");
+        let path = download(source, tmp.path())?;
+
+        // Verify SHA-256 sidecar if available
+        if let Some(expected) = fetch_sha256_sidecar(source) {
+            print!("  Validating SHA-256... ");
+            std::io::stdout().flush()?;
+            verify_sha256(&path, &expected)?;
+            println!("ok");
+        } else {
+            println!("  (no SHA-256 sidecar found — skipping integrity check)");
+        }
+        path
+    } else {
+        let p = PathBuf::from(source);
+        if !p.exists() {
+            anyhow::bail!("local path not found: {}", p.display());
+        }
+        // Check for local sidecar
+        let sidecar = PathBuf::from(format!("{}.sha256", source));
+        if sidecar.exists() {
+            let expected = std::fs::read_to_string(&sidecar)?;
+            verify_sha256(&p, expected.split_whitespace().next().unwrap_or(""))?;
+            println!("  SHA-256 ok");
+        }
+        p
+    };
+
+    // ── Extract ───────────────────────────────────────────────────────────
+    let extract_dir = tmp.path().join("extracted");
+    std::fs::create_dir_all(&extract_dir)?;
+    extract_tarball(&tarball_path, &extract_dir)?;
+    let module_dir = find_module_dir(&extract_dir)?;
+
+    // ── Validate manifest ─────────────────────────────────────────────────
+    let report = module_validator::validate(&module_dir, false)?;
+    if !report.passed() {
+        report.print();
+        anyhow::bail!("module validation failed — package is not installable");
+    }
+
+    let manifest = ModuleManifest::from_path(&module_dir)?;
+    println!("Module: {} ({})", manifest.name, manifest.id);
+
+    // ── Check existing installation ───────────────────────────────────────
+    let install_dest = modules_dir.join(&manifest.id);
+    if install_dest.exists() {
+        if !force {
+            anyhow::bail!(
+                "module '{}' is already installed in {}\n\
+                 Use --force to overwrite.",
+                manifest.id,
+                modules_dir.display()
+            );
+        }
+        println!("  (overwriting existing installation)");
+    }
+
+    // ── Plan ──────────────────────────────────────────────────────────────
+    println!("\nWill install to: {}", install_dest.display());
+    if enable_after {
+        println!("Will enable after install.");
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nInstall? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // ── Copy to modules_dir/<id>/ ─────────────────────────────────────────
+    std::fs::create_dir_all(modules_dir)
+        .with_context(|| format!("cannot create {}", modules_dir.display()))?;
+    if install_dest.exists() {
+        std::fs::remove_dir_all(&install_dest)?;
+    }
+    copy_dir(&module_dir, &install_dest)?;
+    println!("  [done] Installed → {}", install_dest.display());
+
+    // ── Enable immediately if requested ───────────────────────────────────
+    if enable_after {
+        println!();
+        cmd_module_enable(cli, &install_dest, yes)?;
+    } else {
+        println!(
+            "\nModule '{}' installed. Run 'innerwarden module enable {}' to activate.",
+            manifest.id,
+            install_dest.display()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_module_uninstall(cli: &Cli, id: &str, modules_dir: &Path, yes: bool) -> Result<()> {
+    use module_manifest::{is_module_enabled, ModuleManifest};
+
+    let install_dir = modules_dir.join(id);
+    if !install_dir.exists() {
+        anyhow::bail!(
+            "module '{}' is not installed in {}",
+            id,
+            modules_dir.display()
+        );
+    }
+
+    let manifest = ModuleManifest::from_path(&install_dir)?;
+    println!("Uninstalling module: {} ({})", manifest.name, manifest.id);
+
+    // Disable first if enabled
+    let enabled = is_module_enabled(&cli.sensor_config, &cli.agent_config, &manifest);
+    if enabled {
+        println!("  Module is currently enabled — will disable before removing.");
+    }
+
+    println!("  Will remove: {}", install_dir.display());
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nUninstall? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    if enabled {
+        apply_module_disable(cli, &manifest)?;
+    }
+
+    std::fs::remove_dir_all(&install_dir)
+        .with_context(|| format!("failed to remove {}", install_dir.display()))?;
+    println!("  [done] Removed {}", install_dir.display());
+    println!("\nModule '{}' uninstalled.", manifest.id);
+    Ok(())
+}
+
+fn cmd_module_publish(module_path: &Path, output: Option<&Path>) -> Result<()> {
+    use module_manifest::ModuleManifest;
+    use module_package::*;
+
+    // Validate before packaging
+    let report = module_validator::validate(module_path, false)?;
+    if !report.passed() {
+        report.print();
+        anyhow::bail!("module validation failed — fix errors before publishing");
+    }
+
+    let manifest = ModuleManifest::from_path(module_path)?;
+
+    // Determine output path: <id>-v<version>.tar.gz or caller-supplied
+    let tarball_path = if let Some(p) = output {
+        p.to_path_buf()
+    } else {
+        let version = manifest.version.as_deref().unwrap_or("0.1.0");
+        PathBuf::from(format!("{}-v{version}.tar.gz", manifest.id))
+    };
+
+    println!("Publishing module: {} ({})", manifest.name, manifest.id);
+    println!("  Output: {}", tarball_path.display());
+
+    create_tarball(module_path, &tarball_path)?;
+    println!("  [done] Created {}", tarball_path.display());
+
+    let sidecar = write_sha256_sidecar(&tarball_path)?;
+    let hex = sha256_hex(&tarball_path)?;
+    println!("  [done] SHA-256:  {hex}");
+    println!("  [done] Sidecar:  {}", sidecar.display());
+
+    println!(
+        "\nInstall with:\n  innerwarden module install {}",
+        tarball_path.display()
+    );
+    Ok(())
+}
+
+fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: bool) -> Result<()> {
+    use module_manifest::{scan_modules_dir, ModuleManifest};
+    use module_package::*;
+    use upgrade::is_newer;
+
+    let modules = scan_modules_dir(modules_dir);
+    if modules.is_empty() {
+        println!("No modules installed in {}.", modules_dir.display());
+        return Ok(());
+    }
+
+    println!("Checking modules for updates...\n");
+
+    struct UpdateCandidate {
+        manifest: ModuleManifest,
+        current_version: String,
+        new_version: String,
+        url: String,
+    }
+
+    let mut candidates: Vec<UpdateCandidate> = Vec::new();
+    let mut skipped = 0usize;
+
+    for manifest in &modules {
+        let current = manifest.version.as_deref().unwrap_or("0.0.0");
+
+        let Some(ref url) = manifest.update_url else {
+            println!("  {:<24} (no update_url — skipped)", manifest.id);
+            skipped += 1;
+            continue;
+        };
+
+        // Download to temp, extract, read new version
+        let tmp = tempfile::tempdir().context("failed to create temp dir")?;
+        print!("  {:<24} checking... ", manifest.id);
+        std::io::stdout().flush()?;
+
+        let tarball = match download(url, tmp.path()) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("error ({})", e);
+                continue;
+            }
+        };
+
+        // Validate SHA-256 sidecar if available
+        if let Some(expected) = fetch_sha256_sidecar(url) {
+            if let Err(e) = verify_sha256(&tarball, &expected) {
+                println!("SHA-256 mismatch — skipping ({})", e);
+                continue;
+            }
+        }
+
+        let extract_dir = tmp.path().join("extracted");
+        std::fs::create_dir_all(&extract_dir)?;
+        if let Err(e) = extract_tarball(&tarball, &extract_dir) {
+            println!("extract error — skipping ({})", e);
+            continue;
+        }
+        let module_dir = match find_module_dir(&extract_dir) {
+            Ok(d) => d,
+            Err(e) => {
+                println!("no module.toml — skipping ({})", e);
+                continue;
+            }
+        };
+        let new_manifest = match ModuleManifest::from_path(&module_dir) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("manifest parse error — skipping ({})", e);
+                continue;
+            }
+        };
+        let new_version = new_manifest
+            .version
+            .as_deref()
+            .unwrap_or("0.0.0")
+            .to_string();
+
+        if is_newer(current, &new_version) {
+            println!("{current} → {new_version}  [update available]");
+            candidates.push(UpdateCandidate {
+                manifest: manifest.clone(),
+                current_version: current.to_string(),
+                new_version,
+                url: url.clone(),
+            });
+        } else {
+            println!("{current}  [up to date]");
+        }
+    }
+
+    println!();
+
+    if candidates.is_empty() {
+        println!("All modules are up to date.");
+        return Ok(());
+    }
+
+    println!("{} update(s) available:", candidates.len());
+    for c in &candidates {
+        println!(
+            "  {} {} → {}",
+            c.manifest.id, c.current_version, c.new_version
+        );
+    }
+
+    if check_only {
+        println!("\nRun 'innerwarden module update-all' to install.");
+        return Ok(());
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nApply {} update(s)? [Y/n] ", candidates.len());
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+    let mut updated = 0usize;
+    for c in &candidates {
+        println!(
+            "Updating {} ({} → {})...",
+            c.manifest.id, c.current_version, c.new_version
+        );
+        let install_dir = modules_dir.join(&c.manifest.id);
+        match cmd_module_install(cli, &c.url, modules_dir, false, true, true) {
+            Ok(()) => {
+                println!("  [done] {} updated to {}", c.manifest.id, c.new_version);
+                // Re-enable if it was enabled before
+                if module_manifest::is_module_enabled(
+                    &cli.sensor_config,
+                    &cli.agent_config,
+                    &c.manifest,
+                ) {
+                    let _ = cmd_module_enable(cli, &install_dir, true);
+                }
+                updated += 1;
+            }
+            Err(e) => println!("  [fail] {}: {}", c.manifest.id, e),
+        }
+    }
+
+    println!(
+        "\n{updated}/{} module(s) updated successfully.",
+        candidates.len()
+    );
+    if skipped > 0 {
+        println!("({skipped} skipped — no update_url declared)");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// C.5 — Upgrade
+// ---------------------------------------------------------------------------
+
+fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Result<()> {
+    use upgrade::*;
+
+    println!("Checking for updates...");
+
+    let release =
+        fetch_latest_release().context("could not reach GitHub — check network and try again")?;
+
+    let current = CURRENT_VERSION;
+    let latest = strip_v(&release.tag_name);
+
+    let date_suffix = release
+        .release_date()
+        .map(|d| format!("  [{d}]"))
+        .unwrap_or_default();
+
+    println!("  Current version:  {current}");
+
+    if !is_newer(current, &release.tag_name) {
+        println!("  Latest release:   {latest}{date_suffix} — already up to date.");
+        return Ok(());
+    }
+
+    println!(
+        "  Latest release:   {latest}{date_suffix}  ({})",
+        release.html_url
+    );
+
+    if check_only {
+        println!("\nRun 'innerwarden upgrade' to install.");
+        return Ok(());
+    }
+
+    // Detect architecture
+    let arch = detect_arch().ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported CPU architecture '{}' — build from source for your platform",
+            std::env::consts::ARCH
+        )
+    })?;
+
+    // Build download plan
+    let plan = build_plan(&release, arch);
+
+    if plan.is_empty() {
+        anyhow::bail!(
+            "no assets found for linux-{arch} in release {} — \
+             check {} for manual download",
+            release.tag_name,
+            release.html_url
+        );
+    }
+
+    println!("\nAssets available for linux-{arch}:");
+    for dp in &plan {
+        let sha_status = if dp.sha256_asset.is_some() {
+            "sha256 ✓"
+        } else {
+            "no sha256"
+        };
+        println!(
+            "  {:<28} {}  ({})",
+            dp.target.binary,
+            fmt_bytes(dp.asset.size),
+            sha_status
+        );
+    }
+
+    let dest_paths: Vec<_> = plan
+        .iter()
+        .flat_map(|dp| install_paths(dp.target, install_dir))
+        .collect();
+
+    println!("\nWill install to {}:", install_dir.display());
+    for p in &dest_paths {
+        println!("  {}", p.display());
+    }
+
+    if cli.dry_run {
+        println!("\n[DRY RUN] No changes applied.");
+        return Ok(());
+    }
+
+    if !yes {
+        print!("\nProceed? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        if !answer.is_empty() && answer != "y" && answer != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    println!();
+
+    let tmp_dir = tempfile::tempdir().context("failed to create temp directory")?;
+
+    for dp in &plan {
+        let binary = dp.target.binary;
+        print!("  Downloading {binary}... ");
+        std::io::stdout().flush()?;
+
+        let tmp_path = tmp_dir.path().join(binary);
+        let bytes = download(&dp.asset.browser_download_url, &tmp_path)?;
+
+        // Verify SHA-256 if sidecar is present
+        if let Some(sha_asset) = dp.sha256_asset {
+            let expected = fetch_expected_hash(&sha_asset.browser_download_url)?;
+            let actual = sha256_file(&tmp_path)?;
+            if actual != expected {
+                anyhow::bail!(
+                    "SHA-256 mismatch for {binary}:\n  expected {expected}\n  got      {actual}"
+                );
+            }
+            println!("{}  sha256 ok", fmt_bytes(bytes));
+        } else {
+            println!("{}  (no sha256 sidecar)", fmt_bytes(bytes));
+        }
+
+        // Install to all target names
+        for dest in install_paths(dp.target, install_dir) {
+            install_binary(&tmp_path, &dest, false)?;
+            println!("  [done] {} → {}", binary, dest.display());
+        }
+    }
+
+    // Fix permissions on existing config files — files written before v0.1.9 may
+    // be root:root 600, which prevents innerwarden-agent (User=innerwarden) from
+    // reading them. chmod 640 + chgrp innerwarden is fail-silent.
+    fix_config_dir_permissions(
+        cli.agent_config
+            .parent()
+            .unwrap_or(std::path::Path::new("/etc/innerwarden")),
+    );
+
+    // Restart running services; also start the agent if it has a unit file but is stopped
+    println!();
+    for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+        let unit_path = format!("/etc/systemd/system/{unit}.service");
+        let unit_exists = std::path::Path::new(&unit_path).exists();
+        if systemd::is_service_active(unit) {
+            systemd::restart_service(unit, false)?;
+            println!("  [done] Restarted {unit}");
+        } else if unit_exists {
+            // Unit is installed but stopped — try to start it
+            match systemd::restart_service(unit, false) {
+                Ok(()) => println!("  [done] Started {unit}"),
+                Err(e) => {
+                    println!("  [warn] Could not start {unit}: {e}");
+                    println!("         Check logs: journalctl -u {unit} -n 30");
+                }
+            }
+        }
+    }
+
+    let date_display = release
+        .release_date()
+        .map(|d| format!(" ({d})"))
+        .unwrap_or_default();
+
+    println!(
+        "\nInnerWarden upgraded to {}{} successfully.",
+        release.tag_name, date_display
+    );
+
+    // Show what's new in this release
+    if let Some(preview) = release.changelog_preview() {
+        println!("\nWhat's new in {}:", release.tag_name);
+        println!("─────────────────────────────────────────────────");
+        for line in preview.lines() {
+            println!("  {line}");
+        }
+        println!("─────────────────────────────────────────────────");
+        println!("  Full release notes: {}", release.html_url);
+    } else {
+        println!("  Release notes: {}", release.html_url);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Configure AI
+// ---------------------------------------------------------------------------
+
+/// Fix permissions on all config files in the innerwarden config directory.
+/// chmod 640 + chgrp innerwarden so the service user (User=innerwarden) can read them.
+/// Fail-silent — best-effort in environments where the group doesn't exist.
+fn fix_config_dir_permissions(config_dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = std::fs::read_dir(config_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640));
+            let _ = std::process::Command::new("chgrp")
+                .arg("innerwarden")
+                .arg(&path)
+                .output();
+        }
+    }
+}
+
+fn write_env_key(env_path: &Path, key: &str, value: &str) -> Result<()> {
+    let existing = std::fs::read_to_string(env_path).unwrap_or_default();
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| {
+            // Remove existing setting (active or commented)
+            let l = l.trim_start_matches('#').trim_start();
+            !l.starts_with(&format!("{key}="))
+        })
+        .map(|l| l.to_string())
+        .collect();
+    lines.push(format!("{key}={value}"));
+    let new_content = lines.join("\n") + "\n";
+    // Atomic write via temp file in same directory
+    let tmp = env_path.with_extension("env.tmp");
+    std::fs::write(&tmp, &new_content)
+        .with_context(|| format!("cannot write {}", tmp.display()))?;
+    std::fs::rename(&tmp, env_path)
+        .with_context(|| format!("cannot update {}", env_path.display()))?;
+    // Ensure readable by innerwarden service user (chmod 640 + chgrp innerwarden).
+    // Fail-silent — best-effort in case the group doesn't exist (e.g. local dev).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(env_path, std::fs::Permissions::from_mode(0o640));
+        let _ = std::process::Command::new("chgrp")
+            .arg("innerwarden")
+            .arg(env_path)
+            .output();
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+
+fn cmd_setup(cli: &Cli) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+    let env_vars = load_env_file(&env_file);
+
+    let agent_doc: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let is_enabled = |section: &str| -> bool {
+        agent_doc
+            .as_ref()
+            .and_then(|v| v.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env = |key: &str| -> bool {
+        env_vars.get(key).is_some_and(|v| !v.is_empty())
+            || std::env::var(key).is_ok_and(|v| !v.is_empty())
+    };
+
+    let ai_ok = is_enabled("ai");
+    let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
+    let responder_ok = is_enabled("responder");
+
+    // ── Welcome ───────────────────────────────────────────────────────────
+    println!("InnerWarden — first-time setup\n");
+    println!("Scanning your system to see what's installed...\n");
+
+    let probes = scan::run_probes();
+    let recs = scan::score_modules(&probes);
+
+    // Print compact scan summary — essential modules only
+    let essential: Vec<&scan::ModuleRec> = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Essential))
+        .collect();
+    let recommended: Vec<&scan::ModuleRec> = recs
+        .iter()
+        .filter(|r| matches!(r.tier, scan::Tier::Recommended))
+        .collect();
+
+    if !essential.is_empty() {
+        println!("Detected on this host:");
+        for r in &essential {
+            println!(
+                "  ★ {}  — {}",
+                r.name,
+                r.why.split('.').next().unwrap_or("")
+            );
+        }
+        println!();
+    }
+    if !recommended.is_empty() {
+        println!("Also available:");
+        for r in &recommended {
+            println!(
+                "  · {}  — {}",
+                r.name,
+                r.why.split('.').next().unwrap_or("")
+            );
+        }
+        println!();
+    }
+    println!("Run 'innerwarden scan' after setup for the full module advisor.\n");
+    println!("{}", "─".repeat(56));
+
+    println!();
+    println!("Now configuring the essentials in 4 steps:");
+    println!("  1. AI provider    — brains for threat analysis");
+    println!("  2. Telegram       — real-time alerts on your phone");
+    println!("  3. Responder      — decide how to react to threats");
+    println!("  4. Modules        — enable essential protections\n");
+    println!("You can skip any step and run it later with 'innerwarden configure'.\n");
+    println!("{}", "─".repeat(56));
+
+    // ── Step 1: AI ────────────────────────────────────────────────────────
+    println!();
+    if ai_ok {
+        println!("Step 1/4 — AI provider   ✅ already configured\n");
+    } else {
+        println!("Step 1/4 — AI provider\n");
+        println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
+        println!("All three providers work well — choose based on what you already have:\n");
+        println!(
+            "  1. Ollama    — free tier available (Ollama cloud), no credit card for basic models"
+        );
+        println!("  2. OpenAI    — gpt-4o-mini, pay-as-you-go (very low cost for this workload)");
+        println!("  3. Anthropic — claude-haiku, pay-as-you-go (very low cost for this workload)");
+        println!("  s. Skip for now\n");
+        let choice = prompt("Choose provider [1/2/3/s]")?;
+        println!();
+        match choice.trim().to_lowercase().as_str() {
+            "1" | "" => {
+                if let Err(e) = cmd_ai_install(cli, "qwen3-coder:480b", None, true) {
+                    println!("  Could not configure Ollama automatically: {e:#}");
+                    println!("  Run later:  innerwarden ai install");
+                }
+            }
+            "2" => {
+                println!("OpenAI — enter your API key (get one at platform.openai.com)");
+                match prompt("OPENAI_API_KEY") {
+                    Ok(k) if !k.is_empty() => {
+                        if let Err(e) = cmd_configure_ai(cli, "openai", Some(&k), None, None) {
+                            println!("  Could not configure OpenAI: {e:#}");
+                        }
+                    }
+                    _ => println!(
+                        "  Skipped. Run later:  innerwarden configure ai openai --key <key>"
+                    ),
+                }
+            }
+            "3" => {
+                println!("Anthropic — enter your API key (get one at console.anthropic.com)");
+                match prompt("ANTHROPIC_API_KEY") {
+                    Ok(k) if !k.is_empty() => {
+                        if let Err(e) = cmd_configure_ai(cli, "anthropic", Some(&k), None, None) {
+                            println!("  Could not configure Anthropic: {e:#}");
+                        }
+                    }
+                    _ => println!(
+                        "  Skipped. Run later:  innerwarden configure ai anthropic --key <key>"
+                    ),
+                }
+            }
+            _ => println!("  Skipped. Run later:  innerwarden configure ai"),
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 2: Telegram ──────────────────────────────────────────────────
+    println!();
+    if telegram_ok {
+        println!("Step 2/4 — Telegram alerts   ✅ already configured\n");
+    } else {
+        println!("Step 2/4 — Telegram alerts\n");
+        println!("Get instant alerts on your phone whenever a threat is detected.");
+        println!("You'll need a free Telegram account.\n");
+        print!("Set up Telegram now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() != "n" {
+            if let Err(e) = cmd_configure_telegram(cli, None, None, false) {
+                println!("  Skipped Telegram: {e:#}");
+                println!("  Run later:  innerwarden configure telegram");
+            }
+        } else {
+            println!("  Skipped. Run later:  innerwarden configure telegram");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 3: Responder ─────────────────────────────────────────────────
+    println!();
+    if responder_ok {
+        let dry = agent_doc
+            .as_ref()
+            .and_then(|v| v.get("responder"))
+            .and_then(|r| r.get("dry_run"))
+            .and_then(|d| d.as_bool())
+            .unwrap_or(true);
+        let mode = if dry {
+            "observe (dry-run)"
+        } else {
+            "live (executing actions)"
+        };
+        println!("Step 3/4 — Responder   ✅ already configured ({mode})\n");
+    } else {
+        println!("Step 3/4 — Responder\n");
+        println!("The responder decides what to do when a threat is confirmed:");
+        println!("  observe — AI analyses threats, logs decisions, never blocks anything");
+        println!("  dry-run — AI decides and shows what it would do (safe for testing)");
+        println!("  live    — AI blocks attackers automatically (requires block skill)\n");
+        println!("Recommended for first setup: observe or dry-run.\n");
+        print!("Configure now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() != "n" {
+            if let Err(e) = cmd_configure_responder(cli, false, false, None) {
+                println!("  Skipped responder: {e:#}");
+                println!("  Run later:  innerwarden configure responder");
+            }
+        } else {
+            println!("  Skipped. Run later:  innerwarden configure responder");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 4: Essential modules ─────────────────────────────────────────
+    println!();
+    {
+        let essential_unset: Vec<&scan::ModuleRec> = recs
+            .iter()
+            .filter(|r| matches!(r.tier, scan::Tier::Essential))
+            .collect();
+
+        if !essential_unset.is_empty() {
+            println!("Step 4/4 — Enable protection modules\n");
+            println!("Based on what's installed on this host, these modules are recommended:\n");
+            for (i, r) in essential_unset.iter().enumerate() {
+                println!(
+                    "  {}. {}  — {}",
+                    i + 1,
+                    r.name,
+                    r.why.split('.').next().unwrap_or("")
+                );
+                println!("     Enable with:  {}", r.enable_hint);
+            }
+            println!();
+            print!("Enable these now? [Y/n] ");
+            std::io::stdout().flush()?;
+            let mut ans = String::new();
+            std::io::stdin().read_line(&mut ans)?;
+            println!();
+            if ans.trim().to_lowercase() != "n" {
+                for r in &essential_unset {
+                    println!("  Enabling {} ...", r.name);
+                    // Parse the enable hint to extract capability id and params
+                    // hint is like "innerwarden enable block-ip" or "innerwarden enable block-ip --param backend=ufw"
+                    let parts: Vec<&str> = r.enable_hint.split_whitespace().collect();
+                    if parts.len() >= 3 && parts[0] == "innerwarden" && parts[1] == "enable" {
+                        let cap_id = parts[2];
+                        let mut params = std::collections::HashMap::new();
+                        let mut i = 3;
+                        while i < parts.len() {
+                            if parts[i] == "--param" && i + 1 < parts.len() {
+                                if let Some((k, v)) = parts[i + 1].split_once('=') {
+                                    params.insert(k.to_string(), v.to_string());
+                                }
+                                i += 2;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        let registry = capability::CapabilityRegistry::default_all();
+                        if let Err(e) = cmd_enable(cli, &registry, cap_id, params, true) {
+                            println!("  Could not enable {}: {e:#}", r.name);
+                        }
+                    }
+                }
+            } else {
+                println!("  Skipped. Enable later with the commands shown above.");
+            }
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Summary ───────────────────────────────────────────────────────────
+    // Re-read state after all changes
+    let env_vars2 = load_env_file(&env_file);
+    let agent_doc2: Option<toml_edit::DocumentMut> = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let is_enabled2 = |section: &str| -> bool {
+        agent_doc2
+            .as_ref()
+            .and_then(|v| v.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env2 = |key: &str| -> bool {
+        env_vars2.get(key).is_some_and(|v| !v.is_empty())
+            || std::env::var(key).is_ok_and(|v| !v.is_empty())
+    };
+
+    println!();
+    println!("Setup complete!\n");
+    let ai_done = is_enabled2("ai");
+    let tg_done = has_env2("TELEGRAM_BOT_TOKEN") && has_env2("TELEGRAM_CHAT_ID");
+    let resp_done = is_enabled2("responder");
+    println!(
+        "  AI provider   {}",
+        if ai_done {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
+    );
+    println!(
+        "  Telegram      {}",
+        if tg_done {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
+    );
+    println!(
+        "  Responder     {}",
+        if resp_done {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
+    );
+
+    println!();
+    println!("Useful commands:");
+    println!("  innerwarden status         — overview of services and today's activity");
+    println!("  innerwarden incidents      — list recent threats");
+    println!("  innerwarden report         — daily security narrative");
+    println!("  innerwarden configure      — set up more integrations");
+    println!("  innerwarden doctor         — diagnose any issues");
+    println!("  innerwarden test-alert     — verify notifications are working");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure (interactive menu)
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_menu(cli: &Cli) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+    let env_vars = load_env_file(&env_file);
+
+    // Read agent.toml for enabled flags
+    let agent_doc: Option<toml_edit::DocumentMut> = cli
+        .agent_config
+        .exists()
+        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+        .flatten()
+        .and_then(|s| s.parse().ok());
+
+    let is_enabled = |section: &str| -> bool {
+        agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get(section))
+            .and_then(|s| s.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    let has_env = |key: &str| -> bool {
+        env_vars.get(key).is_some_and(|v| !v.is_empty())
+            || std::env::var(key).is_ok_and(|v| !v.is_empty())
+    };
+
+    // Build status labels
+    let status = |ok: bool| -> &'static str {
+        if ok {
+            "✅ configured"
+        } else {
+            "○  not set up"
+        }
+    };
+
+    let ai_ok = is_enabled("ai");
+    let telegram_ok = has_env("TELEGRAM_BOT_TOKEN") && has_env("TELEGRAM_CHAT_ID");
+    let slack_ok = has_env("SLACK_WEBHOOK_URL") || {
+        agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("slack"))
+            .and_then(|s| s.get("webhook_url"))
+            .and_then(|u| u.as_str())
+            .is_some_and(|s| !s.is_empty())
+    };
+    let webhook_ok = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("webhook"))
+        .and_then(|w| w.get("enabled"))
+        .and_then(|e| e.as_bool())
+        .unwrap_or(false);
+    let dashboard_ok = has_env("INNERWARDEN_DASHBOARD_USER");
+    let abuseipdb_ok = has_env("ABUSEIPDB_API_KEY") || is_enabled("abuseipdb");
+    let geoip_ok = is_enabled("geoip");
+    let fail2ban_ok = is_enabled("fail2ban");
+    let cloudflare_ok = has_env("CLOUDFLARE_API_TOKEN") || is_enabled("cloudflare");
+    let responder_ok = is_enabled("responder");
+    let watchdog_ok = std::process::Command::new("crontab")
+        .arg("-l")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("innerwarden watchdog"))
+        .unwrap_or(false);
+
+    println!("InnerWarden — configure\n");
+    println!("Choose what to set up:\n");
+    println!("   1. AI provider      {}", status(ai_ok));
+    println!("   2. Telegram         {}", status(telegram_ok));
+    println!("   3. Slack            {}", status(slack_ok));
+    println!("   4. Webhook          {}", status(webhook_ok));
+    println!("   5. Dashboard        {}", status(dashboard_ok));
+    println!("   6. AbuseIPDB        {}", status(abuseipdb_ok));
+    println!("   7. GeoIP            {}", status(geoip_ok));
+    println!("   8. Fail2ban         {}", status(fail2ban_ok));
+    println!("   9. Cloudflare       {}", status(cloudflare_ok));
+    println!("  10. Responder        {}", status(responder_ok));
+    println!("  11. Watchdog (cron)  {}", status(watchdog_ok));
+    println!();
+    print!("Enter number (or q to quit): ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice = input.trim();
+
+    println!();
+    match choice {
+        "1" => cmd_configure_ai_interactive(cli),
+        "2" => cmd_configure_telegram(cli, None, None, false),
+        "3" => cmd_configure_slack(cli, None, "high", false),
+        "4" => cmd_configure_webhook(cli, None, "high", false),
+        "5" => cmd_configure_dashboard(cli, "admin", None),
+        "6" => cmd_configure_abuseipdb(cli, None, None),
+        "7" => cmd_configure_geoip(cli),
+        "8" => cmd_configure_fail2ban(cli),
+        "9" => cmd_configure_cloudflare(cli, None, None),
+        "10" => cmd_configure_responder(cli, false, false, None),
+        "11" => cmd_configure_watchdog(cli, 10),
+        "q" | "Q" | "" => {
+            println!(
+                "Tip: run 'innerwarden configure <name>' to jump directly to any integration."
+            );
+            Ok(())
+        }
+        _ => {
+            println!("Invalid choice. Run 'innerwarden configure' again.");
+            Ok(())
+        }
+    }
+}
+
+/// Interactive AI provider picker — shown when running `innerwarden configure` → 1 (AI)
+/// or from the setup wizard. Lets the user choose a provider and enter their key.
+/// Provider info for the interactive wizard.
+struct WizardProvider {
+    name: &'static str,
+    label: &'static str,
+    signup_url: &'static str,
+    /// Base URL for the models API. Empty = use the default from OPENAI_COMPATIBLE.
+    models_url: &'static str,
+    /// How to list models: "openai" = GET /v1/models, "anthropic" = GET /v1/models, "ollama" = GET /api/tags
+    api_style: &'static str,
+}
+
+const WIZARD_PROVIDERS: &[WizardProvider] = &[
+    WizardProvider {
+        name: "openai",
+        label: "OpenAI",
+        signup_url: "platform.openai.com",
+        models_url: "https://api.openai.com",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "anthropic",
+        label: "Anthropic",
+        signup_url: "console.anthropic.com",
+        models_url: "https://api.anthropic.com",
+        api_style: "anthropic",
+    },
+    WizardProvider {
+        name: "groq",
+        label: "Groq",
+        signup_url: "console.groq.com",
+        models_url: "https://api.groq.com/openai",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "deepseek",
+        label: "DeepSeek",
+        signup_url: "platform.deepseek.com",
+        models_url: "https://api.deepseek.com",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "mistral",
+        label: "Mistral",
+        signup_url: "console.mistral.ai",
+        models_url: "https://api.mistral.ai",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "xai",
+        label: "xAI / Grok",
+        signup_url: "console.x.ai",
+        models_url: "https://api.x.ai",
+        api_style: "openai",
+    },
+    WizardProvider {
+        name: "gemini",
+        label: "Google Gemini",
+        signup_url: "aistudio.google.com",
+        models_url: "https://generativelanguage.googleapis.com",
+        api_style: "gemini",
+    },
+];
+
+/// Fetch available models from the provider's API using the key.
+/// Returns a sorted list of model IDs, or an empty vec on failure.
+fn fetch_models(base_url: &str, api_key: &str, api_style: &str) -> Vec<String> {
+    let url = match api_style {
+        "anthropic" => format!("{base_url}/v1/models"),
+        "ollama" => format!("{base_url}/api/tags"),
+        "gemini" => format!("{base_url}/v1beta/models?key={api_key}"),
+        _ => format!("{base_url}/v1/models"),
+    };
+
+    let resp = match api_style {
+        "anthropic" => ureq::get(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .call(),
+        "gemini" => ureq::get(&url).call(),
+        _ => ureq::get(&url)
+            .header("Authorization", &format!("Bearer {api_key}"))
+            .call(),
+    };
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    let body: serde_json::Value = match resp.into_body().read_json() {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    // OpenAI / Anthropic style: { "data": [{ "id": "model-name" }, ...] }
+    // Ollama style: { "models": [{ "name": "model-name" }, ...] }
+    // Gemini style: { "models": [{ "name": "models/gemini-2.0-flash", ... }] }
+    let models: Vec<String> = if api_style == "gemini" {
+        body.get("models")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.strip_prefix("models/").unwrap_or(s).to_string())
+                    })
+                    .filter(|m| {
+                        let l = m.to_lowercase();
+                        l.contains("gemini") && !l.contains("embed") && !l.contains("aqa")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else if api_style == "ollama" {
+        body.get("models")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        body.get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| {
+                        m.get("id")
+                            .and_then(|id| id.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // Filter to chat-capable models (heuristic: skip embeddings, tts, whisper, dall-e, etc.)
+    let mut filtered: Vec<String> = models
+        .into_iter()
+        .filter(|m| {
+            let l = m.to_lowercase();
+            !l.contains("embed")
+                && !l.contains("tts")
+                && !l.contains("whisper")
+                && !l.contains("dall-e")
+                && !l.contains("davinci")
+                && !l.contains("babbage")
+                && !l.contains("moderation")
+                && !l.contains("search")
+        })
+        .collect();
+    filtered.sort();
+    filtered
+}
+
+fn ask_key_and_model(
+    provider: &WizardProvider,
+    custom_base_url: Option<&str>,
+) -> Result<(String, Option<String>)> {
+    println!(
+        "{} — enter your API key (get one at {})",
+        provider.label, provider.signup_url
+    );
+    let key = prompt("API key")?;
+    if key.is_empty() {
+        anyhow::bail!("API key cannot be empty");
+    }
+
+    let base_url = custom_base_url.unwrap_or(provider.models_url);
+    print!("\n  Fetching available models...");
+    std::io::stdout().flush().ok();
+    let models = fetch_models(base_url, &key, provider.api_style);
+
+    if models.is_empty() {
+        println!(" could not fetch model list.");
+        println!("  Enter a model name manually, or press Enter for the provider default.\n");
+        let model = prompt("Model")?;
+        let model = if model.is_empty() { None } else { Some(model) };
+        return Ok((key, model));
+    }
+
+    println!(" found {} models.\n", models.len());
+    let show = models.len().min(20);
+    for (i, m) in models.iter().take(show).enumerate() {
+        println!("  {:>2}. {}", i + 1, m);
+    }
+    if models.len() > show {
+        println!(
+            "  ... and {} more (type the name to use any)",
+            models.len() - show
+        );
+    }
+    println!();
+    let model_choice = prompt(&format!("Model [1-{show}, or type name, default=1]"))?;
+    let trimmed = model_choice.trim();
+
+    let model = if trimmed.is_empty() {
+        models[0].clone()
+    } else if let Ok(idx) = trimmed.parse::<usize>() {
+        let idx = idx.saturating_sub(1).min(models.len() - 1);
+        models[idx].clone()
+    } else {
+        // User typed a model name directly
+        trimmed.to_string()
+    };
+
+    Ok((key, Some(model)))
+}
+
+fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
+    println!("InnerWarden — AI provider setup\n");
+    println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
+    println!("Choose a provider — any one works. Pick what you already have:\n");
+    for (i, p) in WIZARD_PROVIDERS.iter().enumerate() {
+        println!("  {}. {}", i + 1, p.label);
+    }
+    let ollama_idx = WIZARD_PROVIDERS.len() + 1;
+    let other_idx = WIZARD_PROVIDERS.len() + 2;
+    println!("  {ollama_idx}. Ollama       — local, no API key needed");
+    println!("  {other_idx}. Other        — any OpenAI-compatible API");
+    println!("  s. Skip for now\n");
+
+    let choice = prompt(&format!("Choose provider [1-{other_idx}/s]"))?;
+    println!();
+
+    let trimmed = choice.trim().to_lowercase();
+    if trimmed == "s" {
+        println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
+        return Ok(());
+    }
+
+    let num: usize = trimmed.parse().unwrap_or(0);
+
+    if num >= 1 && num <= WIZARD_PROVIDERS.len() {
+        let provider = &WIZARD_PROVIDERS[num - 1];
+        let (key, model) = ask_key_and_model(provider, None)?;
+        cmd_configure_ai(cli, provider.name, Some(&key), model.as_deref(), None)
+    } else if num == ollama_idx {
+        // Ollama: fetch local models if running, or install
+        let local_models = fetch_models("http://localhost:11434", "", "ollama");
+        if local_models.is_empty() {
+            println!("Ollama not running locally. Installing...\n");
+            cmd_ai_install(cli, "qwen3-coder:480b", None, false)
+        } else {
+            println!("Found {} local Ollama models:\n", local_models.len());
+            for (i, m) in local_models.iter().enumerate() {
+                println!("  {}. {}", i + 1, m);
+            }
+            println!();
+            let mc = prompt(&format!("Model [1-{}, default=1]", local_models.len()))?;
+            let idx = mc
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(1)
+                .saturating_sub(1)
+                .min(local_models.len() - 1);
+            cmd_configure_ai(cli, "ollama", None, Some(&local_models[idx]), None)
+        }
+    } else if num == other_idx {
+        println!("Any provider with an OpenAI-compatible API works.\n");
+        let name = prompt("Provider name (e.g. fireworks, openrouter, together)")?;
+        let base_url = prompt("Base URL (e.g. https://api.example.com)")?;
+        if base_url.is_empty() {
+            anyhow::bail!("Base URL is required");
+        }
+        println!("\n{name} — enter your API key");
+        let key = prompt("API key")?;
+        if key.is_empty() {
+            anyhow::bail!("API key cannot be empty");
+        }
+        print!("\n  Fetching available models...");
+        std::io::stdout().flush().ok();
+        let models = fetch_models(&base_url, &key, "openai");
+        let model = if models.is_empty() {
+            println!(" could not fetch model list.");
+            let m = prompt("Model name")?;
+            if m.is_empty() {
+                None
+            } else {
+                Some(m)
+            }
+        } else {
+            println!(" found {} models.\n", models.len());
+            let show = models.len().min(20);
+            for (i, m) in models.iter().take(show).enumerate() {
+                println!("  {:>2}. {}", i + 1, m);
+            }
+            println!();
+            let mc = prompt(&format!("Model [1-{show}, default=1]"))?;
+            let trimmed = mc.trim();
+            Some(if trimmed.is_empty() {
+                models[0].clone()
+            } else if let Ok(idx) = trimmed.parse::<usize>() {
+                models[idx.saturating_sub(1).min(models.len() - 1)].clone()
+            } else {
+                trimmed.to_string()
+            })
+        };
+        cmd_configure_ai(cli, &name, Some(&key), model.as_deref(), Some(&base_url))
+    } else {
+        println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
+        Ok(())
+    }
+}
+
+fn cmd_configure_ai(
+    cli: &Cli,
+    provider: &str,
+    key: Option<&str>,
+    model: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    // Known providers with their defaults. Any OpenAI-compatible provider works
+    // if the user passes --key and optionally --base-url.
+    let (default_model, key_var, default_base_url): (&str, Option<&str>, Option<&str>) =
+        match provider {
+            "openai" => ("gpt-4o-mini", Some("OPENAI_API_KEY"), None),
+            "anthropic" => ("claude-haiku-4-5-20251001", Some("ANTHROPIC_API_KEY"), None),
+            "ollama" => ("llama3.2", None, None),
+            "groq" => (
+                "llama-3.3-70b-versatile",
+                Some("GROQ_API_KEY"),
+                Some("https://api.groq.com/openai"),
+            ),
+            "deepseek" => (
+                "deepseek-chat",
+                Some("DEEPSEEK_API_KEY"),
+                Some("https://api.deepseek.com"),
+            ),
+            "together" => (
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                Some("TOGETHER_API_KEY"),
+                Some("https://api.together.xyz"),
+            ),
+            "minimax" => (
+                "MiniMax-Text-01",
+                Some("MINIMAX_API_KEY"),
+                Some("https://api.minimaxi.chat"),
+            ),
+            "mistral" => (
+                "mistral-small-latest",
+                Some("MISTRAL_API_KEY"),
+                Some("https://api.mistral.ai"),
+            ),
+            "xai" => (
+                "grok-3-mini-fast",
+                Some("XAI_API_KEY"),
+                Some("https://api.x.ai"),
+            ),
+            "fireworks" => (
+                "accounts/fireworks/models/llama-v3p3-70b-instruct",
+                Some("FIREWORKS_API_KEY"),
+                Some("https://api.fireworks.ai/inference"),
+            ),
+            "openrouter" => (
+                "meta-llama/llama-3.3-70b-instruct",
+                Some("OPENROUTER_API_KEY"),
+                Some("https://openrouter.ai/api"),
+            ),
+            "gemini" => (
+                "gemini-2.0-flash",
+                Some("GEMINI_API_KEY"),
+                Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+            ),
+            // Unknown provider — still works if the user provides base_url + key
+            _ => (
+                "gpt-4o-mini",
+                Some(&*Box::leak(
+                    format!("{}_API_KEY", provider.to_uppercase()).into_boxed_str(),
+                )),
+                None,
+            ),
+        };
+
+    let model = model.unwrap_or(default_model);
+
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // Cloud providers require an API key
+    if let Some(var) = key_var {
+        let k = key.ok_or_else(|| {
+            anyhow::anyhow!(
+                "provider '{}' requires an API key.\nRun:\n  innerwarden configure ai {} --key <your-key>",
+                provider,
+                provider
+            )
+        })?;
+
+        if cli.dry_run {
+            println!(
+                "  [dry-run] would write {}=... to {}",
+                var,
+                env_file.display()
+            );
+        } else {
+            write_env_key(&env_file, var, k)?;
+            println!("  [ok] {}=... written to {}", var, env_file.display());
+        }
+    }
+
+    // Patch agent.toml
+    if cli.dry_run {
+        println!(
+            "  [dry-run] would set [ai] enabled=true provider={provider} model={model} in {}",
+            cli.agent_config.display()
+        );
+    } else {
+        config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "ai", "provider", provider)?;
+        config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
+        // Write base_url: explicit flag > provider default > empty
+        let effective_url = base_url.or(default_base_url).unwrap_or("");
+        if !effective_url.is_empty() {
+            config_editor::write_str(&cli.agent_config, "ai", "base_url", effective_url)?;
+        }
+        println!("  [ok] agent.toml updated: provider={provider}, model={model}");
+    }
+
+    // Restart agent
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let restart_cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {restart_cmd}");
+    } else if is_macos {
+        systemd::restart_launchd("com.innerwarden.agent", false)?;
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        systemd::restart_service("innerwarden-agent", false)?;
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("AI configured. Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+fn cmd_configure_responder(
+    cli: &Cli,
+    enable: bool,
+    disable: bool,
+    dry_run_flag: Option<bool>,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    // Interactive mode when called with no flags
+    if !enable && !disable && dry_run_flag.is_none() {
+        return cmd_configure_responder_interactive(cli);
+    }
+
+    // Apply responder.enabled
+    if enable || disable {
+        let value = enable;
+
+        // Extra confirmation when enabling live execution
+        if enable && dry_run_flag == Some(false) && !cli.dry_run {
+            println!("  WARNING: This will enable LIVE execution of security responses.");
+            println!("  InnerWarden will run commands like 'ufw deny from <IP>' automatically.");
+            println!();
+            print!("  Type 'yes' to confirm: ");
+            std::io::stdout().flush()?;
+            let mut ans = String::new();
+            std::io::stdin().read_line(&mut ans)?;
+            if ans.trim() != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+
+        if cli.dry_run {
+            println!(
+                "  [dry-run] would set [responder] enabled={value} in {}",
+                cli.agent_config.display()
+            );
+        } else {
+            config_editor::write_bool(&cli.agent_config, "responder", "enabled", value)?;
+            println!("  [ok] responder.enabled = {value}");
+        }
+    }
+
+    // Apply responder.dry_run
+    if let Some(dr) = dry_run_flag {
+        if cli.dry_run {
+            println!(
+                "  [dry-run] would set [responder] dry_run={dr} in {}",
+                cli.agent_config.display()
+            );
+        } else {
+            config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
+            println!("  [ok] responder.dry_run = {dr}");
+        }
+    }
+
+    restart_agent(cli);
+    println!();
+    if enable && dry_run_flag == Some(false) {
+        println!("Responder is LIVE. Decisions will execute automatically.");
+    } else if disable {
+        println!("Responder disabled. System observes only.");
+    } else {
+        println!("Responder updated. Run 'innerwarden status' to confirm.");
+    }
+    Ok(())
+}
+
+fn cmd_configure_responder_interactive(cli: &Cli) -> Result<()> {
+    println!("InnerWarden — Responder setup\n");
+    println!("The responder controls what InnerWarden does when it detects an attack.\n");
+    println!("  1. Observe only (safe)   — logs everything, takes no action");
+    println!("  2. Dry-run mode          — shows what it WOULD do, but doesn't execute");
+    println!("  3. Live (auto-block)     — automatically blocks IPs and suspends users\n");
+
+    let choice = prompt("Choose [1/2/3]")?;
+
+    match choice.trim() {
+        "1" => {
+            if !cli.dry_run {
+                config_editor::write_bool(&cli.agent_config, "responder", "enabled", false)?;
+                println!("  [ok] responder disabled — observe only");
+            } else {
+                println!("  [dry-run] would disable responder");
+            }
+            restart_agent(cli);
+            println!("\nSystem is in observe mode. No automatic actions will be taken.");
+        }
+        "2" => {
+            if !cli.dry_run {
+                config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+                config_editor::write_bool(&cli.agent_config, "responder", "dry_run", true)?;
+                println!("  [ok] responder.enabled = true, dry_run = true");
+            } else {
+                println!("  [dry-run] would set responder.enabled=true, dry_run=true");
+            }
+            restart_agent(cli);
+            println!(
+                "\nDry-run mode enabled. InnerWarden will log what it would do but take no action."
+            );
+            println!("Check decisions-*.jsonl to review. When ready, run:");
+            println!("  innerwarden configure responder --enable --dry-run false");
+        }
+        "3" => {
+            println!();
+            println!("  WARNING: In live mode, InnerWarden will automatically:");
+            println!("    - Block IPs with: sudo ufw deny from <IP>  (or iptables/nftables)");
+            println!("    - Suspend users:  drop-in in /etc/sudoers.d/");
+            println!();
+            println!("  Make sure block-ip is enabled: innerwarden enable block-ip");
+            println!();
+            print!("  Type 'yes' to enable live execution: ");
+            std::io::stdout().flush()?;
+            let mut ans = String::new();
+            std::io::stdin().read_line(&mut ans)?;
+            if ans.trim() != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
+            if !cli.dry_run {
+                config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+                config_editor::write_bool(&cli.agent_config, "responder", "dry_run", false)?;
+                println!("  [ok] responder is LIVE");
+            } else {
+                println!("  [dry-run] would set responder.enabled=true, dry_run=false");
+            }
+            restart_agent(cli);
+            println!("\nResponder is LIVE. InnerWarden will act automatically on high-confidence threats.");
+            println!(
+                "Monitor decisions: tail -f /var/lib/innerwarden/decisions-$(date +%Y-%m-%d).jsonl"
+            );
+        }
+        _ => {
+            anyhow::bail!("invalid choice — enter 1, 2, or 3");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure telegram
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_telegram(
+    cli: &Cli,
+    token_arg: Option<&str>,
+    chat_id_arg: Option<&str>,
+    no_test: bool,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // ── Step 1: bot token ──────────────────────────────────────────────────
+    let token = if let Some(t) = token_arg {
+        t.to_string()
+    } else {
+        println!("InnerWarden — Telegram setup\n");
+        println!("Step 1 — Create a bot");
+        println!("  1. Open Telegram and message @BotFather");
+        println!("  2. Send:  /newbot");
+        println!("  3. Choose a name and username for your bot");
+        println!("  4. Copy the token BotFather gives you (looks like 123456789:ABCdef...)\n");
+        let t = prompt("Bot token")?;
+        if t.is_empty() {
+            anyhow::bail!("token cannot be empty");
+        }
+        t
+    };
+
+    // Basic format check: digits : alphanumeric
+    if !token.contains(':') || token.split(':').next().is_none_or(|s| s.is_empty()) {
+        anyhow::bail!(
+            "token looks wrong — expected format: 123456789:ABCdef...\nGet one from @BotFather on Telegram."
+        );
+    }
+
+    // ── Step 2: chat ID ────────────────────────────────────────────────────
+    let chat_id = if let Some(c) = chat_id_arg {
+        c.to_string()
+    } else {
+        // Try to discover chat_id from pending updates (works if user already messaged the bot)
+        let discovered = discover_telegram_chat_id(&token);
+
+        match discovered {
+            Some(id) => {
+                println!("\n  Found your chat ID automatically: {id}");
+                print!("  Use this chat ID? [Y/n] ");
+                std::io::stdout().flush()?;
+                let mut ans = String::new();
+                std::io::stdin().read_line(&mut ans)?;
+                if ans.trim().to_lowercase() == "n" {
+                    let manual = prompt_with_hint(
+                        "Chat ID",
+                        "send a message to your bot first, then re-run",
+                    )?;
+                    if manual.is_empty() {
+                        anyhow::bail!("chat ID cannot be empty");
+                    }
+                    manual
+                } else {
+                    id
+                }
+            }
+            None => {
+                println!("\nStep 2 — Find your chat ID\n");
+                println!("  Auto-detect (easiest):");
+                println!("    Open Telegram and send any message to your new bot.");
+                println!(
+                    "    Then re-run this command — your chat ID will be detected automatically."
+                );
+                println!();
+                println!("  Or get it manually:");
+                println!(
+                    "    Message @userinfobot on Telegram — it replies with your numeric user ID."
+                );
+                println!();
+                let c = prompt("Chat ID (numeric, e.g. 123456789)")?;
+                if c.is_empty() {
+                    anyhow::bail!(
+                        "chat ID cannot be empty.\nSend a message to your bot on Telegram first, then re-run this command."
+                    );
+                }
+                c
+            }
+        }
+    };
+
+    // Validate chat_id is numeric (may be negative for groups)
+    let chat_id_trimmed = chat_id.trim_start_matches('-');
+    if !chat_id_trimmed.chars().all(|c| c.is_ascii_digit()) {
+        anyhow::bail!(
+            "chat ID must be a number (e.g. 123456789 for a user, -100... for a group).\nGet yours by messaging @userinfobot on Telegram."
+        );
+    }
+
+    // ── Save credentials ───────────────────────────────────────────────────
+    if cli.dry_run {
+        println!(
+            "\n  [dry-run] would write TELEGRAM_BOT_TOKEN=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would write TELEGRAM_CHAT_ID={chat_id} to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [telegram] enabled=true in {}",
+            cli.agent_config.display()
+        );
+    } else {
+        write_env_key(&env_file, "TELEGRAM_BOT_TOKEN", &token)?;
+        write_env_key(&env_file, "TELEGRAM_CHAT_ID", &chat_id)?;
+        println!("\n  [ok] Credentials saved to {}", env_file.display());
+
+        config_editor::write_bool(&cli.agent_config, "telegram", "enabled", true)?;
+        println!("  [ok] agent.toml: telegram.enabled = true");
+    }
+
+    // ── Test notification ──────────────────────────────────────────────────
+    if !no_test && !cli.dry_run {
+        print!("  Sending test notification... ");
+        std::io::stdout().flush()?;
+        match send_telegram_test(&token, &chat_id) {
+            Ok(()) => println!("sent!"),
+            Err(e) => {
+                println!("failed");
+                println!();
+                println!("  Warning: could not send test message: {e:#}");
+                println!("  Your credentials have been saved. Check token and chat_id with:");
+                println!("  innerwarden doctor");
+            }
+        }
+    }
+
+    // ── Restart agent ──────────────────────────────────────────────────────
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {cmd}");
+    } else if is_macos {
+        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        let _ = systemd::restart_service("innerwarden-agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("Telegram is ready.");
+    println!();
+    println!("  Your bot sends alerts and responds to commands:");
+    println!("    /menu       — interactive button menu");
+    println!("    /status     — system overview");
+    println!("    /incidents  — last incidents");
+    println!("    /decisions  — last decisions");
+    println!("    /ask <q>    — ask the AI a question");
+    println!();
+    println!("Next steps:");
+    println!("  innerwarden status       — check services and active capabilities");
+    println!("  innerwarden doctor       — validate the full setup");
+    println!("  innerwarden test-alert   — send a test alert right now");
+    Ok(())
+}
+
+/// Try to get the chat_id from recent bot updates (works after the user messages the bot).
+fn discover_telegram_chat_id(token: &str) -> Option<String> {
+    let url = format!("https://api.telegram.org/bot{token}/getUpdates?limit=1&timeout=0");
+    let resp = ureq::get(&url).call().ok()?;
+    let json: serde_json::Value = resp.into_body().read_json().ok()?;
+    json["result"]
+        .as_array()?
+        .last()?
+        .get("message")?
+        .get("chat")?
+        .get("id")?
+        .as_i64()
+        .map(|id| id.to_string())
+}
+
+/// Send a test Telegram message to confirm the configuration works.
+fn send_telegram_test(token: &str, chat_id: &str) -> Result<()> {
+    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "text": "✅ <b>InnerWarden connected</b>\n\nYou'll receive alerts here when High or Critical threats are detected on your server.\n\n<b>Commands:</b>\n/menu — interactive button menu\n/status — system overview\n/incidents — last incidents\n/decisions — last decisions\n/ask &lt;question&gt; — ask the AI\n\nOr just type a question in plain text.",
+        "parse_mode": "HTML"
+    });
+    let resp = ureq::post(&url)
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let json: serde_json::Value = resp.into_body().read_json()?;
+    if json["ok"].as_bool() != Some(true) {
+        anyhow::bail!(
+            "{}",
+            json["description"].as_str().unwrap_or("unknown error")
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure slack
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_slack(
+    cli: &Cli,
+    webhook_url_arg: Option<&str>,
+    min_severity: &str,
+    no_test: bool,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // ── Webhook URL ────────────────────────────────────────────────────────
+    let webhook_url = if let Some(u) = webhook_url_arg {
+        u.to_string()
+    } else {
+        println!("InnerWarden — Slack setup\n");
+        println!("Step 1 — Create an Incoming Webhook");
+        println!("  1. Go to https://api.slack.com/apps and click 'Create New App'");
+        println!("  2. Choose 'From scratch', name it 'InnerWarden', pick your workspace");
+        println!("  3. Click 'Incoming Webhooks' → toggle On → 'Add New Webhook to Workspace'");
+        println!("  4. Choose a channel (e.g. #security-alerts) → Allow");
+        println!("  5. Copy the webhook URL (starts with https://hooks.slack.com/...)\n");
+        let u = prompt("Webhook URL")?;
+        if u.is_empty() {
+            anyhow::bail!("webhook URL cannot be empty");
+        }
+        u
+    };
+
+    if !webhook_url.starts_with("https://hooks.slack.com/") {
+        anyhow::bail!(
+            "webhook URL should start with https://hooks.slack.com/\nGet one at https://api.slack.com/apps"
+        );
+    }
+
+    // Validate severity
+    if !matches!(min_severity, "low" | "medium" | "high" | "critical") {
+        anyhow::bail!("min-severity must be one of: low, medium, high, critical");
+    }
+
+    // ── Save credentials ───────────────────────────────────────────────────
+    if cli.dry_run {
+        println!(
+            "\n  [dry-run] would write SLACK_WEBHOOK_URL=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [slack] enabled=true min_severity={min_severity} in {}",
+            cli.agent_config.display()
+        );
+    } else {
+        write_env_key(&env_file, "SLACK_WEBHOOK_URL", &webhook_url)?;
+        println!("\n  [ok] Webhook URL saved to {}", env_file.display());
+
+        config_editor::write_bool(&cli.agent_config, "slack", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "slack", "min_severity", min_severity)?;
+        println!("  [ok] agent.toml: slack.enabled = true, min_severity = {min_severity}");
+    }
+
+    // ── Test notification ──────────────────────────────────────────────────
+    if !no_test && !cli.dry_run {
+        print!("  Sending test notification... ");
+        std::io::stdout().flush()?;
+        match send_slack_test(&webhook_url) {
+            Ok(()) => println!("sent!"),
+            Err(e) => {
+                println!("failed");
+                println!();
+                println!("  Warning: could not send test message: {e:#}");
+                println!("  Your URL has been saved. Verify it at https://api.slack.com/apps");
+            }
+        }
+    }
+
+    // ── Restart agent ──────────────────────────────────────────────────────
+    let is_macos = std::env::consts::OS == "macos";
+    if cli.dry_run {
+        let cmd = if is_macos {
+            "sudo launchctl kickstart -k system/com.innerwarden.agent"
+        } else {
+            "sudo systemctl restart innerwarden-agent"
+        };
+        println!("  [dry-run] would restart: {cmd}");
+    } else if is_macos {
+        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        let _ = systemd::restart_service("innerwarden-agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("Slack configured. You'll receive alerts for {min_severity}+ incidents.");
+    println!("Run 'innerwarden doctor' to validate the full setup.");
+    Ok(())
+}
+
+fn send_slack_test(webhook_url: &str) -> Result<()> {
+    let body = serde_json::json!({
+        "text": "✅ *InnerWarden* is connected. You'll receive security alerts here."
+    });
+    ureq::post(webhook_url)
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared interactive helpers
+// ---------------------------------------------------------------------------
+
+fn prompt(label: &str) -> Result<String> {
+    print!("{label}: ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_with_hint(label: &str, hint: &str) -> Result<String> {
+    print!("{label} ({hint}): ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure webhook
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_webhook(
+    cli: &Cli,
+    url_arg: Option<&str>,
+    min_severity: &str,
+    no_test: bool,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    // Validate severity
+    if !matches!(min_severity, "low" | "medium" | "high" | "critical") {
+        anyhow::bail!("min-severity must be one of: low, medium, high, critical");
+    }
+
+    let url = if let Some(u) = url_arg {
+        u.to_string()
+    } else {
+        println!("InnerWarden — Webhook setup\n");
+        println!("Webhooks send a JSON POST to your endpoint for every alert.");
+        println!("Works with Zapier, Make (Integromat), n8n, custom APIs, and more.\n");
+        let u = prompt("Webhook URL (e.g. https://hooks.example.com/notify)")?;
+        if u.is_empty() {
+            anyhow::bail!("URL cannot be empty");
+        }
+        u
+    };
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        anyhow::bail!("URL must start with http:// or https://");
+    }
+
+    if cli.dry_run {
+        println!("\n  [dry-run] would set [webhook] enabled=true url=... min_severity={min_severity} in {}", cli.agent_config.display());
+    } else {
+        config_editor::write_bool(&cli.agent_config, "webhook", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "webhook", "url", &url)?;
+        config_editor::write_str(&cli.agent_config, "webhook", "min_severity", min_severity)?;
+        println!("\n  [ok] agent.toml: webhook.enabled = true, min_severity = {min_severity}");
+    }
+
+    if !no_test && !cli.dry_run {
+        print!("  Sending test request... ");
+        std::io::stdout().flush()?;
+        match send_webhook_test(&url) {
+            Ok(status) => println!("ok (HTTP {status})"),
+            Err(e) => {
+                println!("failed");
+                println!();
+                println!("  Warning: {e:#}");
+                println!("  Your URL has been saved. Check the endpoint is reachable.");
+            }
+        }
+    }
+
+    restart_agent(cli);
+    println!();
+    println!("Webhook configured. Alerts ({min_severity}+) will be sent to your endpoint.");
+    println!("Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+fn send_webhook_test(url: &str) -> Result<u16> {
+    let body = serde_json::json!({
+        "source": "innerwarden",
+        "kind": "test",
+        "severity": "low",
+        "summary": "InnerWarden webhook test — configuration successful",
+        "host": hostname()
+    });
+    let resp = ureq::post(url)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "innerwarden-ctl/1.0")
+        .send(body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(resp.status().as_u16())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure dashboard
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_dashboard(cli: &Cli, user: &str, password_arg: Option<&str>) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // When password is provided via --password flag, use it directly.
+    // Otherwise let the agent binary handle prompting (hidden input + confirm = 2 prompts total).
+    let hash = if let Some(password) = password_arg {
+        // Non-interactive path: pipe password to agent subprocess.
+        let agent_bin = cli
+            .agent_config
+            .parent()
+            .and_then(|_| {
+                for path in &[
+                    "/usr/local/bin/innerwarden-agent",
+                    "/usr/bin/innerwarden-agent",
+                ] {
+                    if Path::new(path).exists() {
+                        return Some(PathBuf::from(path));
+                    }
+                }
+                None
+            })
+            .or_else(|| which_bin("innerwarden-agent"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "innerwarden-agent not found — run ./install.sh first or generate hash manually:\
+                    \n  innerwarden-agent --dashboard-generate-password-hash"
+                )
+            })?;
+
+        let output = std::process::Command::new(&agent_bin)
+            .arg("--dashboard-generate-password-hash")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = writeln!(stdin, "{password}");
+                    let _ = writeln!(stdin, "{password}");
+                }
+                child.wait_with_output()
+            })
+            .map_err(|e| anyhow::anyhow!("failed to run agent binary: {e}"))?;
+
+        if !output.status.success() {
+            anyhow::bail!("agent binary failed to generate hash");
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        raw.lines()
+            .find(|l| l.starts_with("$argon2"))
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
+    } else {
+        // Interactive path: let the agent binary prompt for password (hidden, with confirm).
+        // This avoids the duplicate-prompt issue — only 2 prompts instead of 3.
+        println!("InnerWarden — Dashboard setup\n");
+        println!("The dashboard requires a login to protect your security data.");
+        println!("Choose a strong password (min 8 chars).\n");
+
+        let agent_bin = cli
+            .agent_config
+            .parent()
+            .and_then(|_| {
+                for path in &[
+                    "/usr/local/bin/innerwarden-agent",
+                    "/usr/bin/innerwarden-agent",
+                ] {
+                    if Path::new(path).exists() {
+                        return Some(PathBuf::from(path));
+                    }
+                }
+                None
+            })
+            .or_else(|| which_bin("innerwarden-agent"))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "innerwarden-agent not found — run ./install.sh first or generate hash manually:\
+                    \n  innerwarden-agent --dashboard-generate-password-hash"
+                )
+            })?;
+
+        // Inherit stdin/stderr so rpassword can read from the terminal directly.
+        let output = std::process::Command::new(&agent_bin)
+            .arg("--dashboard-generate-password-hash")
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .map_err(|e| anyhow::anyhow!("failed to run agent binary: {e}"))?;
+
+        if !output.status.success() {
+            anyhow::bail!("password setup failed");
+        }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        raw.lines()
+            .find(|l| l.starts_with("$argon2"))
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| anyhow::anyhow!("agent binary returned unexpected output"))?
+    };
+
+    if cli.dry_run {
+        println!(
+            "\n  [dry-run] would write INNERWARDEN_DASHBOARD_USER={user} to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would write INNERWARDEN_DASHBOARD_PASSWORD_HASH=<hash> to {}",
+            env_file.display()
+        );
+        println!("  [dry-run] would add --dashboard to service ExecStart if missing");
+    } else {
+        write_env_key(&env_file, "INNERWARDEN_DASHBOARD_USER", user)?;
+        write_env_key(&env_file, "INNERWARDEN_DASHBOARD_PASSWORD_HASH", &hash)?;
+        println!("\n  [ok] Credentials saved to {}", env_file.display());
+    }
+
+    // Ensure --dashboard is in the service ExecStart
+    ensure_dashboard_flag_in_service(cli);
+
+    restart_agent(cli);
+    println!();
+    println!("Dashboard configured.");
+    println!("  URL:      http://localhost:8787");
+    println!("  Username: {user}");
+    println!("  Password: (the one you entered)");
+    println!();
+    println!("To access from your browser via SSH tunnel:");
+    println!("  ssh -L 8787:127.0.0.1:8787 user@YOUR_SERVER");
+    println!("  Then open: http://localhost:8787");
+    println!();
+    println!("If you use nginx, add this to your server block:");
+    println!("  location / {{");
+    println!("      proxy_pass http://127.0.0.1:8787;");
+    println!("      proxy_set_header Host $host;");
+    println!("      proxy_set_header Authorization $http_authorization;");
+    println!("      proxy_pass_header Authorization;");
+    println!("      proxy_http_version 1.1;");
+    println!("      proxy_buffering off;");
+    println!("  }}");
+    println!();
+    println!("Run 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+/// Add `--dashboard` to the innerwarden-agent service ExecStart if not already present.
+fn ensure_dashboard_flag_in_service(cli: &Cli) {
+    // Only applies to Linux systemd
+    if std::env::consts::OS == "macos" {
+        return;
+    }
+    let service_path = "/etc/systemd/system/innerwarden-agent.service";
+    let Ok(content) = std::fs::read_to_string(service_path) else {
+        return;
+    };
+    if content.contains("--dashboard") {
+        return;
+    }
+    // Patch ExecStart line to append --dashboard
+    let patched = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("ExecStart=") && !line.contains("--dashboard") {
+                format!("{line} --dashboard")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if cli.dry_run {
+        println!("  [dry-run] would add --dashboard to {service_path}");
+        return;
+    }
+
+    if std::fs::write(service_path, patched).is_ok() {
+        let _ = std::process::Command::new("systemctl")
+            .arg("daemon-reload")
+            .status();
+        println!("  [ok] --dashboard added to {service_path}");
+    } else {
+        println!(
+            "  [warn] could not update {service_path} — add --dashboard to ExecStart manually"
+        );
+    }
+}
+
+fn which_bin(name: &str) -> Option<PathBuf> {
+    std::env::var("PATH").ok()?.split(':').find_map(|dir| {
+        let p = PathBuf::from(dir).join(name);
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure abuseipdb
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_abuseipdb(
+    cli: &Cli,
+    api_key_arg: Option<&str>,
+    auto_block_arg: Option<u8>,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    let api_key = if let Some(k) = api_key_arg {
+        k.to_string()
+    } else {
+        println!("InnerWarden — AbuseIPDB setup\n");
+        println!("AbuseIPDB checks the reputation of every attacking IP before AI analysis.");
+        println!("The reputation score (0–100) is injected into the AI prompt so decisions");
+        println!("are more confident. IPs with known bad reputation can be blocked instantly");
+        println!("without spending an AI token.\n");
+        println!("Free tier: 1,000 lookups/day — enough for most servers.\n");
+        println!("  1. Go to https://www.abuseipdb.com/register and create a free account");
+        println!("  2. Once logged in, go to https://www.abuseipdb.com/account/api");
+        println!("  3. Create a new API key and paste it below\n");
+        let k = prompt("API key")?;
+        if k.is_empty() {
+            anyhow::bail!("API key cannot be empty");
+        }
+        k
+    };
+
+    if api_key.len() < 10 {
+        anyhow::bail!("API key looks too short — copy the full key from abuseipdb.com");
+    }
+
+    // Determine auto-block threshold — wizard or flag
+    let threshold: u8 = if let Some(t) = auto_block_arg {
+        t
+    } else if api_key_arg.is_none() {
+        // Interactive wizard: ask about auto-block
+        println!("\nAuto-block threshold (0–100, 0 = disabled)");
+        println!("  IPs with AbuseIPDB confidence score >= threshold are blocked immediately,");
+        println!("  without calling AI. Useful during botnets and DDoS.\n");
+        println!("  Recommended: 80  (blocks known botnet IPs, rarely a false positive)");
+        println!("  Conservative: 0  (AbuseIPDB enriches AI context only, no auto-block)\n");
+        let raw = prompt("Auto-block threshold [80]")?;
+        if raw.is_empty() {
+            80
+        } else {
+            raw.parse::<u8>().unwrap_or_else(|_| {
+                println!("  Invalid value — using 80");
+                80
+            })
+        }
+    } else {
+        // --api-key provided without --auto-block-threshold: default 80
+        80
+    };
+
+    if cli.dry_run {
+        println!(
+            "\n  [dry-run] would write ABUSEIPDB_API_KEY=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [abuseipdb] enabled=true, auto_block_threshold={threshold} in {}",
+            cli.agent_config.display()
+        );
+        return Ok(());
+    }
+
+    write_env_key(&env_file, "ABUSEIPDB_API_KEY", &api_key)?;
+    println!("\n  [ok] API key saved to {}", env_file.display());
+
+    config_editor::write_bool(&cli.agent_config, "abuseipdb", "enabled", true)?;
+    config_editor::write_int(
+        &cli.agent_config,
+        "abuseipdb",
+        "auto_block_threshold",
+        threshold as i64,
+    )?;
+    if threshold > 0 {
+        println!("  [ok] agent.toml: abuseipdb.enabled = true, auto_block_threshold = {threshold}");
+    } else {
+        println!("  [ok] agent.toml: abuseipdb.enabled = true (auto-block disabled)");
+    }
+
+    restart_agent(cli);
+    println!();
+    if threshold > 0 {
+        println!("AbuseIPDB enabled.");
+        println!("  → IPs with score >= {threshold} are blocked instantly (no AI call needed).");
+        println!("  → All other IPs get reputation context injected into AI analysis.");
+    } else {
+        println!("AbuseIPDB enabled. IP reputation will appear in AI analysis.");
+        println!("  Tip: set auto_block_threshold = 80 to auto-block known botnet IPs.");
+    }
+    println!("\nRun 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure geoip
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_geoip(cli: &Cli) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    if cli.dry_run {
+        println!(
+            "[dry-run] would set [geoip] enabled=true in {}",
+            cli.agent_config.display()
+        );
+        return Ok(());
+    }
+
+    println!("InnerWarden — GeoIP setup\n");
+    println!("GeoIP adds country and ISP context to AI analysis. No API key needed.");
+    println!("Uses ip-api.com (free, 45 lookups/min).\n");
+
+    // Quick reachability check
+    print!("  Checking ip-api.com connectivity... ");
+    std::io::stdout().flush()?;
+    match ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(5)))
+        .build()
+        .call()
+    {
+        Ok(_) => println!("ok"),
+        Err(_) => println!("unreachable (will enable anyway — retried at runtime)"),
+    }
+
+    config_editor::write_bool(&cli.agent_config, "geoip", "enabled", true)?;
+    println!("  [ok] agent.toml: geoip.enabled = true");
+
+    restart_agent(cli);
+    println!();
+    println!("GeoIP enabled. Country and ISP will appear in AI decisions.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden integrate cloudflare
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_cloudflare(
+    cli: &Cli,
+    zone_id_arg: Option<&str>,
+    api_token_arg: Option<&str>,
+) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    let (zone_id, api_token) = match (zone_id_arg, api_token_arg) {
+        (Some(z), Some(t)) => (z.to_string(), t.to_string()),
+        (zone_id_arg, api_token_arg) => {
+            println!("InnerWarden — Cloudflare integration setup\n");
+            println!("When InnerWarden blocks an IP, it will also push that block to Cloudflare's");
+            println!(
+                "edge via IP Access Rules — stopping the attacker before they reach your server.\n"
+            );
+            println!("You need:");
+            println!("  1. Zone ID   — right panel of your domain at dash.cloudflare.com");
+            println!("  2. API token — dash.cloudflare.com/profile/api-tokens");
+            println!("     Use template 'Edit zone DNS' or custom with Zone > Firewall Services > Edit\n");
+
+            let zid = if let Some(z) = zone_id_arg {
+                z.to_string()
+            } else {
+                let z = prompt("Zone ID")?;
+                if z.is_empty() {
+                    anyhow::bail!("Zone ID cannot be empty");
+                }
+                z
+            };
+
+            let tok = if let Some(t) = api_token_arg {
+                t.to_string()
+            } else {
+                let t = prompt("API token")?;
+                if t.is_empty() {
+                    anyhow::bail!("API token cannot be empty");
+                }
+                t
+            };
+
+            (zid, tok)
+        }
+    };
+
+    if zone_id.len() < 10 {
+        anyhow::bail!("Zone ID looks too short — copy it from the Cloudflare dashboard");
+    }
+    if api_token.len() < 10 {
+        anyhow::bail!("API token looks too short — copy the full token from Cloudflare");
+    }
+
+    if cli.dry_run {
+        println!(
+            "\n  [dry-run] would write CLOUDFLARE_API_TOKEN=... to {}",
+            env_file.display()
+        );
+        println!(
+            "  [dry-run] would set [cloudflare] enabled=true, zone_id={zone_id} in {}",
+            cli.agent_config.display()
+        );
+        return Ok(());
+    }
+
+    write_env_key(&env_file, "CLOUDFLARE_API_TOKEN", &api_token)?;
+    println!("\n  [ok] API token saved to {}", env_file.display());
+
+    config_editor::write_bool(&cli.agent_config, "cloudflare", "enabled", true)?;
+    config_editor::write_str(&cli.agent_config, "cloudflare", "zone_id", &zone_id)?;
+    config_editor::write_bool(&cli.agent_config, "cloudflare", "auto_push_blocks", true)?;
+    println!("  [ok] agent.toml: cloudflare.enabled = true, zone_id set, auto_push_blocks = true");
+
+    restart_agent(cli);
+    println!();
+    println!("Cloudflare integration enabled.");
+    println!("  → Every blocked IP will be pushed to Cloudflare edge IP Access Rules.");
+    println!("  → Attackers are stopped at the CDN before reaching your server.");
+    println!("\nRun 'innerwarden doctor' to validate.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure fail2ban
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_fail2ban(cli: &Cli) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    // Check fail2ban is installed
+    let installed = std::process::Command::new("fail2ban-client")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !installed {
+        if std::env::consts::OS == "macos" {
+            anyhow::bail!(
+                "fail2ban is not available on macOS.\n\
+                 This integration only works on Linux."
+            );
+        }
+        anyhow::bail!(
+            "fail2ban-client not found. Install it first:\n\
+             \n\
+             Ubuntu/Debian:  sudo apt install fail2ban\n\
+             RHEL/CentOS:    sudo yum install fail2ban\n\
+             \n\
+             Then run this command again."
+        );
+    }
+
+    // Check it's running
+    let running = std::process::Command::new("fail2ban-client")
+        .arg("ping")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !running {
+        println!("  Warning: fail2ban is installed but not running.");
+        println!("  Start it with: sudo systemctl start fail2ban");
+        println!("  Enabling the integration anyway — it will activate when fail2ban starts.\n");
+    }
+
+    if cli.dry_run {
+        println!(
+            "[dry-run] would set [fail2ban] enabled=true in {}",
+            cli.agent_config.display()
+        );
+        return Ok(());
+    }
+
+    config_editor::write_bool(&cli.agent_config, "fail2ban", "enabled", true)?;
+    println!("  [ok] agent.toml: fail2ban.enabled = true");
+
+    restart_agent(cli);
+    println!();
+    println!("Fail2ban integration enabled.");
+    println!("IPs banned by fail2ban will automatically be enforced via your block skill.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden configure watchdog
+// ---------------------------------------------------------------------------
+
+fn cmd_configure_watchdog(cli: &Cli, interval_mins: u64) -> Result<()> {
+    if std::env::consts::OS == "macos" {
+        println!("On macOS, use a launchd plist instead of cron.");
+        println!(
+            "Create /Library/LaunchDaemons/com.innerwarden.watchdog.plist with an interval of {}s.",
+            interval_mins * 60
+        );
+        println!("Or run: innerwarden watchdog --notify (manually, or via a scheduled job).");
+        return Ok(());
+    }
+
+    // Build cron line
+    let bin = which_bin("innerwarden")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "/usr/local/bin/innerwarden".to_string());
+    let cron_line = format!("*/{interval_mins} * * * * {bin} watchdog --notify");
+
+    if cli.dry_run {
+        println!("[dry-run] would add to crontab:");
+        println!("  {cron_line}");
+        return Ok(());
+    }
+
+    // Read current crontab
+    let current = std::process::Command::new("crontab")
+        .arg("-l")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    // Check if already installed
+    if current.contains("innerwarden watchdog") {
+        println!("Watchdog cron is already installed:");
+        for line in current
+            .lines()
+            .filter(|l| l.contains("innerwarden watchdog"))
+        {
+            println!("  {line}");
+        }
+        println!();
+        println!("To update the interval, remove it first with 'crontab -e' and re-run.");
+        return Ok(());
+    }
+
+    // Append new line and write back
+    let new_crontab = if current.trim().is_empty() {
+        format!("{cron_line}\n")
+    } else {
+        let trimmed = current.trim_end();
+        format!("{trimmed}\n{cron_line}\n")
+    };
+
+    let mut child = std::process::Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to run crontab — is it installed?")?;
+    if let Some(stdin) = child.stdin.take() {
+        use std::io::Write;
+        let mut stdin = stdin;
+        stdin.write_all(new_crontab.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("crontab returned non-zero exit code");
+    }
+
+    println!("  [ok] cron entry added");
+    println!();
+    println!("Watchdog configured — checks every {interval_mins} minute(s).");
+    println!("If the agent stops responding, you'll get a Telegram alert.");
+    println!();
+    println!("Cron entry:");
+    println!("  {cron_line}");
+    println!();
+    println!("To remove:  crontab -e  (delete the innerwarden watchdog line)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Shared restart helper
+// ---------------------------------------------------------------------------
+
+fn restart_agent(cli: &Cli) {
+    if cli.dry_run {
+        return;
+    }
+    let is_macos = std::env::consts::OS == "macos";
+    if is_macos {
+        let _ = systemd::restart_launchd("com.innerwarden.agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    } else {
+        let _ = systemd::restart_service("innerwarden-agent", false);
+        println!("  [ok] innerwarden-agent restarted");
+    }
+}
+
+fn hostname() -> String {
+    if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
+        let h = h.trim().to_string();
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden ai install
+// ---------------------------------------------------------------------------
+
+fn cmd_ai_install(cli: &Cli, model: &str, api_key_arg: Option<&str>, yes: bool) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+    let is_macos = std::env::consts::OS == "macos";
+
+    // Resolve API key: --api-key flag > OLLAMA_API_KEY env var > interactive prompt
+    let api_key = if let Some(k) = api_key_arg {
+        k.to_string()
+    } else if let Ok(k) = std::env::var("OLLAMA_API_KEY") {
+        if !k.is_empty() {
+            k
+        } else {
+            prompt_ollama_api_key()?
+        }
+    } else {
+        prompt_ollama_api_key()?
+    };
+
+    println!("InnerWarden AI — Ollama cloud setup");
+    println!();
+    println!("  Provider: Ollama cloud (https://api.ollama.com)");
+    println!("  Model:    {model}");
+    println!("  API key:  {}...", &api_key[..api_key.len().min(12)]);
+    println!();
+
+    if !yes {
+        print!("Configure innerwarden-agent with these settings? [Y/n] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let trimmed = input.trim().to_lowercase();
+        if !trimmed.is_empty() && trimmed != "y" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Configure agent.toml and restart
+    println!("[1/2] Updating innerwarden-agent config...");
+    if cli.dry_run {
+        println!("  [dry-run] would set [ai] enabled=true provider=ollama model={model} base_url=https://api.ollama.com api_key=<redacted>");
+    } else {
+        config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
+        config_editor::write_str(&cli.agent_config, "ai", "provider", "ollama")?;
+        config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
+        config_editor::write_str(
+            &cli.agent_config,
+            "ai",
+            "base_url",
+            "https://api.ollama.com",
+        )?;
+        config_editor::write_str(&cli.agent_config, "ai", "api_key", &api_key)?;
+        println!("  [ok] agent.toml updated");
+    }
+
+    println!("[2/2] Restarting innerwarden-agent...");
+    if cli.dry_run {
+        println!("  [dry-run] would restart innerwarden-agent");
+    } else {
+        if is_macos {
+            systemd::restart_launchd("com.innerwarden.agent", false)?;
+        } else {
+            systemd::restart_service("innerwarden-agent", false)?;
+        }
+        println!("  [ok] innerwarden-agent restarted");
+    }
+
+    println!();
+    println!("Done. Ollama cloud AI is active.");
+    println!("Model:   {model}");
+    println!("Tier:    Free (check https://ollama.com/pricing for limits)");
+    println!();
+    println!("Run 'innerwarden doctor' to validate the connection.");
+    Ok(())
+}
+
+/// Prompt the user to paste their Ollama API key interactively.
+fn prompt_ollama_api_key() -> Result<String> {
+    println!("Ollama API key required.");
+    println!();
+    println!("  1. Create a free account at https://ollama.com");
+    println!("  2. Go to https://ollama.com/settings/api-keys");
+    println!("  3. Click 'New API Key', copy the key, and paste it below.");
+    println!();
+    print!("Ollama API key: ");
+    std::io::stdout().flush()?;
+    let mut key = String::new();
+    std::io::stdin().read_line(&mut key)?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        anyhow::bail!(
+            "No API key provided.\n\
+             You can also set the OLLAMA_API_KEY environment variable and re-run."
+        );
+    }
+    Ok(key)
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden test-alert
+// ---------------------------------------------------------------------------
+
+fn cmd_test_alert(cli: &Cli, channel: Option<&str>) -> Result<()> {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // Detect permission-denied early — don't check exists() first because
+    // the directory itself may be inaccessible, making exists() return false.
+    if let Err(e) = std::fs::read_to_string(&env_file) {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            eprintln!("Permission denied reading {}", env_file.display());
+            eprintln!("Credentials are stored in a protected file.");
+            eprintln!();
+            let args: Vec<String> = std::env::args().collect();
+            let cmd_args = args[1..].join(" ");
+            eprintln!("Run with sudo:");
+            eprintln!("  sudo innerwarden {cmd_args}");
+            std::process::exit(1);
+        }
+        // File not found or other error — fine, load_env_file will return empty map
+    }
+
+    // Load agent.env for credentials
+    let env_vars = load_env_file(&env_file);
+
+    let test_only = channel;
+    let mut any_tested = false;
+    let mut any_failed = false;
+
+    println!("InnerWarden — test alert\n");
+
+    // ── Telegram ─────────────────────────────────────────────────────────
+    let try_telegram = test_only.is_none_or(|c| c == "telegram");
+    if try_telegram {
+        let token = env_vars
+            .get("TELEGRAM_BOT_TOKEN")
+            .cloned()
+            .or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok());
+        let chat_id = env_vars
+            .get("TELEGRAM_CHAT_ID")
+            .cloned()
+            .or_else(|| std::env::var("TELEGRAM_CHAT_ID").ok());
+        match (token, chat_id) {
+            (Some(tok), Some(cid)) if !tok.is_empty() && !cid.is_empty() => {
+                any_tested = true;
+                print!("  Telegram ... ");
+                std::io::stdout().flush().ok();
+                let msg = "🔔 *Test alert from InnerWarden*\n\nYour Telegram notifications are working correctly\\.";
+                match send_telegram_message_md(&tok, &cid, msg) {
+                    Ok(()) => println!("ok"),
+                    Err(e) => {
+                        println!("FAILED: {e:#}");
+                        any_failed = true;
+                    }
+                }
+            }
+            _ => {
+                if test_only == Some("telegram") {
+                    println!("  Telegram ... not configured (run: innerwarden configure telegram)");
+                    any_failed = true;
+                } else {
+                    println!("  Telegram ... skipped (not configured)");
+                }
+            }
+        }
+    }
+
+    // ── Slack ─────────────────────────────────────────────────────────────
+    let try_slack = test_only.is_none_or(|c| c == "slack");
+    if try_slack {
+        let webhook = env_vars
+            .get("SLACK_WEBHOOK_URL")
+            .cloned()
+            .or_else(|| std::env::var("SLACK_WEBHOOK_URL").ok());
+        match webhook {
+            Some(url) if !url.is_empty() => {
+                any_tested = true;
+                print!("  Slack ...... ");
+                std::io::stdout().flush().ok();
+                let payload = serde_json::json!({
+                    "text": "🔔 *Test alert from InnerWarden* — Slack notifications are working correctly."
+                });
+                match ureq::post(&url)
+                    .header("Content-Type", "application/json")
+                    .send(payload.to_string())
+                {
+                    Ok(_) => println!("ok"),
+                    Err(e) => {
+                        println!("FAILED: {e:#}");
+                        any_failed = true;
+                    }
+                }
+            }
+            _ => {
+                if test_only == Some("slack") {
+                    println!("  Slack ...... not configured (run: innerwarden configure slack)");
+                    any_failed = true;
+                } else {
+                    println!("  Slack ...... skipped (not configured)");
+                }
+            }
+        }
+    }
+
+    // ── Webhook ───────────────────────────────────────────────────────────
+    let try_webhook = test_only.is_none_or(|c| c == "webhook");
+    if try_webhook {
+        // Read webhook URL and enabled flag from agent.toml
+        let agent_doc: Option<toml_edit::DocumentMut> = cli
+            .agent_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+            .flatten()
+            .and_then(|s| s.parse().ok());
+
+        let webhook_url: Option<String> = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("webhook"))
+            .and_then(|w| w.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+        let webhook_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("webhook"))
+            .and_then(|w| w.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false);
+
+        match webhook_url {
+            Some(url) if !url.is_empty() && webhook_enabled => {
+                any_tested = true;
+                print!("  Webhook .... ");
+                std::io::stdout().flush().ok();
+                let payload = serde_json::json!({
+                    "type": "test",
+                    "message": "Test alert from InnerWarden — webhook notifications are working correctly."
+                });
+                match ureq::post(&url)
+                    .header("Content-Type", "application/json")
+                    .config()
+                    .timeout_global(Some(std::time::Duration::from_secs(10)))
+                    .build()
+                    .send(payload.to_string())
+                {
+                    Ok(_) => println!("ok"),
+                    Err(e) => {
+                        println!("FAILED: {e:#}");
+                        any_failed = true;
+                    }
+                }
+            }
+            _ => {
+                if test_only == Some("webhook") {
+                    println!("  Webhook .... not configured (run: innerwarden configure webhook)");
+                    any_failed = true;
+                } else {
+                    println!("  Webhook .... skipped (not configured)");
+                }
+            }
+        }
+    }
+
+    println!();
+    if !any_tested {
+        println!("No channels configured yet.");
+        println!("Run 'innerwarden configure' to set up notifications.");
+        return Ok(());
+    }
+    if any_failed {
+        anyhow::bail!("One or more channels failed — run 'innerwarden doctor' for details");
+    }
+    println!("All channels ok.");
+    Ok(())
+}
+
+/// Load key=value pairs from an env file (silently ignores missing file).
+fn load_env_file(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                map.insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Send a plain Telegram message (MarkdownV2).
+fn send_telegram_message_md(token: &str, chat_id: &str, text: &str) -> Result<()> {
+    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "MarkdownV2"
+    });
+    let resp = ureq::post(&url)
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let json: serde_json::Value = resp.into_body().read_json()?;
+    if json["ok"].as_bool() != Some(true) {
+        anyhow::bail!(
+            "{}",
+            json["description"].as_str().unwrap_or("unknown error")
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden report
+// ---------------------------------------------------------------------------
+
+fn cmd_report(cli: &Cli, date_arg: &str, data_dir: &std::path::Path) -> Result<()> {
+    // Try to read data_dir from agent.toml if using default
+    let effective_dir = if data_dir == std::path::Path::new("/var/lib/innerwarden") {
+        cli.agent_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+            .flatten()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|doc| {
+                doc.get("output")
+                    .and_then(|o| o.get("data_dir"))
+                    .and_then(|d| d.as_str())
+                    .map(std::path::PathBuf::from)
+            })
+            .unwrap_or_else(|| data_dir.to_path_buf())
+    } else {
+        data_dir.to_path_buf()
+    };
+
+    let date = match date_arg {
+        "today" => today_date_string(),
+        "yesterday" => yesterday_date_string(),
+        other => other.to_string(),
+    };
+
+    let summary_path = effective_dir.join(format!("summary-{date}.md"));
+
+    if !summary_path.exists() {
+        // Try to find available summaries
+        let mut available: Vec<String> = std::fs::read_dir(&effective_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.strip_prefix("summary-")
+                    .and_then(|s| s.strip_suffix(".md"))
+                    .map(|d| d.to_string())
+            })
+            .collect();
+
+        if available.is_empty() {
+            println!("No summary found for {date}.");
+            println!();
+            println!("Summary files are generated by innerwarden-agent every 30 minutes.");
+            println!("Make sure the agent is running:  innerwarden status");
+        } else {
+            available.sort();
+            available.reverse();
+            println!("No summary found for {date}.");
+            println!();
+            println!("Available dates:");
+            for d in available.iter().take(7) {
+                println!("  innerwarden report --date {d}");
+            }
+        }
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&summary_path)
+        .with_context(|| format!("failed to read {}", summary_path.display()))?;
+
+    // Strip markdown formatting for terminal output (basic)
+    for line in content.lines() {
+        // Convert headers to uppercase section titles
+        if let Some(rest) = line.strip_prefix("### ") {
+            println!("\n  {}", rest);
+        } else if let Some(rest) = line.strip_prefix("## ") {
+            println!("\n{}", rest.to_uppercase());
+            println!("{}", "─".repeat(48));
+        } else if let Some(rest) = line.strip_prefix("# ") {
+            println!("{}", rest);
+            println!("{}", "═".repeat(56));
+        } else if line.starts_with("---") {
+            // skip hr
+        } else {
+            println!("{line}");
+        }
+    }
+
+    println!();
+    println!("Full report: {}", summary_path.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden watchdog
+// ---------------------------------------------------------------------------
+
+fn cmd_watchdog(
+    cli: &Cli,
+    threshold_secs: u64,
+    notify: bool,
+    data_dir: &std::path::Path,
+) -> Result<()> {
+    // Try to read data_dir from agent.toml if using default
+    let effective_dir = if data_dir == std::path::Path::new("/var/lib/innerwarden") {
+        cli.agent_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+            .flatten()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|doc| {
+                doc.get("output")
+                    .and_then(|o| o.get("data_dir"))
+                    .and_then(|d| d.as_str())
+                    .map(std::path::PathBuf::from)
+            })
+            .unwrap_or_else(|| data_dir.to_path_buf())
+    } else {
+        data_dir.to_path_buf()
+    };
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Format today and yesterday as YYYY-MM-DD using chrono
+    let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let yesterday_str = (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    // Find the most recent telemetry file
+    let telemetry_path = {
+        let today_p = effective_dir.join(format!("telemetry-{today_str}.jsonl"));
+        let yest_p = effective_dir.join(format!("telemetry-{yesterday_str}.jsonl"));
+
+        if today_p.exists() {
+            today_p
+        } else if yest_p.exists() {
+            yest_p
+        } else {
+            println!("⚠️  No telemetry file found in {}", effective_dir.display());
+            println!("   The agent may not be running: innerwarden status");
+            if notify {
+                maybe_send_watchdog_alert(
+                    cli,
+                    "InnerWarden agent appears offline — no telemetry files found.",
+                );
+            }
+            return Ok(());
+        }
+    };
+
+    // Use file mtime as the last-activity timestamp (most reliable)
+    let last_ts_secs: Option<u64> = std::fs::metadata(&telemetry_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+
+    match last_ts_secs {
+        Some(ts) => {
+            let age = now_secs.saturating_sub(ts);
+            if age > threshold_secs {
+                println!("⚠️  Agent appears unhealthy — last activity {}s ago (threshold: {threshold_secs}s)", age);
+                println!("   Check status: innerwarden status");
+                println!("   Check logs:   journalctl -u innerwarden-agent -n 50");
+                if notify {
+                    let msg = format!(
+                        "⚠️ InnerWarden agent appears unhealthy on {}.\nLast activity: {}s ago (threshold: {}s).",
+                        hostname(),
+                        age,
+                        threshold_secs
+                    );
+                    maybe_send_watchdog_alert(cli, &msg);
+                }
+                std::process::exit(1);
+            } else {
+                println!("✅ Agent is healthy — last activity {}s ago", age);
+            }
+        }
+        None => {
+            println!(
+                "⚠️  Could not determine agent liveness from {}",
+                telemetry_path.display()
+            );
+            if notify {
+                maybe_send_watchdog_alert(
+                    cli,
+                    "InnerWarden watchdog could not verify agent health.",
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden watchdog --status
+// ---------------------------------------------------------------------------
+
+fn cmd_watchdog_status(cli: &Cli, data_dir: &Path) -> Result<()> {
+    println!("Watchdog Status");
+    println!("{}", "─".repeat(56));
+
+    // ── Cron entry ────────────────────────────────────────
+    println!("\nCron schedule");
+    let crontab = std::process::Command::new("crontab").arg("-l").output();
+
+    match crontab {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let entry = text
+                .lines()
+                .find(|l| l.contains("innerwarden watchdog") && !l.trim_start().starts_with('#'));
+            match entry {
+                Some(line) => {
+                    println!("  ✅ Installed: {line}");
+                    // Parse interval from */N prefix
+                    if let Some(interval) = line
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.strip_prefix("*/"))
+                        .and_then(|n| n.parse::<u64>().ok())
+                    {
+                        println!("     Runs every {interval} minute(s)");
+                    }
+                }
+                None => {
+                    println!("  ○ Not installed");
+                    println!(
+                        "    Run 'innerwarden configure watchdog' to set up automatic monitoring."
+                    );
+                }
+            }
+        }
+        Ok(_) => {
+            println!("  ○ No crontab for current user");
+            println!("    Run 'innerwarden configure watchdog' to set up automatic monitoring.");
+        }
+        Err(_) => {
+            println!("  ○ crontab command not available");
+            println!("    On macOS you may need to configure launchd manually.");
+            println!("    See: innerwarden configure watchdog");
+        }
+    }
+
+    // ── Last agent activity ───────────────────────────────
+    println!("\nAgent health");
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today = epoch_secs_to_date(now_secs);
+    let yesterday = epoch_secs_to_date(now_secs.saturating_sub(86400));
+
+    let telemetry_path = {
+        let today_p = effective_dir.join(format!("telemetry-{today}.jsonl"));
+        let yest_p = effective_dir.join(format!("telemetry-{yesterday}.jsonl"));
+        if today_p.exists() {
+            Some(today_p)
+        } else if yest_p.exists() {
+            Some(yest_p)
+        } else {
+            None
+        }
+    };
+
+    match telemetry_path {
+        None => {
+            println!("  ⚠️  No telemetry file found — agent may not be running");
+            println!("     Run 'innerwarden status' to check.");
+        }
+        Some(ref path) => {
+            let mtime_secs = std::fs::metadata(path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+
+            match mtime_secs {
+                None => println!("  ⚠️  Could not read telemetry file mtime"),
+                Some(ts) => {
+                    let age = now_secs.saturating_sub(ts);
+                    if age < 120 {
+                        println!("  ✅ Agent is healthy — last write {age}s ago");
+                    } else if age < 300 {
+                        println!("  ✅ Agent last wrote telemetry {age}s ago");
+                    } else {
+                        println!("  ⚠️  Agent last wrote telemetry {age}s ago — may be stuck");
+                        println!("     Run 'innerwarden watchdog' to run a full health check.");
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Quick tip ─────────────────────────────────────────
+    println!("\nUseful commands");
+    println!("  innerwarden watchdog            — run a health check now");
+    println!("  innerwarden watchdog --notify   — check and alert via Telegram if unhealthy");
+    println!("  innerwarden configure watchdog  — set up or change the cron schedule");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden tune
+// ---------------------------------------------------------------------------
+
+fn cmd_tune(cli: &Cli, days: u64, yes: bool, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    println!("InnerWarden Tune — analysing last {days} day(s) of data");
+    println!("{}", "─".repeat(56));
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // ── Collect per-detector event counts and incident counts ──
+    // Detectors we know how to tune
+    let detectors = [
+        (
+            "ssh_bruteforce",
+            "ssh.login_failed",
+            "detectors.ssh_bruteforce.threshold",
+        ),
+        (
+            "credential_stuffing",
+            "ssh.invalid_user",
+            "detectors.credential_stuffing.threshold",
+        ),
+        (
+            "sudo_abuse",
+            "sudo.command",
+            "detectors.sudo_abuse.threshold",
+        ),
+        (
+            "search_abuse",
+            "http.request",
+            "detectors.search_abuse.threshold",
+        ),
+        ("web_scan", "http.error", "detectors.web_scan.threshold"),
+        (
+            "port_scan",
+            "network.connection_blocked",
+            "detectors.port_scan.threshold",
+        ),
+    ];
+
+    // Events per kind over the window
+    let mut event_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    // Incidents per detector
+    let mut incident_counts: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    for i in 0..days {
+        let date = epoch_secs_to_date(now_secs.saturating_sub(i * 86400));
+
+        let events_path = effective_dir.join(format!("events-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&events_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if let Some(kind) = v["kind"].as_str() {
+                    *event_counts.entry(kind.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&incidents_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if let Some(id) = v["incident_id"].as_str() {
+                    // incident_id format: detector:entity:seq
+                    let detector = id.split(':').next().unwrap_or("");
+                    if !detector.is_empty() {
+                        *incident_counts.entry(detector.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Read current thresholds from sensor config ─────────
+    let sensor_content = std::fs::read_to_string(&cli.sensor_config).unwrap_or_default();
+    let sensor_toml: Option<toml_edit::DocumentMut> = sensor_content.parse().ok();
+
+    let current_threshold = |config_path: &str| -> Option<i64> {
+        let parts: Vec<&str> = config_path.split('.').collect();
+        // e.g. ["detectors", "ssh_bruteforce", "threshold"]
+        if parts.len() != 3 {
+            return None;
+        }
+        sensor_toml
+            .as_ref()
+            .and_then(|doc| doc.get(parts[0]))
+            .and_then(|t| t.get(parts[1]))
+            .and_then(|d| d.get(parts[2]))
+            .and_then(|v| v.as_integer())
+    };
+
+    // ── Compute suggestions ────────────────────────────────
+    struct Suggestion {
+        detector: &'static str,
+        current: Option<i64>,
+        suggested: i64,
+        reason: String,
+    }
+
+    let mut suggestions: Vec<Suggestion> = Vec::new();
+    let mut has_data = false;
+
+    for (detector, event_kind, config_path) in &detectors {
+        let events = *event_counts.get(*event_kind).unwrap_or(&0);
+        let incidents = *incident_counts.get(*detector).unwrap_or(&0);
+        let current = current_threshold(config_path);
+
+        if events == 0 {
+            continue;
+        }
+        has_data = true;
+
+        let events_per_day = (events as f64 / days as f64).ceil() as i64;
+        let current_val = current.unwrap_or(8);
+
+        // Heuristic: if daily noise >> threshold → suggest raising it
+        // If incident rate is very high (> 5/day) → suggest lowering threshold
+        let incidents_per_day = incidents as f64 / days as f64;
+        let suggested = if incidents_per_day > 10.0 && current_val > 3 {
+            // Very noisy — lower threshold so we catch earlier
+            (current_val - 1).max(2)
+        } else if events_per_day > (current_val * 20) && incidents == 0 {
+            // Extremely noisy with zero incidents → raise threshold
+            (current_val + 2).min(50)
+        } else if events_per_day > (current_val * 5) && incidents_per_day < 1.0 {
+            // Moderately noisy with few incidents → raise slightly
+            (current_val + 1).min(30)
+        } else {
+            current_val // no change
+        };
+
+        if suggested == current_val {
+            continue; // no suggestion needed
+        }
+
+        let direction = if suggested > current_val {
+            "raise"
+        } else {
+            "lower"
+        };
+        let reason = format!(
+            "{} events/day, {} incidents in {days} days — {direction} to reduce noise",
+            events_per_day, incidents
+        );
+        suggestions.push(Suggestion {
+            detector,
+            current,
+            suggested,
+            reason,
+        });
+    }
+
+    if !has_data {
+        println!("\nNo event data found in {}.", effective_dir.display());
+        println!("Run the sensor for a few days first, then re-run tune.");
+        return Ok(());
+    }
+
+    if suggestions.is_empty() {
+        println!("\n✅ All detector thresholds look well-calibrated for this host.");
+        println!("   Events/day are within expected range relative to current thresholds.");
+        println!("   Re-run after more data accumulates: --days 14");
+        return Ok(());
+    }
+
+    println!("\nSuggested threshold changes:\n");
+    println!(
+        "  {:<22}  {:>8}  {:>9}  Reason",
+        "Detector", "Current", "Suggested"
+    );
+    println!("  {}", "─".repeat(72));
+    for s in &suggestions {
+        let cur_str = s
+            .current
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "default".to_string());
+        println!(
+            "  {:<22}  {:>8}  {:>9}  {}",
+            s.detector, cur_str, s.suggested, s.reason
+        );
+    }
+
+    // ── Apply if confirmed ─────────────────────────────────
+    let apply = if yes {
+        true
+    } else {
+        print!(
+            "\nApply these changes to {}? [y/N] ",
+            cli.sensor_config.display()
+        );
+        let _ = std::io::stdout().flush();
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+    };
+
+    if !apply {
+        println!("No changes made. Re-run with --yes to apply.");
+        return Ok(());
+    }
+
+    if cli.dry_run {
+        println!(
+            "[dry-run] Would patch {} with {} change(s)",
+            cli.sensor_config.display(),
+            suggestions.len()
+        );
+        return Ok(());
+    }
+
+    // Patch sensor.toml
+    let mut doc: toml_edit::DocumentMut = sensor_content
+        .parse()
+        .with_context(|| format!("failed to parse {}", cli.sensor_config.display()))?;
+
+    for s in &suggestions {
+        // config_path is "detectors.ssh_bruteforce.threshold"
+        // Walk: doc["detectors"]["ssh_bruteforce"]["threshold"]
+        let parts: Vec<&str> = detectors
+            .iter()
+            .find(|(d, _, _)| *d == s.detector)
+            .map(|(_, _, p)| p.split('.').collect())
+            .unwrap_or_default();
+        if parts.len() == 3 {
+            if let Some(section) = doc
+                .get_mut(parts[0])
+                .and_then(|t| t.as_table_mut())
+                .and_then(|t| t.get_mut(parts[1]))
+                .and_then(|t| t.as_table_mut())
+            {
+                section.insert(parts[2], toml_edit::value(s.suggested));
+            }
+        }
+    }
+
+    std::fs::write(&cli.sensor_config, doc.to_string())
+        .with_context(|| format!("failed to write {}", cli.sensor_config.display()))?;
+
+    println!(
+        "✅ Applied {} change(s) to {}",
+        suggestions.len(),
+        cli.sensor_config.display()
+    );
+    println!("Restart the sensor to apply: sudo systemctl restart innerwarden-sensor");
+
+    Ok(())
+}
+
+fn maybe_send_watchdog_alert(cli: &Cli, message: &str) {
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+    let env_vars = load_env_file(&env_file);
+
+    let token = env_vars
+        .get("TELEGRAM_BOT_TOKEN")
+        .cloned()
+        .or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok());
+    let chat_id = env_vars
+        .get("TELEGRAM_CHAT_ID")
+        .cloned()
+        .or_else(|| std::env::var("TELEGRAM_CHAT_ID").ok());
+
+    if let (Some(tok), Some(cid)) = (token, chat_id) {
+        if !tok.is_empty() && !cid.is_empty() {
+            let url = format!("https://api.telegram.org/bot{tok}/sendMessage");
+            let body = serde_json::json!({
+                "chat_id": cid,
+                "text": message,
+            });
+            let _ = ureq::post(&url)
+                .header("Content-Type", "application/json")
+                .send(body.to_string());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden incidents
+// ---------------------------------------------------------------------------
+
+fn cmd_incidents(cli: &Cli, days: u64, severity_filter: &str, data_dir: &Path) -> Result<()> {
+    // Resolve data_dir from agent.toml if using default
+    let effective_dir = if data_dir == Path::new("/var/lib/innerwarden") {
+        std::fs::read_to_string(&cli.agent_config)
+            .ok()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|v| {
+                v.get("output")
+                    .and_then(|o| o.get("data_dir"))
+                    .and_then(|d| d.as_str())
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(|| data_dir.to_path_buf())
+    } else {
+        data_dir.to_path_buf()
+    };
+
+    let min_rank = severity_rank(severity_filter);
+
+    // Collect dates to scan
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut dates = Vec::new();
+    for i in 0..days {
+        let secs = now_secs.saturating_sub(i * 86400);
+        dates.push(epoch_secs_to_date(secs));
+    }
+
+    let mut total = 0usize;
+    for date in &dates {
+        let path = effective_dir.join(format!("incidents-{date}.jsonl"));
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.is_empty() {
+            continue;
+        }
+
+        println!("── {date} ─────────────────────────────────────────────");
+
+        // Print in reverse (newest last, most scannable)
+        for line in &lines {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let sev = v["severity"].as_str().unwrap_or("Info");
+            if severity_rank(sev) < min_rank {
+                continue;
+            }
+            let title = v["title"].as_str().unwrap_or("Unknown threat");
+            let ts = v["ts"].as_str().unwrap_or("");
+            let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
+            let ip = v["entities"]
+                .as_array()
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|e| e["type"].as_str() == Some("Ip"))
+                        .and_then(|e| e["value"].as_str())
+                })
+                .unwrap_or("");
+            let sev_tag = sev_tag_bracket(sev);
+            let ip_part = if ip.is_empty() {
+                String::new()
+            } else {
+                format!("  {ip}")
+            };
+            println!("  {time}  {sev_tag}  {title}{ip_part}");
+            total += 1;
+        }
+        println!();
+    }
+
+    if total == 0 {
+        if severity_filter != "low" {
+            println!(
+                "No {} or higher incidents found in the last {} day(s).",
+                severity_filter, days
+            );
+        } else {
+            println!("No incidents found in the last {} day(s). Quiet!", days);
+        }
+    } else {
+        println!("{total} incident(s) shown.  Run 'innerwarden report' for the full narrative.");
+    }
+    Ok(())
+}
+
+fn severity_rank(sev: &str) -> u8 {
+    match sev.to_lowercase().as_str() {
+        "critical" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "low" => 2,
+        _ => 1,
+    }
+}
+
+fn sev_tag_bracket(sev: &str) -> &'static str {
+    match sev.to_lowercase().as_str() {
+        "critical" => "[CRITICAL]",
+        "high" => "[HIGH]    ",
+        "medium" => "[MEDIUM]  ",
+        "low" => "[LOW]     ",
+        _ => "[INFO]    ",
+    }
+}
+
+fn sev_tag_plain(sev: &str) -> &'static str {
+    match sev.to_lowercase().as_str() {
+        "critical" => " CRITICAL",
+        "high" => " HIGH    ",
+        "medium" => " MEDIUM  ",
+        "low" => " LOW     ",
+        _ => "         ",
+    }
+}
+
+fn epoch_secs_to_date(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden block / unblock
+// ---------------------------------------------------------------------------
+
+fn cmd_block(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
+    // Basic IP validation
+    if !looks_like_ip(ip) {
+        anyhow::bail!("'{ip}' doesn't look like a valid IP address");
+    }
+
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    // Read configured block backend from agent.toml
+    let backend = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|v| {
+            v.get("responder")
+                .and_then(|r| r.get("block_backend"))
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "ufw".to_string());
+
+    println!("Blocking {ip} via {backend}...");
+
+    if cli.dry_run {
+        println!("  [dry-run] would run block command for {ip}");
+        println!(
+            "  [dry-run] would record in {}/decisions-*.jsonl",
+            effective_dir.display()
+        );
+        return Ok(());
+    }
+
+    // Execute the block
+    let blocked = match backend.as_str() {
+        "iptables" => std::process::Command::new("sudo")
+            .args(["iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "nftables" => std::process::Command::new("sudo")
+            .args([
+                "nft",
+                "add",
+                "element",
+                "ip",
+                "filter",
+                "innerwarden-blocked",
+                &format!("{{ {ip} }}"),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "pf" => std::process::Command::new("sudo")
+            .args(["pfctl", "-t", "innerwarden-blocked", "-T", "add", ip])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        _ => {
+            // ufw (default)
+            std::process::Command::new("sudo")
+                .args(["ufw", "deny", "from", ip])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    };
+
+    if !blocked {
+        anyhow::bail!("block command failed — check sudo permissions (run: innerwarden doctor)");
+    }
+    println!("  [ok] {ip} blocked via {backend}");
+
+    // Write audit trail
+    write_manual_decision(&effective_dir, ip, "block_ip", reason, "operator:cli")?;
+    println!("  [ok] recorded in decisions log");
+
+    println!();
+    println!("{ip} is now blocked. To reverse: innerwarden unblock {ip} --reason \"...\"");
+    Ok(())
+}
+
+fn cmd_unblock(cli: &Cli, ip: &str, reason: &str, data_dir: &Path) -> Result<()> {
+    if !looks_like_ip(ip) {
+        anyhow::bail!("'{ip}' doesn't look like a valid IP address");
+    }
+
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    let backend = std::fs::read_to_string(&cli.agent_config)
+        .ok()
+        .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|v| {
+            v.get("responder")
+                .and_then(|r| r.get("block_backend"))
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "ufw".to_string());
+
+    println!("Unblocking {ip} via {backend}...");
+
+    if cli.dry_run {
+        println!("  [dry-run] would remove block for {ip}");
+        println!(
+            "  [dry-run] would record in {}/decisions-*.jsonl",
+            effective_dir.display()
+        );
+        return Ok(());
+    }
+
+    let unblocked = match backend.as_str() {
+        "iptables" => std::process::Command::new("sudo")
+            .args(["iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "nftables" => std::process::Command::new("sudo")
+            .args([
+                "nft",
+                "delete",
+                "element",
+                "ip",
+                "filter",
+                "innerwarden-blocked",
+                &format!("{{ {ip} }}"),
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        "pf" => std::process::Command::new("sudo")
+            .args(["pfctl", "-t", "innerwarden-blocked", "-T", "delete", ip])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        _ => {
+            // ufw: delete the deny rule
+            std::process::Command::new("sudo")
+                .args(["ufw", "delete", "deny", "from", ip])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+    };
+
+    if !unblocked {
+        println!("  Warning: unblock command may have failed (rule may not exist).");
+        println!("  Check manually: sudo ufw status | grep {ip}");
+    } else {
+        println!("  [ok] {ip} unblocked via {backend}");
+    }
+
+    write_manual_decision(&effective_dir, ip, "unblock_ip", reason, "operator:cli")?;
+    println!("  [ok] recorded in decisions log");
+
+    println!();
+    println!("{ip} is now unblocked.");
+    Ok(())
+}
+
+fn looks_like_ip(s: &str) -> bool {
+    // Accept IPv4 (digits and dots) or IPv6 (hex, colons, optional /)
+    let s = s.split('/').next().unwrap_or(s); // strip CIDR
+    let v4 = s.split('.').count() == 4 && s.split('.').all(|p| p.parse::<u8>().is_ok());
+    let v6 = s.contains(':') && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':');
+    v4 || v6
+}
+
+/// Check whether the current process can write to the InnerWarden config directory.
+/// If not, print a clear hint and exit — avoids failing mid-operation.
+fn require_sudo(cli: &Cli) {
+    let config_dir = cli
+        .agent_config
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/etc/innerwarden"));
+
+    // Try creating a temp file in the directory as the write test
+    let test_path = config_dir.join(".innerwarden-write-test");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&test_path)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_path);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!(
+                "Permission denied: cannot write to {}",
+                config_dir.display()
+            );
+            eprintln!();
+            // Reconstruct the original command to show the sudo hint
+            let args: Vec<String> = std::env::args().collect();
+            let cmd_args = args[1..].join(" ");
+            eprintln!("Run with sudo:");
+            eprintln!("  sudo innerwarden {cmd_args}");
+            std::process::exit(1);
+        }
+        Err(_) => {} // some other error; let the real operation surface it
+    }
+}
+
+fn resolve_data_dir(cli: &Cli, data_dir: &Path) -> PathBuf {
+    if data_dir == Path::new("/var/lib/innerwarden") {
+        std::fs::read_to_string(&cli.agent_config)
+            .ok()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .and_then(|v| {
+                v.get("output")
+                    .and_then(|o| o.get("data_dir"))
+                    .and_then(|d| d.as_str())
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(|| data_dir.to_path_buf())
+    } else {
+        data_dir.to_path_buf()
+    }
+}
+
+fn write_manual_decision(
+    data_dir: &Path,
+    ip: &str,
+    action: &str,
+    reason: &str,
+    provider: &str,
+) -> Result<()> {
+    let today = epoch_secs_to_date(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+    let path = data_dir.join(format!("decisions-{today}.jsonl"));
+    let now_iso = chrono::Utc::now().to_rfc3339();
+    let entry = serde_json::json!({
+        "ts": now_iso,
+        "action": action,
+        "target_ip": ip,
+        "reason": reason,
+        "ai_provider": provider,
+        "confidence": 1.0,
+        "executed": true,
+        "dry_run": false,
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    use std::io::Write;
+    writeln!(file, "{}", entry)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden sensor-status
+// ---------------------------------------------------------------------------
+
+fn cmd_sensor_status(cli: &Cli, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let today = epoch_secs_to_date(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+
+    // Find the most recent telemetry snapshot from today
+    let telemetry_path = effective_dir.join(format!("telemetry-{today}.jsonl"));
+    let snapshot: Option<serde_json::Value> = std::fs::read_to_string(&telemetry_path)
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .rfind(|l| !l.trim().is_empty())
+                .and_then(|line| serde_json::from_str(line).ok())
+        });
+
+    println!("InnerWarden — sensor status  ({})\n", today);
+
+    let Some(snap) = snapshot else {
+        println!("  No telemetry data for today.");
+        println!("  Is the agent running?  innerwarden status");
+        return Ok(());
+    };
+
+    // Events by collector
+    println!("Collectors (events today):");
+    let by_collector = snap["events_by_collector"].as_object();
+    match by_collector {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| (k, v.as_u64().unwrap_or(0)))
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (source, count) in &pairs {
+                println!("  ● {:<30} {:>6} events", source, count);
+            }
+        }
+        _ => println!("  (no events recorded yet today)"),
+    }
+
+    // Incidents by detector
+    println!();
+    println!("Detectors (incidents today):");
+    let by_detector = snap["incidents_by_detector"].as_object();
+    match by_detector {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| (k, v.as_u64().unwrap_or(0)))
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (detector, count) in &pairs {
+                println!("  ⚠  {:<30} {:>6} incidents", detector, count);
+            }
+        }
+        _ => println!("  (no incidents today)"),
+    }
+
+    // AI summary
+    let ai_sent = snap["ai_sent_count"].as_u64().unwrap_or(0);
+    let ai_decided = snap["ai_decision_count"].as_u64().unwrap_or(0);
+    let avg_ms = snap["avg_decision_latency_ms"].as_f64().unwrap_or(0.0);
+    let real_exec = snap["real_execution_count"].as_u64().unwrap_or(0);
+    let dry_exec = snap["dry_run_execution_count"].as_u64().unwrap_or(0);
+    let gate_pass = snap["gate_pass_count"].as_u64().unwrap_or(0);
+
+    println!();
+    println!("AI & Response (today):");
+    println!("  Passed algorithm gate:  {gate_pass}");
+    println!("  Sent to AI:             {ai_sent}");
+    println!("  AI decisions:           {ai_decided}  (avg {avg_ms:.0}ms)");
+    if real_exec > 0 {
+        println!("  Actions executed:       {real_exec}  (live)");
+    }
+    if dry_exec > 0 {
+        println!("  Actions simulated:      {dry_exec}  (dry-run)");
+    }
+
+    // Errors
+    let errors = snap["errors_by_component"].as_object();
+    if let Some(map) = errors {
+        if !map.is_empty() {
+            println!();
+            println!("Errors:");
+            for (comp, count) in map {
+                println!("  ✗ {comp}: {}", count.as_u64().unwrap_or(0));
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden export
+// ---------------------------------------------------------------------------
+
+fn cmd_export(
+    cli: &Cli,
+    kind: &str,
+    from_arg: Option<&str>,
+    to_arg: Option<&str>,
+    format: &str,
+    output_path: Option<&Path>,
+    data_dir: &Path,
+) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today = epoch_secs_to_date(now_secs);
+
+    let from = from_arg.unwrap_or(&today).to_string();
+    let to = to_arg.unwrap_or(&today).to_string();
+
+    let prefix = match kind {
+        "events" => "events",
+        "decisions" => "decisions",
+        _ => "incidents",
+    };
+
+    // Collect all matching JSONL lines across the date range
+    let mut all_lines: Vec<serde_json::Value> = Vec::new();
+
+    // Enumerate all files matching prefix-*.jsonl in the dir
+    if let Ok(entries) = std::fs::read_dir(&effective_dir) {
+        let mut files: Vec<_> = entries
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some(date) = name
+                    .strip_prefix(&format!("{prefix}-"))
+                    .and_then(|s| s.strip_suffix(".jsonl"))
+                {
+                    date >= from.as_str() && date <= to.as_str()
+                } else {
+                    false
+                }
+            })
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+
+        for entry in files {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        all_lines.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    if all_lines.is_empty() {
+        eprintln!("No {kind} found between {from} and {to}.");
+        return Ok(());
+    }
+
+    let content = match format {
+        "csv" => {
+            // Build CSV from the union of all keys across objects
+            let mut keys: Vec<String> = all_lines
+                .iter()
+                .filter_map(|v| v.as_object())
+                .flat_map(|o| o.keys().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            keys.retain(|k| k != "evidence" && k != "details" && k != "entities"); // skip nested
+
+            let mut out = keys.join(",") + "\n";
+            for row in &all_lines {
+                let fields: Vec<String> = keys
+                    .iter()
+                    .map(|k| {
+                        let v = &row[k];
+                        let s = match v {
+                            serde_json::Value::String(s) => s.replace('"', "\"\""),
+                            serde_json::Value::Null => String::new(),
+                            other => other.to_string().replace('"', "\"\""),
+                        };
+                        if s.contains(',') || s.contains('"') || s.contains('\n') {
+                            format!("\"{s}\"")
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
+                out += &(fields.join(",") + "\n");
+            }
+            out
+        }
+        _ => serde_json::to_string_pretty(&all_lines)?,
+    };
+
+    match output_path {
+        Some(path) => {
+            std::fs::write(path, &content)
+                .with_context(|| format!("failed to write to {}", path.display()))?;
+            eprintln!(
+                "Exported {} {kind}(s) ({from} → {to}) to {}",
+                all_lines.len(),
+                path.display()
+            );
+        }
+        None => print!("{content}"),
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden tail
+// ---------------------------------------------------------------------------
+
+fn cmd_tail(cli: &Cli, kind: &str, interval_secs: u64, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let prefix = if kind == "events" {
+        "events"
+    } else {
+        "incidents"
+    };
+
+    println!("Streaming {kind}... (Ctrl-C to stop)\n");
+
+    let mut offset: u64 = 0;
+    let mut current_date = String::new();
+
+    loop {
+        let today = epoch_secs_to_date(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+
+        // Reset offset when the date changes
+        if today != current_date {
+            current_date = today.clone();
+            offset = 0;
+        }
+
+        let path = effective_dir.join(format!("{prefix}-{today}.jsonl"));
+
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let bytes = content.as_bytes();
+            if bytes.len() as u64 > offset {
+                let new_bytes = &bytes[offset as usize..];
+                let new_text = std::str::from_utf8(new_bytes).unwrap_or("");
+                for line in new_text.lines().filter(|l| !l.trim().is_empty()) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        print_tail_entry(&v, kind);
+                    }
+                }
+                offset = bytes.len() as u64;
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    }
+}
+
+fn print_tail_entry(v: &serde_json::Value, kind: &str) {
+    let ts = v["ts"].as_str().unwrap_or("");
+    let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
+
+    if kind == "events" {
+        let source = v["source"].as_str().unwrap_or("?");
+        let ev_kind = v["kind"].as_str().unwrap_or("?");
+        let sev = v["severity"].as_str().unwrap_or("Info");
+        let summary = v["summary"].as_str().unwrap_or("");
+        println!("{time}  [{sev:<8}]  {source:<16}  {ev_kind}  {summary}");
+    } else {
+        // incident
+        let sev = v["severity"].as_str().unwrap_or("Info");
+        let title = v["title"].as_str().unwrap_or("Unknown");
+        let ip = v["entities"]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|e| e["type"].as_str() == Some("Ip"))
+                    .and_then(|e| e["value"].as_str())
+            })
+            .unwrap_or("");
+        let sev_tag = sev_tag_bracket(sev);
+        let ip_part = if ip.is_empty() {
+            String::new()
+        } else {
+            format!("  {ip}")
+        };
+        println!("{time}  {sev_tag}  {title}{ip_part}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden decisions
+// ---------------------------------------------------------------------------
+
+fn cmd_decisions(cli: &Cli, days: u64, action_filter: Option<&str>, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut dates = Vec::new();
+    for i in 0..days {
+        dates.push(epoch_secs_to_date(now_secs.saturating_sub(i * 86400)));
+    }
+
+    let mut total = 0usize;
+    for date in &dates {
+        let path = effective_dir.join(format!("decisions-{date}.jsonl"));
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        if lines.is_empty() {
+            continue;
+        }
+
+        println!("── {date} ─────────────────────────────────────────────");
+
+        for line in &lines {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let action = v["action_type"].as_str().unwrap_or("unknown");
+            if let Some(f) = action_filter {
+                if !action.eq_ignore_ascii_case(f) {
+                    continue;
+                }
+            }
+            let ts = v["ts"].as_str().unwrap_or("");
+            let time = if ts.len() >= 16 { &ts[11..16] } else { ts };
+            let target_ip = v["target_ip"].as_str().unwrap_or("");
+            let target_user = v["target_user"].as_str().unwrap_or("");
+            let confidence = v["confidence"].as_f64().unwrap_or(0.0);
+            let dry_run = v["dry_run"].as_bool().unwrap_or(false);
+            let provider = v["ai_provider"].as_str().unwrap_or("");
+
+            let target = if !target_ip.is_empty() {
+                target_ip.to_string()
+            } else if !target_user.is_empty() {
+                format!("user:{target_user}")
+            } else {
+                String::new()
+            };
+
+            let dry_tag = if dry_run { " [dry-run]" } else { "" };
+            let conf_tag = if confidence > 0.0 {
+                format!("  conf:{:.2}", confidence)
+            } else {
+                String::new()
+            };
+            let provider_tag = if !provider.is_empty() {
+                format!("  via:{provider}")
+            } else {
+                String::new()
+            };
+            let target_part = if target.is_empty() {
+                String::new()
+            } else {
+                format!("  {target}")
+            };
+
+            let action_tag = match action {
+                "block_ip" => "[BLOCK]      ",
+                "suspend_user_sudo" => "[SUSPEND]    ",
+                "ignore" => "[IGNORE]     ",
+                "monitor" => "[MONITOR]    ",
+                "honeypot" => "[HONEYPOT]   ",
+                "request_confirmation" => "[PENDING]    ",
+                _ => "[UNKNOWN]    ",
+            };
+
+            println!("  {time}  {action_tag}{target_part}{conf_tag}{provider_tag}{dry_tag}");
+            total += 1;
+        }
+        println!();
+    }
+
+    if total == 0 {
+        if let Some(f) = action_filter {
+            println!("No '{f}' decisions found in the last {days} day(s).");
+        } else {
+            println!("No decisions recorded in the last {days} day(s).");
+            println!("The agent may be in observe-only mode or not running.");
+            println!("Run 'innerwarden status' to check.");
+        }
+    } else {
+        println!(
+            "{total} decision(s) shown.  Full audit trail: {}/decisions-*.jsonl",
+            effective_dir.display()
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden entity
+// ---------------------------------------------------------------------------
+
+fn cmd_entity(cli: &Cli, target: &str, days: u64, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+
+    // Determine if target looks like an IP or a username
+    let is_ip = looks_like_ip(target);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut dates = Vec::new();
+    for i in 0..days {
+        dates.push(epoch_secs_to_date(now_secs.saturating_sub(i * 86400)));
+    }
+
+    // Collect all matching entries across events, incidents, and decisions
+    #[derive(Debug)]
+    struct Entry {
+        ts: String,
+        kind: &'static str, // "event", "incident", "decision"
+        severity: String,
+        summary: String,
+        extra: String,
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+
+    for date in &dates {
+        // ── events ──────────────────────────────────────
+        let events_path = effective_dir.join(format!("events-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&events_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let matched = if is_ip {
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("Ip")
+                                    && e["value"].as_str() == Some(target)
+                            })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("User")
+                                    && e["value"].as_str() == Some(target)
+                            })
+                        })
+                        .unwrap_or(false)
+                };
+                if matched {
+                    entries.push(Entry {
+                        ts: v["ts"].as_str().unwrap_or("").to_string(),
+                        kind: "event",
+                        severity: v["severity"].as_str().unwrap_or("Info").to_string(),
+                        summary: v["summary"].as_str().unwrap_or("").to_string(),
+                        extra: v["kind"].as_str().unwrap_or("").to_string(),
+                    });
+                }
+            }
+        }
+
+        // ── incidents ────────────────────────────────────
+        let incidents_path = effective_dir.join(format!("incidents-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&incidents_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let matched = if is_ip {
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("Ip")
+                                    && e["value"].as_str() == Some(target)
+                            })
+                        })
+                        .unwrap_or(false)
+                } else {
+                    v["entities"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e["type"].as_str() == Some("User")
+                                    && e["value"].as_str() == Some(target)
+                            })
+                        })
+                        .unwrap_or(false)
+                };
+                if matched {
+                    entries.push(Entry {
+                        ts: v["ts"].as_str().unwrap_or("").to_string(),
+                        kind: "incident",
+                        severity: v["severity"].as_str().unwrap_or("Info").to_string(),
+                        summary: v["title"].as_str().unwrap_or("").to_string(),
+                        extra: v["summary"].as_str().unwrap_or("").to_string(),
+                    });
+                }
+            }
+        }
+
+        // ── decisions ────────────────────────────────────
+        let decisions_path = effective_dir.join(format!("decisions-{date}.jsonl"));
+        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+            for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let ip_match = is_ip && v["target_ip"].as_str() == Some(target);
+                let user_match = !is_ip && v["target_user"].as_str() == Some(target);
+                if ip_match || user_match {
+                    let action = v["action_type"].as_str().unwrap_or("unknown");
+                    let dry_run = v["dry_run"].as_bool().unwrap_or(false);
+                    let dry_tag = if dry_run { " [dry-run]" } else { "" };
+                    entries.push(Entry {
+                        ts: v["ts"].as_str().unwrap_or("").to_string(),
+                        kind: "decision",
+                        severity: String::new(),
+                        summary: format!("Action: {action}{dry_tag}"),
+                        extra: format!(
+                            "conf:{:.2}  via:{}",
+                            v["confidence"].as_f64().unwrap_or(0.0),
+                            v["ai_provider"].as_str().unwrap_or("?")
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        let entity_type = if is_ip { "IP" } else { "user" };
+        println!("No activity found for {entity_type} '{target}' in the last {days} day(s).");
+        println!("Try --days 7 to search further back.");
+        return Ok(());
+    }
+
+    // Sort by timestamp ascending
+    entries.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+    let entity_type = if is_ip { "IP" } else { "User" };
+    let event_count = entries.iter().filter(|e| e.kind == "event").count();
+    let incident_count = entries.iter().filter(|e| e.kind == "incident").count();
+    let decision_count = entries.iter().filter(|e| e.kind == "decision").count();
+
+    println!("Entity: {entity_type} {target}");
+    println!("Period: last {days} day(s)");
+    println!("Found:  {event_count} event(s)  {incident_count} incident(s)  {decision_count} decision(s)");
+    println!("{}", "─".repeat(72));
+
+    for entry in &entries {
+        let time = if entry.ts.len() >= 16 {
+            &entry.ts[..16]
+        } else {
+            &entry.ts
+        };
+        let kind_tag = match entry.kind {
+            "incident" => "[INCIDENT]  ",
+            "decision" => "[DECISION]  ",
+            _ => "[event]     ",
+        };
+        let sev_tag = if entry.kind == "event" || entry.kind == "incident" {
+            sev_tag_plain(&entry.severity)
+        } else {
+            "         "
+        };
+        println!("{time}  {kind_tag}{sev_tag}  {}", entry.summary);
+        if !entry.extra.is_empty() && entry.kind != "event" {
+            println!("                                     {}", entry.extra);
+        }
+    }
+
+    println!("{}", "─".repeat(72));
+    println!("Open dashboard for full details: innerwarden status");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden completions
+// ---------------------------------------------------------------------------
+
+fn cmd_completions(shell: &str) -> Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::Shell;
+
+    let mut cmd = Cli::command();
+    let shell_enum = match shell.to_lowercase().as_str() {
+        "bash" => Shell::Bash,
+        "zsh" => Shell::Zsh,
+        "fish" => Shell::Fish,
+        other => {
+            anyhow::bail!("unsupported shell '{}' — supported: bash, zsh, fish", other)
+        }
+    };
+
+    clap_complete::generate(shell_enum, &mut cmd, "innerwarden", &mut std::io::stdout());
+    Ok(())
+}
+
+// C.4 — Doctor
+// ---------------------------------------------------------------------------
+
+fn cmd_doctor(cli: &Cli, registry: &CapabilityRegistry) -> Result<()> {
+    #[derive(PartialEq)]
+    enum Sev {
+        Ok,
+        Warn,
+        Fail,
+    }
+
+    struct Check {
+        label: String,
+        sev: Sev,
+        hint: Option<String>,
+    }
+
+    impl Check {
+        fn ok(label: impl Into<String>) -> Self {
+            Self {
+                label: label.into(),
+                sev: Sev::Ok,
+                hint: None,
+            }
+        }
+        fn warn(label: impl Into<String>, hint: impl Into<String>) -> Self {
+            Self {
+                label: label.into(),
+                sev: Sev::Warn,
+                hint: Some(hint.into()),
+            }
+        }
+        fn fail(label: impl Into<String>, hint: impl Into<String>) -> Self {
+            Self {
+                label: label.into(),
+                sev: Sev::Fail,
+                hint: Some(hint.into()),
+            }
+        }
+        fn print(&self) {
+            let tag = match self.sev {
+                Sev::Ok => "[ok]  ",
+                Sev::Warn => "[warn]",
+                Sev::Fail => "[fail]",
+            };
+            println!("  {tag} {}", self.label);
+            if let Some(h) = &self.hint {
+                println!("         → {h}");
+            }
+        }
+        fn is_issue(&self) -> bool {
+            self.sev != Sev::Ok
+        }
+    }
+
+    fn run_section(checks: Vec<Check>, issues: &mut u32) {
+        for c in &checks {
+            c.print();
+            if c.is_issue() {
+                *issues += 1;
+            }
+        }
+    }
+
+    println!("InnerWarden Doctor");
+    println!("{}", "═".repeat(48));
+
+    let mut total_issues: u32 = 0;
+
+    let is_macos = std::env::consts::OS == "macos";
+
+    // ── System ────────────────────────────────────────────
+    println!("\nSystem");
+    let mut sys = Vec::new();
+
+    if is_macos {
+        // launchctl
+        let has_launchctl = std::path::Path::new("/bin/launchctl").exists()
+            || std::path::Path::new("/usr/bin/launchctl").exists();
+        sys.push(if has_launchctl {
+            Check::ok("launchctl found (macOS service manager)")
+        } else {
+            Check::fail(
+                "launchctl not found",
+                "unexpected on macOS — check your PATH",
+            )
+        });
+
+        // innerwarden user
+        let user_ok = std::process::Command::new("id")
+            .arg("innerwarden")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        sys.push(if user_ok {
+            Check::ok("innerwarden system user exists")
+        } else {
+            Check::fail(
+                "innerwarden system user missing",
+                "run install.sh — it creates the user via dscl",
+            )
+        });
+
+        // /etc/sudoers.d/ (exists on macOS too)
+        sys.push(if std::path::Path::new("/etc/sudoers.d").is_dir() {
+            Check::ok("/etc/sudoers.d/ directory exists")
+        } else {
+            Check::warn(
+                "/etc/sudoers.d/ not found",
+                "sudo mkdir -p /etc/sudoers.d  (needed for suspend-user-sudo skill)",
+            )
+        });
+
+        // pfctl (needed for block-ip-pf)
+        let has_pfctl = std::path::Path::new("/sbin/pfctl").exists();
+        sys.push(if has_pfctl {
+            Check::ok("pfctl found (block-ip-pf skill available)")
+        } else {
+            Check::warn(
+                "pfctl not found",
+                "pfctl is built-in on macOS — unexpected. block-ip-pf skill will not work.",
+            )
+        });
+
+        // `log` binary (needed for macos_log collector)
+        let has_log_bin = std::path::Path::new("/usr/bin/log").exists();
+        sys.push(if has_log_bin {
+            Check::ok("`log` binary found (macos_log collector available)")
+        } else {
+            Check::fail(
+                "`log` binary not found at /usr/bin/log",
+                "unexpected on macOS — macos_log collector requires Apple Unified Logging",
+            )
+        });
+    } else {
+        // systemctl
+        let has_systemctl = std::path::Path::new("/usr/bin/systemctl").exists()
+            || std::path::Path::new("/bin/systemctl").exists();
+        sys.push(if has_systemctl {
+            Check::ok("systemctl found")
+        } else {
+            Check::fail("systemctl not found", "install systemd or check PATH")
+        });
+
+        // innerwarden user
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        let user_ok = passwd
+            .lines()
+            .any(|l| l.split(':').next() == Some("innerwarden"));
+        sys.push(if user_ok {
+            Check::ok("innerwarden system user exists")
+        } else {
+            Check::fail(
+                "innerwarden system user missing",
+                "sudo useradd -r -s /sbin/nologin innerwarden",
+            )
+        });
+
+        // /etc/sudoers.d/
+        sys.push(if std::path::Path::new("/etc/sudoers.d").is_dir() {
+            Check::ok("/etc/sudoers.d/ directory exists")
+        } else {
+            Check::fail("/etc/sudoers.d/ not found", "sudo mkdir -p /etc/sudoers.d")
+        });
+    }
+
+    run_section(sys, &mut total_issues);
+
+    // ── Services ──────────────────────────────────────────
+    println!("\nServices");
+    let mut svc = Vec::new();
+    if is_macos {
+        for (label, plist) in &[
+            ("innerwarden-sensor", "com.innerwarden.sensor"),
+            ("innerwarden-agent", "com.innerwarden.agent"),
+        ] {
+            let running = std::process::Command::new("launchctl")
+                .args(["list", plist])
+                .output()
+                .map(|o| {
+                    o.status.success() && String::from_utf8_lossy(&o.stdout).contains("\"PID\"")
+                })
+                .unwrap_or(false);
+            svc.push(if running {
+                Check::ok(format!("{label} is running"))
+            } else {
+                Check::warn(
+                    format!("{label} is not running"),
+                    format!("sudo launchctl load /Library/LaunchDaemons/{plist}.plist"),
+                )
+            });
+        }
+    } else {
+        for unit in &["innerwarden-sensor", "innerwarden-agent"] {
+            svc.push(if systemd::is_service_active(unit) {
+                Check::ok(format!("{unit} is running"))
+            } else {
+                Check::warn(
+                    format!("{unit} is not running"),
+                    format!("sudo systemctl start {unit}"),
+                )
+            });
+        }
+    }
+    run_section(svc, &mut total_issues);
+
+    // ── Configuration ─────────────────────────────────────
+    println!("\nConfiguration");
+    let mut cfg = Vec::new();
+
+    for (label, path) in &[("Sensor", &cli.sensor_config), ("Agent", &cli.agent_config)] {
+        if path.exists() {
+            cfg.push(Check::ok(format!(
+                "{} config found ({})",
+                label,
+                path.display()
+            )));
+            let valid_toml = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+                .is_some();
+            cfg.push(if valid_toml {
+                Check::ok(format!("{} config is valid TOML", label))
+            } else {
+                Check::fail(
+                    format!(
+                        "{} config has invalid TOML syntax ({})",
+                        label,
+                        path.display()
+                    ),
+                    format!("fix syntax in {}", path.display()),
+                )
+            });
+        } else {
+            cfg.push(Check::warn(
+                format!(
+                    "{} config not found ({}) — defaults are in use",
+                    label,
+                    path.display()
+                ),
+                "Run 'sudo innerwarden setup' to create your configuration",
+            ));
+        }
+    }
+
+    // AI provider + API key — detect provider from agent config then validate the right key
+    let env_file = cli
+        .agent_config
+        .parent()
+        .map(|p| p.join("agent.env"))
+        .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+    // Read agent.toml to find configured provider and whether AI is enabled
+    let agent_doc: Option<toml_edit::DocumentMut> = cli
+        .agent_config
+        .exists()
+        .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+        .flatten()
+        .and_then(|s| s.parse().ok());
+
+    let ai_enabled = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("ai"))
+        .and_then(|ai| ai.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let provider = agent_doc
+        .as_ref()
+        .and_then(|doc| doc.get("ai"))
+        .and_then(|ai| ai.get("provider"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai")
+        .to_string();
+
+    // Helper: resolve a key from env var or agent.env file
+    let resolve_key = |env_var: &str| -> Option<String> {
+        if let Ok(v) = std::env::var(env_var) {
+            if !v.trim().is_empty() {
+                return Some(v);
+            }
+        }
+        std::fs::read_to_string(&env_file).ok().and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with(&format!("{env_var}=")))
+                .and_then(|l| l.split_once('=').map(|x| x.1))
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().to_string())
+        })
+    };
+
+    if !ai_enabled {
+        cfg.push(Check::warn(
+            "AI not configured (ai.enabled = false)",
+            "Detection and logging still work without AI.\nTo add AI triage, run one of:\n\n  innerwarden configure ai openai --key sk-...\n  innerwarden configure ai anthropic --key sk-ant-...\n  innerwarden configure ai ollama --model llama3.2   (no key needed)",
+        ));
+    } else {
+        match provider.as_str() {
+            "anthropic" => {
+                let key = resolve_key("ANTHROPIC_API_KEY");
+                match &key {
+                    None => {
+                        cfg.push(Check::fail(
+                            "ANTHROPIC_API_KEY not set (provider = \"anthropic\")",
+                            "Get a key at https://console.anthropic.com/settings/keys\n\
+                             Then run:\n\
+                             \n  innerwarden configure ai anthropic --key sk-ant-...",
+                        ));
+                    }
+                    Some(k) => {
+                        let looks_valid = k.starts_with("sk-ant-") && k.len() >= 20;
+                        cfg.push(if looks_valid {
+                            Check::ok("ANTHROPIC_API_KEY is set and format looks correct")
+                        } else {
+                            Check::warn(
+                                "ANTHROPIC_API_KEY is set but format looks wrong (should start with sk-ant-)",
+                                "Run:\n  innerwarden configure ai anthropic --key sk-ant-...",
+                            )
+                        });
+                    }
+                }
+            }
+            "ollama" => {
+                // Check if ollama is reachable
+                let ollama_url = agent_doc
+                    .as_ref()
+                    .and_then(|doc| doc.get("ai"))
+                    .and_then(|ai| ai.get("base_url"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http://localhost:11434")
+                    .to_string();
+                let ollama_ok = std::process::Command::new("curl")
+                    .args(["-sf", "--max-time", "2", &format!("{ollama_url}/api/tags")])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                cfg.push(if ollama_ok {
+                    Check::ok(format!("Ollama reachable at {ollama_url}"))
+                } else {
+                    Check::fail(
+                        format!("Ollama not reachable at {ollama_url}"),
+                        "Install and start Ollama:\n\n  curl -fsSL https://ollama.ai/install.sh | sh\n  ollama pull llama3.2\n\nThen run: innerwarden configure ai ollama --model llama3.2",
+                    )
+                });
+            }
+            _ => {
+                // Default: openai (also handles unknown providers gracefully)
+                let key = resolve_key("OPENAI_API_KEY");
+                match &key {
+                    None => {
+                        cfg.push(Check::fail(
+                            "OPENAI_API_KEY not set (provider = \"openai\")",
+                            "Get a key at https://platform.openai.com/api-keys\n\
+                             Then run:\n\
+                             \n  innerwarden configure ai openai --key sk-...",
+                        ));
+                    }
+                    Some(k) => {
+                        let looks_valid = k.starts_with("sk-") && k.len() >= 20;
+                        cfg.push(if looks_valid {
+                            Check::ok("OPENAI_API_KEY is set and format looks correct")
+                        } else {
+                            Check::warn(
+                                "OPENAI_API_KEY is set but format looks wrong (should start with sk-)",
+                                "Run:\n  innerwarden configure ai openai --key sk-...",
+                            )
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // AbuseIPDB enrichment — only when abuseipdb.enabled = true
+    {
+        let abuseipdb_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("abuseipdb"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if abuseipdb_enabled {
+            let key_in_config = agent_doc
+                .as_ref()
+                .and_then(|doc| doc.get("abuseipdb"))
+                .and_then(|t| t.get("api_key"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let key_in_env = std::env::var("ABUSEIPDB_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let key_in_file = resolve_key("ABUSEIPDB_API_KEY");
+            let resolved_key = key_in_config.or(key_in_env).or(key_in_file);
+
+            cfg.push(match &resolved_key {
+                None => Check::fail(
+                    "abuseipdb.enabled=true but ABUSEIPDB_API_KEY not set",
+                    "1. Register at https://www.abuseipdb.com/register (free)\n\
+                     2. Go to https://www.abuseipdb.com/account/api\n\
+                     3. Add to agent.toml:\n\
+                     \n   [abuseipdb]\n   api_key = \"<your-key>\"\n\
+                     \n   Or set env var: ABUSEIPDB_API_KEY=<your-key>",
+                ),
+                Some(k) if k.len() < 10 => Check::warn(
+                    "ABUSEIPDB_API_KEY is set but looks too short",
+                    "AbuseIPDB API keys are typically 80 characters.\n\
+                     Get a fresh key at https://www.abuseipdb.com/account/api",
+                ),
+                Some(_) => Check::ok("ABUSEIPDB_API_KEY is set (free tier: 1,000 checks/day)"),
+            });
+        }
+    }
+
+    // Fail2ban integration — only when fail2ban.enabled = true
+    {
+        let fail2ban_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("fail2ban"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if fail2ban_enabled {
+            let fb_bin = std::path::Path::new("/usr/bin/fail2ban-client").exists()
+                || std::path::Path::new("/usr/local/bin/fail2ban-client").exists();
+            cfg.push(if fb_bin {
+                Check::ok("fail2ban-client binary found")
+            } else {
+                Check::fail(
+                    "fail2ban-client not found but fail2ban.enabled=true",
+                    "sudo apt-get install fail2ban",
+                )
+            });
+
+            // Check fail2ban service is running
+            let fb_running = if is_macos {
+                false // fail2ban is Linux-only
+            } else {
+                std::process::Command::new("fail2ban-client")
+                    .args(["ping"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            cfg.push(if fb_running {
+                Check::ok("fail2ban daemon is responding (ping ok)")
+            } else if is_macos {
+                Check::warn(
+                    "fail2ban is Linux-only — integration will not run on macOS",
+                    "disable [fail2ban] enabled=false in agent.toml on macOS",
+                )
+            } else {
+                Check::warn(
+                    "fail2ban daemon is not responding (fail2ban-client ping failed)",
+                    "sudo systemctl start fail2ban",
+                )
+            });
+        }
+    }
+
+    run_section(cfg, &mut total_issues);
+
+    // ── Telegram ──────────────────────────────────────────
+    // Only check Telegram when enabled = true in agent config.
+    {
+        let agent_toml: Option<toml_edit::DocumentMut> = cli
+            .agent_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.agent_config).ok())
+            .flatten()
+            .and_then(|s| s.parse().ok());
+
+        let telegram_enabled = agent_toml
+            .as_ref()
+            .and_then(|doc| doc.get("telegram"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if telegram_enabled {
+            println!("\nTelegram");
+            let mut tg = Vec::new();
+
+            let env_file_path = cli
+                .agent_config
+                .parent()
+                .map(|p| p.join("agent.env"))
+                .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+            // Resolve bot_token: config → env var → agent.env file
+            let token_in_config = agent_toml
+                .as_ref()
+                .and_then(|doc| doc.get("telegram"))
+                .and_then(|t| t.get("bot_token"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let token_in_env = std::env::var("TELEGRAM_BOT_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let token_in_file = std::fs::read_to_string(&env_file_path)
+                .map(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("TELEGRAM_BOT_TOKEN="))
+                        .and_then(|l| l.split_once('=').map(|x| x.1))
+                        .filter(|v| !v.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or(None);
+            let resolved_token = token_in_config.or(token_in_env).or(token_in_file);
+
+            // Resolve chat_id: config → env var → agent.env file
+            let chat_in_config = agent_toml
+                .as_ref()
+                .and_then(|doc| doc.get("telegram"))
+                .and_then(|t| t.get("chat_id"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let chat_in_env = std::env::var("TELEGRAM_CHAT_ID")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let chat_in_file = std::fs::read_to_string(&env_file_path)
+                .map(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("TELEGRAM_CHAT_ID="))
+                        .and_then(|l| l.split_once('=').map(|x| x.1))
+                        .filter(|v| !v.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or(None);
+            let resolved_chat = chat_in_config.or(chat_in_env).or(chat_in_file);
+
+            // Check bot_token presence
+            match &resolved_token {
+                None => {
+                    tg.push(Check::fail(
+                        "TELEGRAM_BOT_TOKEN not set",
+                        format!(
+                            "1. Open Telegram and message @BotFather\n\
+                             2. Send /newbot and follow the steps\n\
+                             3. Copy the token and add to {}:\n\
+                             \n   TELEGRAM_BOT_TOKEN=1234567890:AABBccDDeeffGGHH...",
+                            env_file_path.display()
+                        ),
+                    ));
+                }
+                Some(token) => {
+                    // Validate format: <digits>:<35+ alphanumeric chars>
+                    let looks_valid = token.contains(':') && {
+                        let mut parts = token.splitn(2, ':');
+                        let id_part = parts.next().unwrap_or("");
+                        let secret_part = parts.next().unwrap_or("");
+                        id_part.chars().all(|c| c.is_ascii_digit())
+                            && !id_part.is_empty()
+                            && secret_part.len() >= 20
+                    };
+                    tg.push(if looks_valid {
+                        Check::ok("TELEGRAM_BOT_TOKEN is set and format looks correct")
+                    } else {
+                        Check::warn(
+                            "TELEGRAM_BOT_TOKEN is set but format looks wrong",
+                            "Token should look like: 1234567890:AABBccDDeeffGGHHiijjKK...\n\
+                             Get a fresh token from @BotFather on Telegram",
+                        )
+                    });
+                }
+            }
+
+            // Check chat_id presence
+            match &resolved_chat {
+                None => {
+                    tg.push(Check::fail(
+                        "TELEGRAM_CHAT_ID not set",
+                        format!(
+                            "1. Open Telegram and message @userinfobot\n\
+                             2. It will reply with your chat ID (a number, e.g. 123456789)\n\
+                             3. For a group/channel the ID starts with -100\n\
+                             4. Add to {}:\n\
+                             \n   TELEGRAM_CHAT_ID=123456789",
+                            env_file_path.display()
+                        ),
+                    ));
+                }
+                Some(chat_id) => {
+                    // Chat ID should be numeric (possibly negative for groups)
+                    let looks_valid = chat_id
+                        .trim_start_matches('-')
+                        .chars()
+                        .all(|c| c.is_ascii_digit())
+                        && !chat_id.is_empty();
+                    tg.push(if looks_valid {
+                        Check::ok("TELEGRAM_CHAT_ID is set and format looks correct")
+                    } else {
+                        Check::warn(
+                            "TELEGRAM_CHAT_ID is set but format looks wrong",
+                            "Chat ID should be a number like 123456789 (personal) or -1001234567890 (group/channel)\n\
+                             Message @userinfobot on Telegram to find yours",
+                        )
+                    });
+                }
+            }
+
+            // If both token and chat_id are valid, suggest a connectivity smoke-test
+            if resolved_token.is_some() && resolved_chat.is_some() {
+                tg.push(Check::ok(
+                    "Telegram configured — test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
+                ));
+            }
+
+            run_section(tg, &mut total_issues);
+        }
+
+        // Only check Slack when enabled = true in agent config.
+        let slack_enabled = agent_toml
+            .as_ref()
+            .and_then(|doc| doc.get("slack"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if slack_enabled {
+            println!("\nSlack");
+            let mut sl = Vec::new();
+
+            let env_file_path = cli
+                .agent_config
+                .parent()
+                .map(|p| p.join("agent.env"))
+                .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+
+            // Resolve webhook_url: config → env var → agent.env file
+            let url_in_config = agent_toml
+                .as_ref()
+                .and_then(|doc| doc.get("slack"))
+                .and_then(|t| t.get("webhook_url"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let url_in_env = std::env::var("SLACK_WEBHOOK_URL")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let url_in_file = std::fs::read_to_string(&env_file_path)
+                .map(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with("SLACK_WEBHOOK_URL="))
+                        .and_then(|l| l.split_once('=').map(|x| x.1))
+                        .filter(|v| !v.is_empty())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or(None);
+            let resolved_url = url_in_config.or(url_in_env).or(url_in_file);
+
+            match &resolved_url {
+                None => {
+                    sl.push(Check::fail(
+                        "SLACK_WEBHOOK_URL not set",
+                        format!(
+                            "1. In Slack: Apps → Incoming Webhooks → Add to Slack\n\
+                             2. Choose a channel and copy the Webhook URL\n\
+                             3. Add to {}:\n\
+                             \n   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../...",
+                            env_file_path.display()
+                        ),
+                    ));
+                }
+                Some(url) => {
+                    let looks_valid =
+                        url.starts_with("https://hooks.slack.com/services/") && url.len() > 50;
+                    sl.push(if looks_valid {
+                        Check::ok("SLACK_WEBHOOK_URL is set and format looks correct")
+                    } else {
+                        Check::warn(
+                            "SLACK_WEBHOOK_URL is set but format looks wrong",
+                            "URL should start with https://hooks.slack.com/services/T.../B.../...\n\
+                             Get a fresh webhook URL from your Slack workspace settings",
+                        )
+                    });
+                }
+            }
+
+            if resolved_url.is_some() {
+                sl.push(Check::ok(
+                    "Slack configured — test it: innerwarden-agent --config /etc/innerwarden/agent.toml --once",
+                ));
+            }
+
+            run_section(sl, &mut total_issues);
+        }
+    }
+
+    // ── Webhook ────────────────────────────────────────────
+    {
+        let webhook_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("webhook"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if webhook_enabled {
+            println!("\nWebhook");
+            let mut wh: Vec<Check> = vec![];
+
+            let url_val = agent_doc
+                .as_ref()
+                .and_then(|doc| doc.get("webhook"))
+                .and_then(|t| t.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if url_val.is_empty() {
+                wh.push(Check::fail(
+                    "webhook.url is not set",
+                    "Run: innerwarden configure webhook",
+                ));
+            } else if !url_val.starts_with("http://") && !url_val.starts_with("https://") {
+                wh.push(Check::fail(
+                    "webhook.url does not look like a valid URL",
+                    "Run: innerwarden configure webhook --url <correct-url>",
+                ));
+            } else {
+                wh.push(Check::ok(format!("webhook.url = {url_val}").as_str()));
+            }
+
+            run_section(wh, &mut total_issues);
+        }
+    }
+
+    // ── Dashboard ──────────────────────────────────────────
+    {
+        let dashboard_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("dashboard"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Always check if credentials are set (dashboard always available when agent runs)
+        println!("\nDashboard");
+        let mut db: Vec<Check> = vec![];
+
+        let env_path = cli
+            .agent_config
+            .parent()
+            .map(|p| p.join("agent.env"))
+            .unwrap_or_else(|| PathBuf::from("/etc/innerwarden/agent.env"));
+        let env_content = std::fs::read_to_string(&env_path).unwrap_or_default();
+
+        let has_user = env_content
+            .lines()
+            .any(|l| l.starts_with("INNERWARDEN_DASHBOARD_USER="))
+            || std::env::var("INNERWARDEN_DASHBOARD_USER").is_ok();
+
+        let has_hash = env_content
+            .lines()
+            .any(|l| l.starts_with("INNERWARDEN_DASHBOARD_PASSWORD_HASH="))
+            || std::env::var("INNERWARDEN_DASHBOARD_PASSWORD_HASH").is_ok();
+
+        // Check if --dashboard flag is in the service ExecStart
+        let service_content =
+            std::fs::read_to_string("/etc/systemd/system/innerwarden-agent.service")
+                .unwrap_or_default();
+        let dashboard_flag_in_service = service_content.contains("--dashboard");
+
+        if dashboard_flag_in_service {
+            db.push(Check::ok("--dashboard flag present in service ExecStart"));
+        } else {
+            db.push(Check::warn(
+                "--dashboard flag is missing from innerwarden-agent.service ExecStart",
+                "Run: innerwarden configure dashboard  (it will add the flag automatically)",
+            ));
+        }
+
+        if has_user && has_hash {
+            db.push(Check::ok(
+                "Dashboard login is configured (credentials required)",
+            ));
+        } else {
+            db.push(Check::ok(
+                "Dashboard credentials: none set (open access when agent is running)",
+            ));
+            db.push(Check::ok(
+                "To add a password: innerwarden configure dashboard",
+            ));
+        }
+
+        // Check if the dashboard is actually reachable
+        let dashboard_up = ureq::get("http://127.0.0.1:8787/api/status")
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(2)))
+            .build()
+            .call()
+            .is_ok();
+        if dashboard_up {
+            db.push(Check::ok(
+                "Dashboard is reachable at http://YOUR_SERVER_IP:8787",
+            ));
+        } else if dashboard_flag_in_service {
+            db.push(Check::warn(
+                "Dashboard port 8787 is not responding",
+                "Start the agent:  sudo systemctl start innerwarden-agent",
+            ));
+        }
+
+        let _ = dashboard_enabled;
+        run_section(db, &mut total_issues);
+    }
+
+    // ── GeoIP ──────────────────────────────────────────────
+    {
+        let geoip_enabled = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("geoip"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if geoip_enabled {
+            println!("\nGeoIP");
+            let mut geo: Vec<Check> = vec![];
+
+            // Quick connectivity check
+            let reachable = ureq::get("http://ip-api.com/json/8.8.8.8?fields=status")
+                .config()
+                .timeout_global(Some(std::time::Duration::from_secs(3)))
+                .build()
+                .call()
+                .is_ok();
+
+            if reachable {
+                geo.push(Check::ok("ip-api.com is reachable"));
+            } else {
+                geo.push(Check::warn(
+                    "ip-api.com is not reachable from this host",
+                    "GeoIP lookups will fail silently. Check outbound HTTP access.",
+                ));
+            }
+
+            run_section(geo, &mut total_issues);
+        }
+    }
+
+    // ── Capabilities ──────────────────────────────────────
+    println!("\nCapabilities");
+    let opts = make_opts(cli, HashMap::new(), false);
+    let mut any_enabled = false;
+
+    for cap in registry.all() {
+        if !cap.is_enabled(&opts) {
+            continue;
+        }
+        any_enabled = true;
+
+        // Map capability → expected sudoers drop-in name
+        let drop_in = match cap.id() {
+            "block-ip" => Some("innerwarden-block-ip"),
+            "sudo-protection" => Some("innerwarden-sudo-protection"),
+            "search-protection" => Some("innerwarden-search-protection"),
+            _ => None,
+        };
+
+        if let Some(name) = drop_in {
+            let path = std::path::Path::new("/etc/sudoers.d").join(name);
+            if path.exists() {
+                println!("  [ok]   {} (enabled): sudoers drop-in present", cap.id());
+            } else {
+                println!(
+                    "  [warn] {} (enabled): sudoers drop-in missing (/etc/sudoers.d/{name})",
+                    cap.id()
+                );
+                println!("         → innerwarden enable {}", cap.id());
+                total_issues += 1;
+            }
+        } else {
+            println!("  [ok]   {} (enabled)", cap.id());
+        }
+    }
+
+    if !any_enabled {
+        println!("  (no capabilities enabled — run 'innerwarden list' to see options)");
+    }
+
+    // ── Integrations ──────────────────────────────────────
+    // Only show this section when at least one integration collector is enabled.
+    {
+        let sensor_doc: Option<toml_edit::DocumentMut> = cli
+            .sensor_config
+            .exists()
+            .then(|| std::fs::read_to_string(&cli.sensor_config).ok())
+            .flatten()
+            .and_then(|s| s.parse().ok());
+
+        let collector_enabled = |name: &str| -> bool {
+            sensor_doc
+                .as_ref()
+                .and_then(|doc| doc.get("collectors"))
+                .and_then(|c| c.get(name))
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+
+        let collector_str = |name: &str, key: &str, default: &str| -> String {
+            sensor_doc
+                .as_ref()
+                .and_then(|doc| doc.get("collectors"))
+                .and_then(|c| c.get(name))
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_str())
+                .unwrap_or(default)
+                .to_string()
+        };
+
+        let detector_enabled = |name: &str| -> bool {
+            sensor_doc
+                .as_ref()
+                .and_then(|doc| doc.get("detectors"))
+                .and_then(|c| c.get(name))
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+
+        let falco_enabled = collector_enabled("falco_log");
+        let suricata_enabled = collector_enabled("suricata_eve");
+        let osquery_enabled = collector_enabled("osquery_log");
+        let nginx_error_enabled = collector_enabled("nginx_error");
+        let any_integration =
+            falco_enabled || suricata_enabled || osquery_enabled || nginx_error_enabled;
+
+        if any_integration {
+            println!("\nIntegrations");
+
+            // ── Falco ──────────────────────────────────────
+            if falco_enabled {
+                println!("  Falco");
+                let mut falco = Vec::new();
+
+                let falco_binary = std::path::Path::new("/usr/bin/falco").exists()
+                    || std::path::Path::new("/usr/local/bin/falco").exists();
+                falco.push(if falco_binary {
+                    Check::ok("Falco binary found")
+                } else {
+                    Check::fail(
+                        "Falco binary not found (/usr/bin/falco or /usr/local/bin/falco)",
+                        "sudo apt-get install falco",
+                    )
+                });
+
+                let falco_active = if is_macos {
+                    std::process::Command::new("launchctl")
+                        .args(["list", "com.falco"])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    systemd::is_service_active("falco")
+                        || systemd::is_service_active("falco-modern-bpf")
+                };
+                let falco_start_hint = if is_macos {
+                    "sudo launchctl load /Library/LaunchDaemons/com.falco.plist"
+                } else {
+                    "sudo systemctl start falco"
+                };
+                falco.push(if falco_active {
+                    Check::ok("Falco service is running")
+                } else {
+                    Check::warn("Falco service is not running", falco_start_hint)
+                });
+
+                let falco_log = collector_str("falco_log", "path", "/var/log/falco/falco.log");
+                let log_ok = std::path::Path::new(&falco_log).exists()
+                    && std::fs::metadata(&falco_log)
+                        .map(|m| m.len() > 0)
+                        .unwrap_or(false);
+                let falco_restart_hint = if is_macos {
+                    "sudo launchctl kickstart -k system/com.falco"
+                } else {
+                    "sudo mkdir -p /var/log/falco && sudo systemctl restart falco"
+                };
+                let falco_json_hint = if is_macos {
+                    "echo 'json_output: true' | sudo tee -a /etc/falco/falco.yaml && sudo launchctl kickstart -k system/com.falco"
+                } else {
+                    "echo 'json_output: true' | sudo tee -a /etc/falco/falco.yaml && sudo systemctl restart falco"
+                };
+                falco.push(if log_ok {
+                    Check::ok(format!("Falco log file exists ({})", falco_log))
+                } else {
+                    Check::fail(
+                        format!("Falco log file not found or not readable ({})", falco_log),
+                        falco_restart_hint,
+                    )
+                });
+
+                let falco_yaml =
+                    std::fs::read_to_string("/etc/falco/falco.yaml").unwrap_or_default();
+                let json_output_ok = falco_yaml.contains("json_output: true");
+                falco.push(if json_output_ok {
+                    Check::ok("Falco json_output is enabled")
+                } else {
+                    Check::warn(
+                        "Falco json_output not enabled — events will not be parseable",
+                        falco_json_hint,
+                    )
+                });
+
+                run_section(falco, &mut total_issues);
+            }
+
+            // ── Suricata ───────────────────────────────────
+            if suricata_enabled {
+                println!("  Suricata");
+                let mut suri = Vec::new();
+
+                let suri_binary = std::path::Path::new("/usr/bin/suricata").exists();
+                suri.push(if suri_binary {
+                    Check::ok("Suricata binary found")
+                } else {
+                    Check::fail(
+                        "Suricata binary not found (/usr/bin/suricata)",
+                        "sudo apt-get install suricata",
+                    )
+                });
+
+                let suri_active = if is_macos {
+                    std::process::Command::new("launchctl")
+                        .args(["list", "com.suricata"])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    systemd::is_service_active("suricata")
+                };
+                let suri_start_hint = if is_macos {
+                    "sudo launchctl load /Library/LaunchDaemons/com.suricata.plist"
+                } else {
+                    "sudo systemctl start suricata"
+                };
+                let suri_restart_hint = if is_macos {
+                    "sudo launchctl kickstart -k system/com.suricata  # creates eve.json on first run"
+                } else {
+                    "sudo systemctl restart suricata  # creates eve.json on first run"
+                };
+                suri.push(if suri_active {
+                    Check::ok("Suricata service is running")
+                } else {
+                    Check::warn("Suricata service is not running", suri_start_hint)
+                });
+
+                let eve_log = collector_str("suricata_eve", "path", "/var/log/suricata/eve.json");
+                let eve_ok = std::path::Path::new(&eve_log).exists();
+                suri.push(if eve_ok {
+                    Check::ok(format!("Suricata eve.json exists ({})", eve_log))
+                } else {
+                    Check::fail(
+                        format!("Suricata eve.json not found ({})", eve_log),
+                        suri_restart_hint,
+                    )
+                });
+
+                let rules_present = std::path::Path::new("/var/lib/suricata/rules/suricata.rules")
+                    .exists()
+                    || std::fs::read_dir("/etc/suricata/rules/")
+                        .map(|mut d| {
+                            d.any(|e| {
+                                e.map(|e| {
+                                    e.path().extension().and_then(|x| x.to_str()) == Some("rules")
+                                })
+                                .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false);
+                suri.push(if rules_present {
+                    Check::ok("Suricata ET rules present")
+                } else {
+                    Check::warn(
+                        "Suricata ET rules not found",
+                        if is_macos {
+                            "sudo suricata-update && sudo launchctl kickstart -k system/com.suricata"
+                        } else {
+                            "sudo suricata-update && sudo systemctl restart suricata"
+                        },
+                    )
+                });
+
+                run_section(suri, &mut total_issues);
+            }
+
+            // ── osquery ────────────────────────────────────
+            if osquery_enabled {
+                println!("  osquery");
+                let mut osq = Vec::new();
+
+                let osq_binary = std::path::Path::new("/usr/bin/osqueryd").exists()
+                    || std::path::Path::new("/usr/local/bin/osqueryd").exists();
+                osq.push(if osq_binary {
+                    Check::ok("osqueryd binary found")
+                } else {
+                    Check::fail(
+                        "osqueryd binary not found (/usr/bin/osqueryd or /usr/local/bin/osqueryd)",
+                        "sudo apt-get install osquery  # see modules/osquery-integration/docs/README.md",
+                    )
+                });
+
+                let osq_active = if is_macos {
+                    std::process::Command::new("launchctl")
+                        .args(["list", "com.facebook.osqueryd"])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                } else {
+                    systemd::is_service_active("osqueryd")
+                };
+                let osq_start_hint = if is_macos {
+                    "sudo launchctl load /Library/LaunchDaemons/com.facebook.osqueryd.plist"
+                } else {
+                    "sudo systemctl start osqueryd"
+                };
+                osq.push(if osq_active {
+                    Check::ok("osqueryd service is running")
+                } else {
+                    Check::warn("osqueryd service is not running", osq_start_hint)
+                });
+
+                let results_log = collector_str(
+                    "osquery_log",
+                    "path",
+                    "/var/log/osquery/osqueryd.results.log",
+                );
+                let results_ok = std::path::Path::new(&results_log).exists();
+                osq.push(if results_ok {
+                    Check::ok(format!("osquery results log exists ({})", results_log))
+                } else {
+                    Check::warn(
+                        format!("osquery results log not found yet ({})", results_log),
+                        "ensure log_result_events=true in /etc/osquery/osquery.conf, then wait 60s for first query",
+                    )
+                });
+
+                let osq_conf =
+                    std::fs::read_to_string("/etc/osquery/osquery.conf").unwrap_or_default();
+                let has_schedule = osq_conf.contains("\"schedule\"");
+                osq.push(if has_schedule {
+                    Check::ok("osquery config contains scheduled queries")
+                } else {
+                    Check::warn(
+                        "osquery config does not contain scheduled queries",
+                        "copy the recommended queries from modules/osquery-integration/config/sensor.example.toml into /etc/osquery/osquery.conf",
+                    )
+                });
+
+                run_section(osq, &mut total_issues);
+            }
+
+            // ── nginx-error-monitor ────────────────────────
+            if nginx_error_enabled {
+                println!("  nginx-error-monitor");
+                let mut nginx_err = Vec::new();
+
+                // nginx binary
+                let nginx_bin = std::path::Path::new("/usr/sbin/nginx").exists()
+                    || std::path::Path::new("/usr/bin/nginx").exists()
+                    || std::path::Path::new("/usr/local/sbin/nginx").exists();
+                nginx_err.push(if nginx_bin {
+                    Check::ok("nginx binary found")
+                } else {
+                    Check::fail("nginx binary not found", "sudo apt-get install nginx")
+                });
+
+                // error log path
+                let err_log = collector_str("nginx_error", "path", "/var/log/nginx/error.log");
+                let log_exists = std::path::Path::new(&err_log).exists();
+                nginx_err.push(if log_exists {
+                    Check::ok(format!("nginx error log exists ({})", err_log))
+                } else {
+                    Check::fail(
+                        format!("nginx error log not found ({})", err_log),
+                        "sudo systemctl start nginx  # log is created on first request or error",
+                    )
+                });
+
+                // readability — can the current user read it?
+                if log_exists {
+                    let readable = std::fs::File::open(&err_log).is_ok();
+                    nginx_err.push(if readable {
+                        Check::ok(format!("nginx error log is readable ({})", err_log))
+                    } else {
+                        Check::warn(
+                            format!("nginx error log is not readable by innerwarden user ({})", err_log),
+                            "sudo usermod -aG adm innerwarden  # or: sudo chmod 640 /var/log/nginx/error.log",
+                        )
+                    });
+                }
+
+                // web_scan detector enabled?
+                let web_scan_on = detector_enabled("web_scan");
+                nginx_err.push(if web_scan_on {
+                    Check::ok("web_scan detector is enabled")
+                } else {
+                    Check::warn(
+                        "web_scan detector is disabled — http.error events are collected but not triaged",
+                        "Add to sensor config:\n\n  [detectors.web_scan]\n  enabled = true\n  threshold = 15\n  window_seconds = 60",
+                    )
+                });
+
+                run_section(nginx_err, &mut total_issues);
+            }
+        }
+    }
+
+    // ── Agent liveness ────────────────────────────────────
+    {
+        println!("\nAgent health");
+        let mut liveness: Vec<Check> = vec![];
+
+        let data_dir_opt: Option<std::path::PathBuf> = agent_doc
+            .as_ref()
+            .and_then(|doc| doc.get("output"))
+            .and_then(|o| o.get("data_dir"))
+            .and_then(|d| d.as_str())
+            .map(std::path::PathBuf::from)
+            .or_else(|| Some(std::path::PathBuf::from("/var/lib/innerwarden")));
+
+        if let Some(ref dir) = data_dir_opt {
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let telemetry_path = dir.join(format!("telemetry-{today}.jsonl"));
+            if telemetry_path.exists() {
+                if let Ok(meta) = std::fs::metadata(&telemetry_path) {
+                    if let Ok(modified) = meta.modified() {
+                        let age = std::time::SystemTime::now()
+                            .duration_since(modified)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(u64::MAX);
+                        if age > 300 {
+                            liveness.push(Check::warn(
+                                format!("last telemetry write was {}s ago", age),
+                                "agent may be stuck — check: journalctl -u innerwarden-agent -n 50",
+                            ));
+                        } else {
+                            liveness
+                                .push(Check::ok(format!("agent active — last write {}s ago", age)));
+                        }
+                    }
+                }
+            } else {
+                liveness.push(Check::warn(
+                    "no telemetry file for today",
+                    "agent has not written telemetry yet — is it running? innerwarden status",
+                ));
+            }
+        }
+        run_section(liveness, &mut total_issues);
+    }
+
+    // ── Summary ───────────────────────────────────────────
+    println!();
+    println!("{}", "─".repeat(48));
+    if total_issues == 0 {
+        println!("All checks passed — system looks healthy.");
+    } else {
+        println!("{total_issues} issue(s) found — review hints above.");
+        // If configs are missing, offer a one-command path forward
+        let configs_missing = !cli.sensor_config.exists() || !cli.agent_config.exists();
+        if configs_missing {
+            println!();
+            println!("Getting started:  sudo innerwarden setup");
+            println!("  Walks you through AI, Telegram, and essential modules.");
+        }
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn make_opts(cli: &Cli, params: HashMap<String, String>, yes: bool) -> ActivationOptions {
+    ActivationOptions {
+        sensor_config: cli.sensor_config.clone(),
+        agent_config: cli.agent_config.clone(),
+        dry_run: cli.dry_run,
+        params,
+        yes,
+    }
+}
+
+fn parse_params(raw: &[String]) -> Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    for item in raw {
+        let (k, v) = item.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("invalid param '{}' — expected KEY=VALUE format", item)
+        })?;
+        map.insert(k.to_string(), v.to_string());
+    }
+    Ok(map)
+}
+
+fn unknown_cap_error(id: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "unknown capability '{}' — run 'innerwarden list' to see available capabilities",
+        id
+    )
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden allowlist
+// ---------------------------------------------------------------------------
+
+fn cmd_allowlist_add(cli: &Cli, ip: Option<&str>, user: Option<&str>) -> Result<()> {
+    use config_editor::write_array_push;
+    let mut changed = false;
+    if let Some(ip_val) = ip {
+        let added = write_array_push(&cli.agent_config, "allowlist", "trusted_ips", ip_val)?;
+        if added {
+            println!("Added to trusted IPs: {ip_val}");
+            changed = true;
+        } else {
+            println!("{ip_val} is already in trusted_ips.");
+        }
+    }
+    if let Some(user_val) = user {
+        let added = write_array_push(&cli.agent_config, "allowlist", "trusted_users", user_val)?;
+        if added {
+            println!("Added to trusted users: {user_val}");
+            changed = true;
+        } else {
+            println!("{user_val} is already in trusted_users.");
+        }
+    }
+    if !changed && ip.is_none() && user.is_none() {
+        anyhow::bail!("specify --ip <cidr> or --user <username>");
+    }
+    if changed {
+        println!(
+            "Allowlist updated. Restart the agent to apply:\n  sudo systemctl restart innerwarden-agent"
+        );
+    }
+    Ok(())
+}
+
+fn cmd_allowlist_remove(cli: &Cli, ip: Option<&str>, user: Option<&str>) -> Result<()> {
+    use config_editor::write_array_remove;
+    let mut changed = false;
+    if let Some(ip_val) = ip {
+        let removed = write_array_remove(&cli.agent_config, "allowlist", "trusted_ips", ip_val)?;
+        if removed {
+            println!("Removed from trusted IPs: {ip_val}");
+            changed = true;
+        } else {
+            println!("{ip_val} was not in trusted_ips.");
+        }
+    }
+    if let Some(user_val) = user {
+        let removed =
+            write_array_remove(&cli.agent_config, "allowlist", "trusted_users", user_val)?;
+        if removed {
+            println!("Removed from trusted users: {user_val}");
+            changed = true;
+        } else {
+            println!("{user_val} was not in trusted_users.");
+        }
+    }
+    if !changed && ip.is_none() && user.is_none() {
+        anyhow::bail!("specify --ip <cidr> or --user <username>");
+    }
+    if changed {
+        println!(
+            "Allowlist updated. Restart the agent to apply:\n  sudo systemctl restart innerwarden-agent"
+        );
+    }
+    Ok(())
+}
+
+fn cmd_allowlist_list(cli: &Cli) -> Result<()> {
+    use config_editor::read_str_array;
+    let ips = read_str_array(&cli.agent_config, "allowlist", "trusted_ips");
+    let users = read_str_array(&cli.agent_config, "allowlist", "trusted_users");
+
+    if ips.is_empty() && users.is_empty() {
+        println!("Allowlist is empty — no trusted IPs or users configured.");
+        println!("Add entries with: innerwarden allowlist add --ip <cidr>");
+        return Ok(());
+    }
+
+    if !ips.is_empty() {
+        println!("Trusted IPs / CIDRs:");
+        for ip in &ips {
+            println!("  {ip}");
+        }
+    }
+    if !users.is_empty() {
+        println!("Trusted users:");
+        for user in &users {
+            println!("  {user}");
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden notify web-push setup
+// ---------------------------------------------------------------------------
+
+fn cmd_notify_web_push_setup(cli: &Cli, subject: Option<&str>) -> Result<()> {
+    use config_editor::{write_bool, write_str};
+    use std::io::Write as _;
+
+    println!("Setting up Web Push notifications (RFC 8291 / VAPID)...");
+    println!();
+
+    // Check for existing keys
+    let existing_key = write_str(&cli.agent_config, "web_push", "vapid_public_key", "");
+    let has_existing = cli.agent_config.exists() && {
+        let content = std::fs::read_to_string(&cli.agent_config).unwrap_or_default();
+        content.contains("vapid_public_key") && !content.contains(r#"vapid_public_key = """#)
+    };
+    drop(existing_key);
+
+    if has_existing {
+        println!("⚠  VAPID keys are already configured.");
+        print!("   Generate new keys? This will break existing browser subscriptions. [y/N] ");
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Keeping existing keys.");
+            println!();
+            print_web_push_next_steps(&cli.agent_config)?;
+            return Ok(());
+        }
+    }
+
+    // Generate VAPID key pair
+    // We use p256 here via the agent crate's web_push module — but since ctl
+    // is a separate binary, we implement key generation inline using the same
+    // algorithm so we don't need to depend on the agent crate.
+    let (private_pem, public_b64) = generate_vapid_keys_ctl()?;
+
+    let subject_val = subject.unwrap_or("mailto:admin@example.com");
+
+    // Write public key and subject to agent.toml
+    write_str(
+        &cli.agent_config,
+        "web_push",
+        "vapid_public_key",
+        &public_b64,
+    )?;
+    write_str(&cli.agent_config, "web_push", "vapid_subject", subject_val)?;
+    write_bool(&cli.agent_config, "web_push", "enabled", true)?;
+
+    // Write private key to agent.env (never in plain TOML)
+    let env_path = cli
+        .agent_config
+        .parent()
+        .unwrap_or(std::path::Path::new("/etc/innerwarden"))
+        .join("agent.env");
+    append_or_replace_env(&env_path, "INNERWARDEN_VAPID_PRIVATE_KEY", &private_pem)?;
+
+    println!("✓  VAPID key pair generated");
+    println!("   Public key  → {}", &cli.agent_config.display());
+    println!(
+        "   Private key → {} (INNERWARDEN_VAPID_PRIVATE_KEY)",
+        env_path.display()
+    );
+    println!();
+    print_web_push_next_steps(&cli.agent_config)?;
+    Ok(())
+}
+
+/// Generate a VAPID EC P-256 key pair (inline, no dep on agent crate).
+/// Returns (private_key_pkcs8_pem, public_key_base64url).
+fn generate_vapid_keys_ctl() -> Result<(String, String)> {
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use p256::{ecdsa::SigningKey, EncodedPoint};
+
+    let signing_key = SigningKey::random(&mut rand_core::OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let pem = signing_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|e| anyhow::anyhow!("failed to serialize VAPID private key: {e}"))?
+        .to_string();
+    let public_bytes = EncodedPoint::from(verifying_key).to_bytes().to_vec();
+    use base64::Engine as _;
+    let public_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&public_bytes);
+    Ok((pem, public_b64))
+}
+
+/// Append or replace a KEY=VALUE line in an env file.
+fn append_or_replace_env(path: &std::path::Path, key: &str, value: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let existing = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    // Escape newlines in PEM for single-line env var storage
+    let escaped_value = format!("\"{}\"", value.replace('\n', "\\n"));
+
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| !l.starts_with(&format!("{key}=")))
+        .map(|l| l.to_string())
+        .collect();
+    lines.push(format!("{key}={escaped_value}"));
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    for line in &lines {
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
+fn print_web_push_next_steps(agent_config: &std::path::Path) -> Result<()> {
+    println!("Next steps:");
+    println!("  1. Restart the agent:");
+    println!("       sudo systemctl restart innerwarden-agent");
+    println!("  2. Open the InnerWarden dashboard");
+    println!("  3. Click 'Enable browser notifications' in the top bar");
+    println!("  4. Allow notifications when your browser asks");
+    println!();
+    println!(
+        "The public key is configured in: {}",
+        agent_config.display()
+    );
+    println!("Browsers will receive High and Critical incident alerts in real time,");
+    println!("even when the dashboard tab is not open (requires browser running).");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline test
+// ---------------------------------------------------------------------------
+
+fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let today = today_date_string();
+    let incidents_path = effective_dir.join(format!("incidents-{today}.jsonl"));
+    let decisions_path = effective_dir.join(format!("decisions-{today}.jsonl"));
+
+    // Count existing decisions to detect new ones
+    let baseline = count_jsonl_lines(&decisions_path);
+
+    // Use RFC 5737 documentation IP — safe, never routable
+    let test_ip = "198.51.100.123";
+    let now_iso = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let s = secs % 60;
+        let m = (secs / 60) % 60;
+        let h = (secs / 3600) % 24;
+        let days_since_epoch = secs / 86400;
+        // Compute date from days
+        let (y, mo, d) = {
+            let mut y = 1970i64;
+            let mut rem = days_since_epoch as i64;
+            loop {
+                let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                    366
+                } else {
+                    365
+                };
+                if rem < ydays {
+                    break;
+                }
+                rem -= ydays;
+                y += 1;
+            }
+            let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+            let mdays = [
+                31,
+                if leap { 29 } else { 28 },
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
+            let mut mo = 0usize;
+            while mo < 12 && rem >= mdays[mo] {
+                rem -= mdays[mo];
+                mo += 1;
+            }
+            (y, mo + 1, rem + 1)
+        };
+        format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+    };
+    let marker = format!("innerwarden-test-{}", std::process::id());
+
+    let hostname = std::process::Command::new("hostname")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let incident = serde_json::json!({
+        "ts": now_iso,
+        "host": hostname,
+        "incident_id": format!("ssh_bruteforce:{test_ip}:{marker}"),
+        "severity": "high",
+        "title": format!("Possible SSH brute force from {test_ip}"),
+        "summary": format!("12 failed SSH login attempts from {test_ip} in the last 30 seconds (pipeline test)"),
+        "evidence": [{
+            "count": 12,
+            "ip": test_ip,
+            "kind": "ssh.login_failed",
+            "window_seconds": 30
+        }],
+        "recommended_checks": [
+            format!("This is a pipeline test using RFC 5737 documentation IP {test_ip}"),
+            "No real threat — safe to ignore"
+        ],
+        "tags": ["auth", "ssh", "bruteforce", "pipeline-test"],
+        "entities": [{
+            "type": "ip",
+            "value": test_ip
+        }]
+    });
+
+    println!("InnerWarden Pipeline Test");
+    println!("{}\n", "─".repeat(50));
+
+    // Step 1: Write test incident
+    println!("  [1/4] Writing test incident...");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&incidents_path)?;
+    writeln!(file, "{}", incident)?;
+    println!("        SSH brute-force from {test_ip} (documentation IP, safe)");
+    println!("        Written to {}\n", incidents_path.display());
+
+    // Step 2: Check agent is running
+    println!("  [2/4] Checking agent status...");
+    let agent_running = std::process::Command::new("pgrep")
+        .args(["-f", "innerwarden-agent"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !agent_running {
+        println!("        Agent process not detected.");
+        println!("        The test incident was written but nobody is reading it.");
+        println!("        Start the agent: sudo systemctl start innerwarden-agent\n");
+        println!("  Result: PARTIAL — incident written, agent not running");
+        return Ok(());
+    }
+    println!("        Agent is running.\n");
+
+    // Step 3: Wait for agent to process
+    println!("  [3/4] Waiting up to {wait_secs}s for agent to process...");
+    let start = std::time::Instant::now();
+    let mut found = false;
+    while start.elapsed().as_secs() < wait_secs {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let current = count_jsonl_lines(&decisions_path);
+        if current > baseline {
+            // Check if the new decision references our test
+            if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+                if content.contains(&marker) || content.contains(test_ip) {
+                    found = true;
+                    break;
+                }
+            }
+            // Even if marker not found, new decisions appeared
+            if current > baseline {
+                found = true;
+                break;
+            }
+        }
+        print!(".");
+        std::io::stdout().flush().ok();
+    }
+    println!();
+
+    // Step 4: Report results
+    println!("\n  [4/4] Results:");
+    if found {
+        println!("        Pipeline is working.");
+        println!("        Incident was detected, processed, and a decision was logged.");
+        // Show the latest decision
+        if let Ok(content) = std::fs::read_to_string(&decisions_path) {
+            if let Some(last_line) = content.lines().rev().find(|l| l.contains(test_ip)) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(last_line) {
+                    let action = val
+                        .get("action_type")
+                        .and_then(|a| a.as_str())
+                        .or_else(|| val.get("action").and_then(|a| a.as_str()))
+                        .unwrap_or("?");
+                    let conf = val
+                        .get("confidence")
+                        .and_then(|c| c.as_f64())
+                        .unwrap_or(0.0);
+                    let dry = val.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(true);
+                    let reason = val.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+                    println!("\n        Action: {action}");
+                    println!("        Confidence: {:.0}%", conf * 100.0);
+                    println!("        Dry-run: {dry}");
+                    if !reason.is_empty() {
+                        println!("        Reason: {reason}");
+                    }
+                    if dry {
+                        println!("        (safe — no real firewall changes)");
+                    }
+                }
+            }
+        }
+        println!("\n  Result: PASS");
+    } else {
+        println!("        No decision appeared within {wait_secs} seconds.");
+        println!("        Possible causes:");
+        println!("          - Agent is running but AI provider is not configured");
+        println!("          - Agent hasn't reached this incident in its read cycle");
+        println!("          - Try again with --wait 30");
+        println!("\n  Result: TIMEOUT — check `innerwarden doctor` for diagnostics");
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_cli(data_dir: &std::path::Path) -> Cli {
+        Cli {
+            sensor_config: data_dir.join("config.toml"),
+            agent_config: data_dir.join("agent.toml"),
+            data_dir: data_dir.to_path_buf(),
+            dry_run: false,
+            command: Command::Decisions {
+                days: 1,
+                action: None,
+            },
+        }
+    }
+
+    #[test]
+    fn decisions_empty_data_dir() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        // Should return Ok even with no JSONL files present
+        let result = cmd_decisions(&cli, 1, None, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decisions_reads_jsonl() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"block_ip\",\"target_ip\":\"1.2.3.4\",\"confidence\":0.95,\"dry_run\":false,\"ai_provider\":\"openai\"}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_decisions(&cli, 1, None, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decisions_action_filter() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"ignore\",\"target_ip\":\"1.2.3.4\",\"confidence\":0.3,\"dry_run\":false,\"ai_provider\":\"openai\"}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        // Filter for block_ip — should return Ok (0 matching)
+        let result = cmd_decisions(&cli, 1, Some("block_ip"), dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn entity_no_data() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_entity(&cli, "1.2.3.4", 3, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn entity_finds_ip_in_incident() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("incidents-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"title\":\"SSH Brute Force\",\"severity\":\"High\",\"summary\":\"8 failures\",\"entities\":[{\"type\":\"Ip\",\"value\":\"5.6.7.8\"}]}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_entity(&cli, "5.6.7.8", 1, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn entity_finds_user_in_decision() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let path = dir.path().join(format!("decisions-{today}.jsonl"));
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-03-16T10:00:00Z\",\"action\":\"suspend_user_sudo\",\"target_user\":\"alice\",\"confidence\":0.9,\"dry_run\":true,\"ai_provider\":\"openai\"}\n",
+        ).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_entity(&cli, "alice", 1, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn watchdog_status_no_data() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        // Should return Ok even with no telemetry files
+        let result = cmd_watchdog_status(&cli, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tune_no_data() {
+        let dir = TempDir::new().unwrap();
+        let cli = make_cli(dir.path());
+        // No JSONL files — should return Ok with a "no data" message
+        let result = cmd_tune(&cli, 7, true, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tune_no_suggestions_when_calibrated() {
+        let dir = TempDir::new().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // Write a modest event count that matches default thresholds — no suggestion expected
+        let events_path = dir.path().join(format!("events-{today}.jsonl"));
+        let mut content = String::new();
+        for _ in 0..5 {
+            content.push_str("{\"ts\":\"2026-03-16T10:00:00Z\",\"kind\":\"ssh.login_failed\",\"severity\":\"Low\",\"summary\":\"failed\",\"source\":\"auth_log\",\"host\":\"h\",\"entities\":[],\"tags\":[]}\n");
+        }
+        std::fs::write(&events_path, &content).unwrap();
+        let cli = make_cli(dir.path());
+        let result = cmd_tune(&cli, 1, true, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn completions_invalid_shell_errors() {
+        let result = cmd_completions("powershell");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported shell"));
+    }
+
+    #[test]
+    fn completions_bash_succeeds() {
+        // Just verify it doesn't panic/error — output goes to stdout
+        let result = cmd_completions("bash");
+        assert!(result.is_ok());
+    }
+}

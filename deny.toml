@@ -1,0 +1,32 @@
+[advisories]
+ignore = [
+    # rsa timing sidechannel via russh — no fix available upstream
+    "RUSTSEC-2023-0071",
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "OpenSSL",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

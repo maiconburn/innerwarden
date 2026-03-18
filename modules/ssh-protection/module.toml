@@ -1,0 +1,41 @@
+[module]
+id          = "ssh-protection"
+name        = "SSH Protection"
+version     = "0.1.0"
+description = "Detects and blocks SSH brute-force attacks and credential stuffing via sliding window analysis"
+authors     = ["InnerWarden Contributors"]
+license     = "Apache-2.0"
+tier        = "open"
+builtin     = true   # code lives in crates/, not in src/
+min_innerwarden = "0.1.0"
+
+[provides]
+collectors = ["auth-log", "journald"]
+detectors  = ["ssh-bruteforce", "credential-stuffing"]
+skills     = ["block-ip-ufw", "block-ip-iptables", "block-ip-nftables"]
+
+[requires]
+# These collectors must be enabled in sensor config
+event_sources = ["auth_log", "journald.sshd"]
+
+[[rules]]
+detector       = "ssh-bruteforce"
+skill          = "block-ip-ufw"
+min_confidence = 0.8
+auto_execute   = false
+
+[[rules]]
+detector       = "credential-stuffing"
+skill          = "block-ip-ufw"
+min_confidence = 0.85
+auto_execute   = false
+
+[security]
+allowed_commands     = ["/usr/sbin/ufw", "/sbin/iptables", "/usr/sbin/nft"]
+require_sudo_validation = true
+forbid_shell_expansion  = true
+
+[[preflights]]
+kind   = "binary_exists"
+value  = "/usr/sbin/ufw"
+reason = "ufw must be installed for block-ip-ufw skill (or configure an alternative backend)"

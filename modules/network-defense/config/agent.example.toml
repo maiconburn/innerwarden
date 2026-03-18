@@ -1,0 +1,13 @@
+# network-defense — agent config snippet
+
+[responder]
+enabled        = true
+dry_run        = true
+block_backend  = "ufw"
+allowed_skills = ["block-ip-ufw"]
+
+[ai]
+enabled              = true
+provider             = "openai"
+model                = "gpt-4o-mini"
+confidence_threshold = 0.8

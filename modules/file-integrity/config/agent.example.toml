@@ -1,0 +1,13 @@
+# file-integrity — agent config snippet
+# This module relies on webhook for alerting. No responder skill needed.
+
+[webhook]
+enabled      = true
+url          = "https://hooks.example.com/notify"
+min_severity = "medium"
+timeout_secs = 10
+
+[ai]
+enabled = true   # AI will assess file change severity and reason
+provider = "openai"
+model    = "gpt-4o-mini"
