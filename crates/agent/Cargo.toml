@@ -33,7 +33,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hmac = "0.12"
 sha2 = "0.10"
-russh = "0.57"
+russh = "0.58"
 regex = "1"
 p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
 aes-gcm = "0.10"
