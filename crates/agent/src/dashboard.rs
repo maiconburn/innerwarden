@@ -73,6 +73,8 @@ pub struct DashboardActionConfig {
     pub geoip_enabled: bool,
     /// Whether AbuseIPDB enrichment is enabled.
     pub abuseipdb_enabled: bool,
+    /// AbuseIPDB auto-block threshold (0 = disabled).
+    pub abuseipdb_auto_block_threshold: u8,
     /// Honeypot mode: "off" | "demo" | "listener".
     pub honeypot_mode: String,
     /// Whether Telegram notifications are enabled.
@@ -96,6 +98,7 @@ impl Default for DashboardActionConfig {
             fail2ban_enabled: false,
             geoip_enabled: false,
             abuseipdb_enabled: false,
+            abuseipdb_auto_block_threshold: 0,
             honeypot_mode: "off".to_string(),
             telegram_enabled: false,
             slack_enabled: false,
@@ -1538,6 +1541,7 @@ async fn api_status(State(state): State<DashboardState>) -> Json<serde_json::Val
             "fail2ban": action_cfg.fail2ban_enabled,
             "geoip": action_cfg.geoip_enabled,
             "abuseipdb": action_cfg.abuseipdb_enabled,
+            "abuseipdb_auto_block_threshold": action_cfg.abuseipdb_auto_block_threshold,
             "honeypot_mode": action_cfg.honeypot_mode,
             "telegram": action_cfg.telegram_enabled,
             "slack": action_cfg.slack_enabled,
@@ -5826,7 +5830,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
     const conflicts = [];
-    if (integ.abuseipdb && integ.fail2ban) {
+    if (integ.abuseipdb && integ.fail2ban && integ.abuseipdb_auto_block_threshold > 0) {
       conflicts.push({
         a: 'AbuseIPDB auto-block', b: 'Fail2ban',
         msg: 'Both can auto-block IPs without AI. Set abuseipdb.auto_block_threshold = 0 and use AbuseIPDB only for enrichment context.'

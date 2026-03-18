@@ -880,6 +880,7 @@ async fn main() -> Result<()> {
             fail2ban_enabled: cfg.fail2ban.enabled,
             geoip_enabled: cfg.geoip.enabled,
             abuseipdb_enabled: cfg.abuseipdb.enabled,
+            abuseipdb_auto_block_threshold: cfg.abuseipdb.auto_block_threshold,
             honeypot_mode: cfg.honeypot.mode.clone(),
             telegram_enabled: cfg.telegram.enabled,
             slack_enabled: cfg.slack.enabled,
