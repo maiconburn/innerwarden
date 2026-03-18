@@ -81,7 +81,7 @@ Sources: auth.log, journald, Docker events, file integrity (with cron and SSH ke
 
 **Agent** — reads incidents, applies an algorithm gate (skip low severity, private IPs, already-blocked), optionally calls AI for triage, and executes the chosen skill.
 
-Two Rust daemons (sensor and agent) plus a Rust CLI (`innerwarden`, with `innerwarden-ctl` as an alternate symlink). No external dependencies at runtime. ~50 MB RAM.
+Two Rust daemons (sensor and agent) plus a Rust CLI (`innerwarden`, with `innerwarden-ctl` as an alternate symlink). No external dependencies at runtime. ~13 MB RAM (sensor ~5 MB + agent ~8 MB); dashboard adds ~230 MB when enabled.
 
 ---
 
