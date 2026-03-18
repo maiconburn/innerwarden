@@ -3055,94 +3055,154 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
 
 /// Interactive AI provider picker — shown when running `innerwarden configure` → 1 (AI)
 /// or from the setup wizard. Lets the user choose a provider and enter their key.
+/// Provider info for the interactive wizard.
+struct WizardProvider {
+    name: &'static str,
+    label: &'static str,
+    signup_url: &'static str,
+    models: &'static [(&'static str, &'static str)], // (model_id, description)
+}
+
+const WIZARD_PROVIDERS: &[WizardProvider] = &[
+    WizardProvider {
+        name: "openai",
+        label: "OpenAI",
+        signup_url: "platform.openai.com",
+        models: &[
+            ("gpt-4o-mini", "fast, low cost (recommended)"),
+            ("gpt-4o", "most capable, higher cost"),
+            ("gpt-4.1-nano", "cheapest, good enough for most threats"),
+        ],
+    },
+    WizardProvider {
+        name: "anthropic",
+        label: "Anthropic",
+        signup_url: "console.anthropic.com",
+        models: &[
+            ("claude-haiku-4-5-20251001", "fast, low cost (recommended)"),
+            ("claude-sonnet-4-6-20250514", "most capable, higher cost"),
+        ],
+    },
+    WizardProvider {
+        name: "groq",
+        label: "Groq",
+        signup_url: "console.groq.com",
+        models: &[
+            ("llama-3.3-70b-versatile", "fast, free tier (recommended)"),
+            ("llama-3.1-8b-instant", "fastest, smaller model"),
+            ("deepseek-r1-distill-llama-70b", "reasoning model"),
+        ],
+    },
+    WizardProvider {
+        name: "deepseek",
+        label: "DeepSeek",
+        signup_url: "platform.deepseek.com",
+        models: &[
+            ("deepseek-chat", "general purpose (recommended)"),
+            ("deepseek-reasoner", "reasoning model, slower"),
+        ],
+    },
+    WizardProvider {
+        name: "mistral",
+        label: "Mistral",
+        signup_url: "console.mistral.ai",
+        models: &[
+            ("mistral-small-latest", "fast, low cost (recommended)"),
+            ("mistral-medium-latest", "more capable"),
+            ("mistral-large-latest", "most capable, higher cost"),
+        ],
+    },
+    WizardProvider {
+        name: "xai",
+        label: "xAI / Grok",
+        signup_url: "console.x.ai",
+        models: &[
+            ("grok-3-mini-fast", "fast, low cost (recommended)"),
+            ("grok-3-mini", "more capable"),
+        ],
+    },
+];
+
+fn ask_key_and_model(provider: &WizardProvider) -> Result<(String, Option<String>)> {
+    println!(
+        "{} — enter your API key (get one at {})",
+        provider.label, provider.signup_url
+    );
+    let key = prompt("API key")?;
+    if key.is_empty() {
+        anyhow::bail!("API key cannot be empty");
+    }
+
+    if provider.models.len() <= 1 {
+        return Ok((key, None));
+    }
+
+    println!("\nChoose a model:\n");
+    for (i, (id, desc)) in provider.models.iter().enumerate() {
+        println!("  {}. {} — {}", i + 1, id, desc);
+    }
+    println!();
+    let model_choice = prompt(&format!("Model [1-{}, default=1]", provider.models.len()))?;
+    let idx = model_choice
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(1)
+        .saturating_sub(1)
+        .min(provider.models.len() - 1);
+    let model = provider.models[idx].0.to_string();
+    Ok((key, Some(model)))
+}
+
 fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
     println!("InnerWarden — AI provider setup\n");
     println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
     println!("Choose a provider — any one works. Pick what you already have:\n");
-    println!("  1. OpenAI      — gpt-4o-mini (low cost, fast)");
-    println!("  2. Anthropic   — claude-haiku (low cost, fast)");
-    println!("  3. Groq        — llama-3.3-70b (free tier available)");
-    println!("  4. DeepSeek    — deepseek-chat (very low cost)");
-    println!("  5. Mistral     — mistral-small (EU-hosted)");
-    println!("  6. xAI         — grok-3-mini-fast");
-    println!("  7. Ollama      — local, no API key needed");
-    println!("  8. Other       — any OpenAI-compatible API");
+    for (i, p) in WIZARD_PROVIDERS.iter().enumerate() {
+        let default_model = p.models[0].0;
+        println!("  {}. {:12} — {}", i + 1, p.label, default_model);
+    }
+    let ollama_idx = WIZARD_PROVIDERS.len() + 1;
+    let other_idx = WIZARD_PROVIDERS.len() + 2;
+    println!("  {ollama_idx}. Ollama       — local, no API key needed");
+    println!("  {other_idx}. Other        — any OpenAI-compatible API");
     println!("  s. Skip for now\n");
 
-    let choice = prompt("Choose provider [1-8/s]")?;
+    let choice = prompt(&format!("Choose provider [1-{other_idx}/s]"))?;
     println!();
 
-    match choice.trim().to_lowercase().as_str() {
-        "1" => {
-            println!("OpenAI — enter your API key (get one at platform.openai.com)");
-            let key = prompt("API key")?;
-            if key.is_empty() {
-                anyhow::bail!("API key cannot be empty");
-            }
-            cmd_configure_ai(cli, "openai", Some(&key), None, None)
+    let trimmed = choice.trim().to_lowercase();
+    if trimmed == "s" {
+        println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
+        return Ok(());
+    }
+
+    let num: usize = trimmed.parse().unwrap_or(0);
+
+    if num >= 1 && num <= WIZARD_PROVIDERS.len() {
+        let provider = &WIZARD_PROVIDERS[num - 1];
+        let (key, model) = ask_key_and_model(provider)?;
+        cmd_configure_ai(cli, provider.name, Some(&key), model.as_deref(), None)
+    } else if num == ollama_idx {
+        cmd_ai_install(cli, "qwen3-coder:480b", None, false)
+    } else if num == other_idx {
+        println!("Any provider with an OpenAI-compatible API works.");
+        println!("You need the base URL and an API key.\n");
+        let name = prompt("Provider name (e.g. fireworks, openrouter)")?;
+        let base_url = prompt("Base URL (e.g. https://api.example.com)")?;
+        let key = prompt("API key")?;
+        let model = prompt("Model name (leave empty for default)")?;
+        let model = if model.is_empty() {
+            None
+        } else {
+            Some(model.as_str())
+        };
+        if base_url.is_empty() || key.is_empty() {
+            anyhow::bail!("Base URL and API key are required");
         }
-        "2" => {
-            println!("Anthropic — enter your API key (get one at console.anthropic.com)");
-            let key = prompt("API key")?;
-            if key.is_empty() {
-                anyhow::bail!("API key cannot be empty");
-            }
-            cmd_configure_ai(cli, "anthropic", Some(&key), None, None)
-        }
-        "3" => {
-            println!("Groq — enter your API key (get one at console.groq.com)");
-            let key = prompt("API key")?;
-            if key.is_empty() {
-                anyhow::bail!("API key cannot be empty");
-            }
-            cmd_configure_ai(cli, "groq", Some(&key), None, None)
-        }
-        "4" => {
-            println!("DeepSeek — enter your API key (get one at platform.deepseek.com)");
-            let key = prompt("API key")?;
-            if key.is_empty() {
-                anyhow::bail!("API key cannot be empty");
-            }
-            cmd_configure_ai(cli, "deepseek", Some(&key), None, None)
-        }
-        "5" => {
-            println!("Mistral — enter your API key (get one at console.mistral.ai)");
-            let key = prompt("API key")?;
-            if key.is_empty() {
-                anyhow::bail!("API key cannot be empty");
-            }
-            cmd_configure_ai(cli, "mistral", Some(&key), None, None)
-        }
-        "6" => {
-            println!("xAI — enter your API key (get one at console.x.ai)");
-            let key = prompt("API key")?;
-            if key.is_empty() {
-                anyhow::bail!("API key cannot be empty");
-            }
-            cmd_configure_ai(cli, "xai", Some(&key), None, None)
-        }
-        "7" | "" => cmd_ai_install(cli, "qwen3-coder:480b", None, false),
-        "8" => {
-            println!("Any provider with an OpenAI-compatible API works.");
-            println!("You need the base URL and an API key.\n");
-            let name = prompt("Provider name (e.g. fireworks, openrouter)")?;
-            let base_url = prompt("Base URL (e.g. https://api.example.com)")?;
-            let key = prompt("API key")?;
-            let model = prompt("Model name (leave empty for default)")?;
-            let model = if model.is_empty() {
-                None
-            } else {
-                Some(model.as_str())
-            };
-            if base_url.is_empty() || key.is_empty() {
-                anyhow::bail!("Base URL and API key are required");
-            }
-            cmd_configure_ai(cli, &name, Some(&key), model, Some(&base_url))
-        }
-        _ => {
-            println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
-            Ok(())
-        }
+        cmd_configure_ai(cli, &name, Some(&key), model, Some(&base_url))
+    } else {
+        println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
+        Ok(())
     }
 }
 
