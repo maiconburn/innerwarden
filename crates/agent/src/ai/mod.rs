@@ -219,12 +219,61 @@ fn is_private_or_loopback(addr: IpAddr) -> bool {
 // Factory — creates the right provider based on config
 // ---------------------------------------------------------------------------
 
+/// Known OpenAI-compatible providers and their default base URLs + models.
+/// Any provider that speaks the `/v1/chat/completions` format works here.
+const OPENAI_COMPATIBLE: &[(&str, &str, &str)] = &[
+    // (provider name, default base_url, default model)
+    ("openai", "https://api.openai.com", "gpt-4o-mini"),
+    (
+        "groq",
+        "https://api.groq.com/openai",
+        "llama-3.3-70b-versatile",
+    ),
+    ("deepseek", "https://api.deepseek.com", "deepseek-chat"),
+    (
+        "together",
+        "https://api.together.xyz",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    ),
+    ("minimax", "https://api.minimaxi.chat", "MiniMax-Text-01"),
+    ("mistral", "https://api.mistral.ai", "mistral-small-latest"),
+    ("xai", "https://api.x.ai", "grok-3-mini-fast"),
+    (
+        "fireworks",
+        "https://api.fireworks.ai/inference",
+        "accounts/fireworks/models/llama-v3p3-70b-instruct",
+    ),
+    (
+        "openrouter",
+        "https://openrouter.ai/api",
+        "meta-llama/llama-3.3-70b-instruct",
+    ),
+];
+
 pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
-    match cfg.provider.as_str() {
-        "openai" => Box::new(openai::OpenAiProvider::new(
+    // Check if provider is OpenAI-compatible (including "openai" itself)
+    if let Some(&(_, default_url, default_model)) = OPENAI_COMPATIBLE
+        .iter()
+        .find(|&&(name, _, _)| name == cfg.provider)
+    {
+        let base_url = if cfg.base_url.is_empty() {
+            default_url.to_string()
+        } else {
+            cfg.base_url.clone()
+        };
+        let model = if cfg.model.is_empty() {
+            default_model.to_string()
+        } else {
+            cfg.model.clone()
+        };
+        return Box::new(openai::OpenAiProvider::with_base_url(
             cfg.resolved_api_key(),
-            cfg.model.clone(),
-        )),
+            model,
+            base_url,
+        ));
+    }
+
+    match cfg.provider.as_str() {
         "anthropic" => Box::new(anthropic::AnthropicProvider::new(
             cfg.resolved_api_key(),
             cfg.model.clone(),
@@ -260,14 +309,29 @@ pub fn build_provider(cfg: &AiConfig) -> Box<dyn AiProvider> {
             Box::new(ollama::OllamaProvider::new(base_url, model, api_key))
         }
         other => {
-            tracing::warn!(
-                provider = other,
-                "unknown AI provider — falling back to openai stub"
-            );
-            Box::new(openai::OpenAiProvider::new(
-                cfg.resolved_api_key(),
-                cfg.model.clone(),
-            ))
+            // Unknown provider name — if base_url is set, treat as OpenAI-compatible.
+            // This lets users connect any compatible API without code changes.
+            if !cfg.base_url.is_empty() {
+                tracing::info!(
+                    provider = other,
+                    base_url = %cfg.base_url,
+                    "treating unknown provider as OpenAI-compatible via base_url"
+                );
+                Box::new(openai::OpenAiProvider::with_base_url(
+                    cfg.resolved_api_key(),
+                    cfg.model.clone(),
+                    cfg.base_url.clone(),
+                ))
+            } else {
+                tracing::warn!(
+                    provider = other,
+                    "unknown AI provider and no base_url — falling back to openai"
+                );
+                Box::new(openai::OpenAiProvider::new(
+                    cfg.resolved_api_key(),
+                    cfg.model.clone(),
+                ))
+            }
         }
     }
 }

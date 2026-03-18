@@ -15,7 +15,19 @@ const DEFAULT_MODEL_OPENAI: &str = "gpt-4o-mini";
 const DEFAULT_MODEL_ANTHROPIC: &str = "claude-haiku-4-5-20251001";
 const DEFAULT_MODEL_OLLAMA: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const VALID_PROVIDERS: &[&str] = &["openai", "anthropic", "ollama"];
+const VALID_PROVIDERS: &[&str] = &[
+    "openai",
+    "anthropic",
+    "ollama",
+    "groq",
+    "deepseek",
+    "together",
+    "minimax",
+    "mistral",
+    "xai",
+    "fireworks",
+    "openrouter",
+];
 
 // ---------------------------------------------------------------------------
 // Preflight: API key available

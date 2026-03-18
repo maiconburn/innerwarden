@@ -13,12 +13,22 @@ use super::{AiAction, AiDecision, AiProvider, DecisionContext};
 pub struct OpenAiProvider {
     api_key: String,
     model: String,
+    /// Base URL for the chat completions API.
+    /// Defaults to `https://api.openai.com`.
+    /// Set to any OpenAI-compatible endpoint (Groq, DeepSeek, Together,
+    /// MiniMax, Mistral, xAI/Grok, Fireworks, etc.).
+    base_url: String,
     /// Shared HTTP client — holds the connection pool across calls.
     client: reqwest::Client,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: String, model: String) -> Self {
+        Self::with_base_url(api_key, model, "https://api.openai.com".to_string())
+    }
+
+    pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
+        let base_url = base_url.trim_end_matches('/').to_string();
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
@@ -26,6 +36,7 @@ impl OpenAiProvider {
         Self {
             api_key,
             model,
+            base_url,
             client,
         }
     }
@@ -58,7 +69,7 @@ impl AiProvider for OpenAiProvider {
 
         let resp = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(format!("{}/v1/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
@@ -110,7 +121,7 @@ impl AiProvider for OpenAiProvider {
 
         let resp = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(format!("{}/v1/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()

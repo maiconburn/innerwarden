@@ -3058,34 +3058,86 @@ fn cmd_configure_menu(cli: &Cli) -> Result<()> {
 fn cmd_configure_ai_interactive(cli: &Cli) -> Result<()> {
     println!("InnerWarden — AI provider setup\n");
     println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
-    println!("All three providers work well — choose based on what you already have:\n");
-    println!(
-        "  1. Ollama    — free tier available (Ollama cloud), no credit card for basic models"
-    );
-    println!("  2. OpenAI    — gpt-4o-mini, pay-as-you-go (very low cost for this workload)");
-    println!("  3. Anthropic — claude-haiku, pay-as-you-go (very low cost for this workload)");
+    println!("Choose a provider — any one works. Pick what you already have:\n");
+    println!("  1. OpenAI      — gpt-4o-mini (low cost, fast)");
+    println!("  2. Anthropic   — claude-haiku (low cost, fast)");
+    println!("  3. Groq        — llama-3.3-70b (free tier available)");
+    println!("  4. DeepSeek    — deepseek-chat (very low cost)");
+    println!("  5. Mistral     — mistral-small (EU-hosted)");
+    println!("  6. xAI         — grok-3-mini-fast");
+    println!("  7. Ollama      — local, no API key needed");
+    println!("  8. Other       — any OpenAI-compatible API");
     println!("  s. Skip for now\n");
 
-    let choice = prompt("Choose provider [1/2/3/s]")?;
+    let choice = prompt("Choose provider [1-8/s]")?;
     println!();
 
     match choice.trim().to_lowercase().as_str() {
-        "1" | "" => cmd_ai_install(cli, "qwen3-coder:480b", None, false),
-        "2" => {
+        "1" => {
             println!("OpenAI — enter your API key (get one at platform.openai.com)");
-            let key = prompt("OPENAI_API_KEY")?;
+            let key = prompt("API key")?;
             if key.is_empty() {
-                anyhow::bail!("API key cannot be empty. Get one at platform.openai.com");
+                anyhow::bail!("API key cannot be empty");
             }
             cmd_configure_ai(cli, "openai", Some(&key), None, None)
         }
-        "3" => {
+        "2" => {
             println!("Anthropic — enter your API key (get one at console.anthropic.com)");
-            let key = prompt("ANTHROPIC_API_KEY")?;
+            let key = prompt("API key")?;
             if key.is_empty() {
-                anyhow::bail!("API key cannot be empty. Get one at console.anthropic.com");
+                anyhow::bail!("API key cannot be empty");
             }
             cmd_configure_ai(cli, "anthropic", Some(&key), None, None)
+        }
+        "3" => {
+            println!("Groq — enter your API key (get one at console.groq.com)");
+            let key = prompt("API key")?;
+            if key.is_empty() {
+                anyhow::bail!("API key cannot be empty");
+            }
+            cmd_configure_ai(cli, "groq", Some(&key), None, None)
+        }
+        "4" => {
+            println!("DeepSeek — enter your API key (get one at platform.deepseek.com)");
+            let key = prompt("API key")?;
+            if key.is_empty() {
+                anyhow::bail!("API key cannot be empty");
+            }
+            cmd_configure_ai(cli, "deepseek", Some(&key), None, None)
+        }
+        "5" => {
+            println!("Mistral — enter your API key (get one at console.mistral.ai)");
+            let key = prompt("API key")?;
+            if key.is_empty() {
+                anyhow::bail!("API key cannot be empty");
+            }
+            cmd_configure_ai(cli, "mistral", Some(&key), None, None)
+        }
+        "6" => {
+            println!("xAI — enter your API key (get one at console.x.ai)");
+            let key = prompt("API key")?;
+            if key.is_empty() {
+                anyhow::bail!("API key cannot be empty");
+            }
+            cmd_configure_ai(cli, "xai", Some(&key), None, None)
+        }
+        "7" | "" => cmd_ai_install(cli, "qwen3-coder:480b", None, false),
+        "8" => {
+            println!("Any provider with an OpenAI-compatible API works.");
+            println!("You need the base URL and an API key.\n");
+            let name = prompt("Provider name (e.g. fireworks, openrouter)")?;
+            let base_url = prompt("Base URL (e.g. https://api.example.com)")?;
+            let key = prompt("API key")?;
+            let model = prompt("Model name (leave empty for default)")?;
+            let model = if model.is_empty() {
+                None
+            } else {
+                Some(model.as_str())
+            };
+            if base_url.is_empty() || key.is_empty() {
+                anyhow::bail!("Base URL and API key are required");
+            }
+            cmd_configure_ai(cli, &name, Some(&key), model, Some(&base_url))
         }
         _ => {
             println!("Skipped. Run later:  innerwarden configure ai <provider> --key <key>");
@@ -3104,15 +3156,62 @@ fn cmd_configure_ai(
     if !cli.dry_run {
         require_sudo(cli);
     }
-    let (default_model, key_var): (&str, Option<&str>) = match provider {
-        "openai" => ("gpt-4o-mini", Some("OPENAI_API_KEY")),
-        "anthropic" => ("claude-haiku-4-5-20251001", Some("ANTHROPIC_API_KEY")),
-        "ollama" => ("llama3.2", None),
-        other => anyhow::bail!(
-            "unknown provider '{}'\nUse one of: openai, anthropic, ollama\n\nExamples:\n  innerwarden configure ai openai --key sk-...\n  innerwarden configure ai anthropic --key sk-ant-...\n  innerwarden configure ai ollama --model llama3.2",
-            other
-        ),
-    };
+    // Known providers with their defaults. Any OpenAI-compatible provider works
+    // if the user passes --key and optionally --base-url.
+    let (default_model, key_var, default_base_url): (&str, Option<&str>, Option<&str>) =
+        match provider {
+            "openai" => ("gpt-4o-mini", Some("OPENAI_API_KEY"), None),
+            "anthropic" => ("claude-haiku-4-5-20251001", Some("ANTHROPIC_API_KEY"), None),
+            "ollama" => ("llama3.2", None, None),
+            "groq" => (
+                "llama-3.3-70b-versatile",
+                Some("GROQ_API_KEY"),
+                Some("https://api.groq.com/openai"),
+            ),
+            "deepseek" => (
+                "deepseek-chat",
+                Some("DEEPSEEK_API_KEY"),
+                Some("https://api.deepseek.com"),
+            ),
+            "together" => (
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                Some("TOGETHER_API_KEY"),
+                Some("https://api.together.xyz"),
+            ),
+            "minimax" => (
+                "MiniMax-Text-01",
+                Some("MINIMAX_API_KEY"),
+                Some("https://api.minimaxi.chat"),
+            ),
+            "mistral" => (
+                "mistral-small-latest",
+                Some("MISTRAL_API_KEY"),
+                Some("https://api.mistral.ai"),
+            ),
+            "xai" => (
+                "grok-3-mini-fast",
+                Some("XAI_API_KEY"),
+                Some("https://api.x.ai"),
+            ),
+            "fireworks" => (
+                "accounts/fireworks/models/llama-v3p3-70b-instruct",
+                Some("FIREWORKS_API_KEY"),
+                Some("https://api.fireworks.ai/inference"),
+            ),
+            "openrouter" => (
+                "meta-llama/llama-3.3-70b-instruct",
+                Some("OPENROUTER_API_KEY"),
+                Some("https://openrouter.ai/api"),
+            ),
+            // Unknown provider — still works if the user provides base_url + key
+            _ => (
+                "gpt-4o-mini",
+                Some(&*Box::leak(
+                    format!("{}_API_KEY", provider.to_uppercase()).into_boxed_str(),
+                )),
+                None,
+            ),
+        };
 
     let model = model.unwrap_or(default_model);
 
@@ -3154,10 +3253,10 @@ fn cmd_configure_ai(
         config_editor::write_bool(&cli.agent_config, "ai", "enabled", true)?;
         config_editor::write_str(&cli.agent_config, "ai", "provider", provider)?;
         config_editor::write_str(&cli.agent_config, "ai", "model", model)?;
-        if provider == "ollama" {
-            if let Some(url) = base_url {
-                config_editor::write_str(&cli.agent_config, "ai", "base_url", url)?;
-            }
+        // Write base_url: explicit flag > provider default > empty
+        let effective_url = base_url.or(default_base_url).unwrap_or("");
+        if !effective_url.is_empty() {
+            config_editor::write_str(&cli.agent_config, "ai", "base_url", effective_url)?;
         }
         println!("  [ok] agent.toml updated: provider={provider}, model={model}");
     }
