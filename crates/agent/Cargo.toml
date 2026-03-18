@@ -28,7 +28,7 @@ argon2 = "0.5"
 base64 = "0.22"
 rpassword = "7"
 rand_core = { version = "0.6", features = ["std"] }
-toml = "0.8"
+toml = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hmac = "0.12"
