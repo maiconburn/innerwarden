@@ -9,6 +9,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.1.26] — 2026-03-18
+
 ### Pipeline test
 
 - **`innerwarden test`** — inject a synthetic SSH brute-force incident (RFC 5737 documentation IP) and verify the full sensor → agent → decision pipeline is working; agent recognises the `pipeline-test` tag and writes an acknowledgement decision without calling the AI provider

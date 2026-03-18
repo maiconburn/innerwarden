@@ -970,9 +970,7 @@ fn main() -> Result<()> {
             }
             AllowlistCommand::List => cmd_allowlist_list(&cli),
         },
-        Command::PipelineTest { wait } => {
-            cmd_pipeline_test(&cli, wait, &cli.data_dir.clone())
-        }
+        Command::PipelineTest { wait } => cmd_pipeline_test(&cli, wait, &cli.data_dir.clone()),
     }
 }
 
@@ -7891,13 +7889,32 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
             let mut y = 1970i64;
             let mut rem = days_since_epoch as i64;
             loop {
-                let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-                if rem < ydays { break; }
+                let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                    366
+                } else {
+                    365
+                };
+                if rem < ydays {
+                    break;
+                }
                 rem -= ydays;
                 y += 1;
             }
             let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-            let mdays = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            let mdays = [
+                31,
+                if leap { 29 } else { 28 },
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
             let mut mo = 0usize;
             while mo < 12 && rem >= mdays[mo] {
                 rem -= mdays[mo];
@@ -8003,10 +8020,15 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
         if let Ok(content) = std::fs::read_to_string(&decisions_path) {
             if let Some(last_line) = content.lines().rev().find(|l| l.contains(test_ip)) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(last_line) {
-                    let action = val.get("action_type").and_then(|a| a.as_str())
+                    let action = val
+                        .get("action_type")
+                        .and_then(|a| a.as_str())
                         .or_else(|| val.get("action").and_then(|a| a.as_str()))
                         .unwrap_or("?");
-                    let conf = val.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0);
+                    let conf = val
+                        .get("confidence")
+                        .and_then(|c| c.as_f64())
+                        .unwrap_or(0.0);
                     let dry = val.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(true);
                     let reason = val.get("reason").and_then(|r| r.as_str()).unwrap_or("");
                     println!("\n        Action: {action}");

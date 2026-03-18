@@ -1732,7 +1732,8 @@ async fn process_incidents(
                 confidence: 1.0,
                 auto_executed: false,
                 dry_run: true,
-                reason: "Pipeline test acknowledged — sensor → agent → decision path is working".to_string(),
+                reason: "Pipeline test acknowledged — sensor → agent → decision path is working"
+                    .to_string(),
                 estimated_threat: "none".to_string(),
                 execution_result: "test-ok".to_string(),
             };

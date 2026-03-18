@@ -623,7 +623,10 @@ pub async fn serve(
         .route("/api/honeypot/sessions", get(api_honeypot_sessions))
         .route("/api/action/honeypot", post(api_action_honeypot))
         // Agent API — for AI agents (OpenClaw, n8n, etc.) to query security state
-        .route("/api/agent/security-context", get(api_agent_security_context))
+        .route(
+            "/api/agent/security-context",
+            get(api_agent_security_context),
+        )
         .route("/api/agent/check-ip", get(api_agent_check_ip))
         .route("/api/agent/check-command", post(api_agent_check_command))
         // D6 — SSE live event stream
@@ -2182,17 +2185,23 @@ async fn api_agent_security_context(
     State(state): State<DashboardState>,
 ) -> Json<serde_json::Value> {
     let date = resolve_date(None);
-    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(
-        &dated_path(&state.data_dir, "incidents", &date),
-    );
-    let decisions = read_jsonl::<DecisionEntry>(
-        &dated_path(&state.data_dir, "decisions", &date),
-    );
+    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&dated_path(
+        &state.data_dir,
+        "incidents",
+        &date,
+    ));
+    let decisions = read_jsonl::<DecisionEntry>(&dated_path(&state.data_dir, "decisions", &date));
 
     let total_incidents = incidents.len();
     let high_or_critical = incidents
         .iter()
-        .filter(|i| matches!(i.severity, innerwarden_core::event::Severity::High | innerwarden_core::event::Severity::Critical))
+        .filter(|i| {
+            matches!(
+                i.severity,
+                innerwarden_core::event::Severity::High
+                    | innerwarden_core::event::Severity::Critical
+            )
+        })
         .count();
     let blocks_today = decisions
         .iter()
@@ -2254,12 +2263,12 @@ async fn api_agent_check_ip(
 ) -> Json<serde_json::Value> {
     let ip = query.ip.trim();
     let date = resolve_date(None);
-    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(
-        &dated_path(&state.data_dir, "incidents", &date),
-    );
-    let decisions = read_jsonl::<DecisionEntry>(
-        &dated_path(&state.data_dir, "decisions", &date),
-    );
+    let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&dated_path(
+        &state.data_dir,
+        "incidents",
+        &date,
+    ));
+    let decisions = read_jsonl::<DecisionEntry>(&dated_path(&state.data_dir, "decisions", &date));
 
     // Count incidents involving this IP
     let matching_incidents: Vec<_> = incidents
@@ -2314,9 +2323,7 @@ struct CheckCommandRequest {
 }
 
 /// POST /api/agent/check-command — analyze a command for dangerous patterns
-async fn api_agent_check_command(
-    Json(body): Json<CheckCommandRequest>,
-) -> Json<serde_json::Value> {
+async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<serde_json::Value> {
     let cmd = body.command.trim();
     if cmd.is_empty() {
         return Json(serde_json::json!({
@@ -2335,8 +2342,16 @@ async fn api_agent_check_command(
 
     // Reverse shell indicators — always deny (score 60+)
     const REVERSE_SHELL: &[&str] = &[
-        "/dev/tcp/", "/dev/udp/", "nc -e", "ncat -e", "netcat -e",
-        "bash -i", "socat exec:", "socat tcp", "socat udp", "0>&1",
+        "/dev/tcp/",
+        "/dev/udp/",
+        "nc -e",
+        "ncat -e",
+        "netcat -e",
+        "bash -i",
+        "socat exec:",
+        "socat tcp",
+        "socat udp",
+        "0>&1",
         ">&/dev/tcp",
     ];
     for indicator in REVERSE_SHELL {
@@ -2353,7 +2368,9 @@ async fn api_agent_check_command(
 
     // Download-and-execute patterns
     let downloaders = ["curl", "wget", "fetch", "http"];
-    let executors = ["sh", "bash", "zsh", "dash", "python", "perl", "ruby", "node"];
+    let executors = [
+        "sh", "bash", "zsh", "dash", "python", "perl", "ruby", "node",
+    ];
 
     // Pattern 1: pipe-based (curl ... | bash)
     if cmd.contains('|') {
@@ -2363,7 +2380,9 @@ async fn api_agent_check_command(
             let right = parts[1..].join("|").to_ascii_lowercase();
             let has_downloader = downloaders.iter().any(|d| left.contains(d));
             let has_executor = executors.iter().any(|e| {
-                right.split_whitespace().any(|w| w.trim_start_matches("./") == *e)
+                right
+                    .split_whitespace()
+                    .any(|w| w.trim_start_matches("./") == *e)
             });
             if has_downloader && has_executor {
                 signals.push(serde_json::json!({
@@ -2379,7 +2398,9 @@ async fn api_agent_check_command(
     // Pattern 2: staged (wget -O /tmp/x && chmod +x && /tmp/x)
     {
         let has_download = downloaders.iter().any(|d| lower.contains(d));
-        let has_chmod_exec = lower.contains("chmod +x") || lower.contains("chmod 755") || lower.contains("chmod 777");
+        let has_chmod_exec = lower.contains("chmod +x")
+            || lower.contains("chmod 755")
+            || lower.contains("chmod 777");
         if has_download && has_chmod_exec {
             signals.push(serde_json::json!({
                 "signal": "download_chmod_execute",
@@ -2392,8 +2413,13 @@ async fn api_agent_check_command(
 
     // Obfuscation patterns
     const OBFUSCATION: &[&str] = &[
-        "base64 -d", "base64 --decode", "openssl enc -d",
-        "| xxd -r", "eval $(echo", "eval \"$(echo", "eval `echo",
+        "base64 -d",
+        "base64 --decode",
+        "openssl enc -d",
+        "| xxd -r",
+        "eval $(echo",
+        "eval \"$(echo",
+        "eval `echo",
     ];
     for indicator in OBFUSCATION {
         if lower.contains(indicator) {
@@ -2409,9 +2435,17 @@ async fn api_agent_check_command(
 
     // Persistence indicators
     const PERSISTENCE: &[&str] = &[
-        "crontab", "/etc/cron", ".bashrc", ".bash_profile", ".profile",
-        "/etc/profile", "/etc/rc.local", "systemctl enable", "update-rc.d",
-        "chkconfig", ".config/autostart",
+        "crontab",
+        "/etc/cron",
+        ".bashrc",
+        ".bash_profile",
+        ".profile",
+        "/etc/profile",
+        "/etc/rc.local",
+        "systemctl enable",
+        "update-rc.d",
+        "chkconfig",
+        ".config/autostart",
     ];
     for indicator in PERSISTENCE {
         if lower.contains(indicator) {
