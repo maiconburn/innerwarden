@@ -710,11 +710,7 @@ SendSIGKILL=yes
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=innerwarden-agent
-NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/innerwarden
-ReadOnlyPaths=/etc/innerwarden
 ProtectHome=yes
 
 [Install]

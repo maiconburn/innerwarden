@@ -11,6 +11,29 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.1] — 2026-03-18
+
+### New detectors
+
+- **Suricata IDS detector** — repeated alerts from same source IP → incident → block-ip
+- **Docker anomaly detector** — rapid container restarts / OOM kills → incident → block-container
+- **File integrity detector** — any change to monitored files (passwd, shadow, sudoers) → Critical incident
+
+### Telegram follow-up
+
+- **Fail2ban block notifications** — when fail2ban blocks an IP, Telegram now sends a follow-up message confirming the block or reporting failures. Previously only the initial "Live threat" alert was sent.
+
+### Dashboard
+
+- **Incident outcome field** — API now returns `outcome` (blocked/suspended/open) and `action_taken` for each incident by cross-referencing decisions.
+
+### Fixes
+
+- **install.sh: remove NoNewPrivileges from agent service** — the flag prevented sudo from working, breaking all response skills (ufw, iptables, sudoers). Sensor keeps the restriction.
+- **Falco and osquery docs** — honest "Current Limitations" sections explaining they provide context but don't trigger automated actions yet.
+
+---
+
 ## [0.1.0] — 2026-03-18
 
 First public release.

@@ -412,8 +412,6 @@ pub async fn sync_tick(
                                  Firewall rule added. Attacker can no longer connect.",
                             )
                         } else {
-                            let err: String =
-                                decision_entry.execution_result.chars().take(100).collect();
                             format!(
                                 "⚠️ fail2ban detected <code>{ip}</code> (jail: {jail}) — firewall block failed.\nCheck <code>innerwarden doctor</code> for fix hints.",
                             )

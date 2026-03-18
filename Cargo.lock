@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-ctl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden-sensor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "innerwarden_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
