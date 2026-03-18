@@ -64,7 +64,7 @@ impl AiProvider for OpenAiProvider {
                 { "role": "user",   "content": user_message }
             ],
             "temperature": 0.7,
-            "max_tokens": 600,
+            "max_completion_tokens": 600,
         });
 
         let resp = self
@@ -116,7 +116,7 @@ impl AiProvider for OpenAiProvider {
             ],
             "response_format": { "type": "json_object" },
             "temperature": 0.2,
-            "max_tokens": 512,
+            "max_completion_tokens": 512,
         });
 
         let resp = self
