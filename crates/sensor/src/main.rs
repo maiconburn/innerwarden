@@ -19,11 +19,14 @@ use collectors::{
     wazuh_alerts::WazuhAlertsCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
+use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
+use detectors::integrity_alert::IntegrityAlertDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
+use detectors::suricata_alert::SuricataAlertDetector;
 use detectors::user_agent_scanner::UserAgentScannerDetector;
 use detectors::web_scan::WebScanDetector;
 use sinks::{jsonl::JsonlWriter, state::State};
@@ -51,6 +54,9 @@ struct DetectorSet {
     web_scan: Option<WebScanDetector>,
     user_agent_scanner: Option<UserAgentScannerDetector>,
     execution_guard: Option<ExecutionGuardDetector>,
+    suricata_alert: Option<SuricataAlertDetector>,
+    docker_anomaly: Option<DockerAnomalyDetector>,
+    integrity_alert: Option<IntegrityAlertDetector>,
 }
 
 #[derive(Default)]
@@ -180,6 +186,32 @@ async fn main() -> Result<()> {
             ExecutionMode::from_str(&d.mode),
         )
     });
+    let suricata_alert_detector = cfg.detectors.suricata_alert.enabled.then(|| {
+        let d = &cfg.detectors.suricata_alert;
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            "suricata_alert detector enabled"
+        );
+        SuricataAlertDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
+    });
+    let docker_anomaly_detector = cfg.detectors.docker_anomaly.enabled.then(|| {
+        let d = &cfg.detectors.docker_anomaly;
+        info!(
+            threshold = d.threshold,
+            window_seconds = d.window_seconds,
+            "docker_anomaly detector enabled"
+        );
+        DockerAnomalyDetector::new(&cfg.agent.host_id, d.threshold, d.window_seconds)
+    });
+    let integrity_alert_detector = cfg.detectors.integrity_alert.enabled.then(|| {
+        let d = &cfg.detectors.integrity_alert;
+        info!(
+            cooldown_seconds = d.cooldown_seconds,
+            "integrity_alert detector enabled"
+        );
+        IntegrityAlertDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+    });
     let mut detectors = DetectorSet {
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
@@ -189,6 +221,9 @@ async fn main() -> Result<()> {
         web_scan: web_scan_detector,
         user_agent_scanner: user_agent_scanner_detector,
         execution_guard: execution_guard_detector,
+        suricata_alert: suricata_alert_detector,
+        docker_anomaly: docker_anomaly_detector,
+        integrity_alert: integrity_alert_detector,
     };
 
     // Spawn auth_log collector
@@ -692,6 +727,24 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.execution_guard {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.suricata_alert {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.docker_anomaly {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.integrity_alert {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

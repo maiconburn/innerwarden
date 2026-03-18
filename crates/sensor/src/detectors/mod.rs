@@ -1,8 +1,11 @@
 pub mod credential_stuffing;
+pub mod docker_anomaly;
 pub mod execution_guard;
+pub mod integrity_alert;
 pub mod port_scan;
 pub mod search_abuse;
 pub mod ssh_bruteforce;
 pub mod sudo_abuse;
+pub mod suricata_alert;
 pub mod user_agent_scanner;
 pub mod web_scan;

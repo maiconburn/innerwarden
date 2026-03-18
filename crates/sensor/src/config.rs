@@ -234,6 +234,12 @@ pub struct DetectorsConfig {
     pub user_agent_scanner: UserAgentScannerConfig,
     #[serde(default)]
     pub execution_guard: ExecutionGuardConfig,
+    #[serde(default)]
+    pub suricata_alert: SuricataAlertConfig,
+    #[serde(default)]
+    pub docker_anomaly: DockerAnomalyConfig,
+    #[serde(default)]
+    pub integrity_alert: IntegrityAlertConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,6 +383,63 @@ impl Default for ExecutionGuardConfig {
             enabled: false,
             mode: default_execution_guard_mode(),
             window_seconds: default_execution_guard_window_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SuricataAlertConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_suricata_alert_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_suricata_alert_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for SuricataAlertConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_suricata_alert_threshold(),
+            window_seconds: default_suricata_alert_window_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerAnomalyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_docker_anomaly_threshold")]
+    pub threshold: usize,
+    #[serde(default = "default_docker_anomaly_window_seconds")]
+    pub window_seconds: u64,
+}
+
+impl Default for DockerAnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_docker_anomaly_threshold(),
+            window_seconds: default_docker_anomaly_window_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntegrityAlertConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_integrity_alert_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for IntegrityAlertConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cooldown_seconds: default_integrity_alert_cooldown_seconds(),
         }
     }
 }
@@ -578,6 +641,26 @@ impl Default for CloudTrailConfig {
 
 fn default_cloudtrail_dir() -> String {
     "/var/log/cloudtrail".to_string()
+}
+
+fn default_suricata_alert_threshold() -> usize {
+    3
+}
+
+fn default_suricata_alert_window_seconds() -> u64 {
+    300
+}
+
+fn default_docker_anomaly_threshold() -> usize {
+    3
+}
+
+fn default_docker_anomaly_window_seconds() -> u64 {
+    300
+}
+
+fn default_integrity_alert_cooldown_seconds() -> u64 {
+    3600
 }
 
 pub fn load(path: &str) -> Result<Config> {
