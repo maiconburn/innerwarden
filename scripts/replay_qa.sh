@@ -244,20 +244,21 @@ assert_json_metric_positive "$REPORT_JSON" "total_decisions"
 assert_json_metric_positive "$REPORT_JSON" "ai_decision_count"
 
 # Multi-source assertions: each integration must emit at least one event
-assert_events_contain_source "auth_log"
-assert_events_contain_source "falco_log"
-assert_events_contain_source "suricata_eve"
-assert_events_contain_source "osquery_log"
+# Source names match what collectors actually emit in the Event.source field
+assert_events_contain_source "auth.log"
+assert_events_contain_source "falco"
+assert_events_contain_source "suricata"
+assert_events_contain_source "osquery"
 
 if ! grep -q '"ai_provider":"anthropic"' "$DECISIONS_FILE"; then
   echo "assertion failed: decisions must include anthropic provider entries"
   exit 1
 fi
 
-FALCO_COUNT=$(grep -c '"source":"falco_log"' "$EVENTS_FILE" || true)
-SURICATA_COUNT=$(grep -c '"source":"suricata_eve"' "$EVENTS_FILE" || true)
-OSQUERY_COUNT=$(grep -c '"source":"osquery_log"' "$EVENTS_FILE" || true)
-AUTH_COUNT=$(grep -c '"source":"auth_log"' "$EVENTS_FILE" || true)
+FALCO_COUNT=$(grep -c '"source":"falco"' "$EVENTS_FILE" || true)
+SURICATA_COUNT=$(grep -c '"source":"suricata"' "$EVENTS_FILE" || true)
+OSQUERY_COUNT=$(grep -c '"source":"osquery"' "$EVENTS_FILE" || true)
+AUTH_COUNT=$(grep -c '"source":"auth.log"' "$EVENTS_FILE" || true)
 
 echo "[replay] success"
 echo "  data_dir:   $DATA_DIR"
