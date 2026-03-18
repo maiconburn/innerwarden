@@ -9,6 +9,18 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Pipeline test
+
+- **`innerwarden test`** — inject a synthetic SSH brute-force incident (RFC 5737 documentation IP) and verify the full sensor → agent → decision pipeline is working; agent recognises the `pipeline-test` tag and writes an acknowledgement decision without calling the AI provider
+
+### AI agent protection
+
+- **`openclaw-protection` module** — pre-configured module for servers running OpenClaw, n8n, Langchain, or any autonomous AI agent; enables `exec_audit` + `journald` + `integrity` collectors with `execution_guard` detector in observe mode
+- **Agent API for AI agents** — three new dashboard endpoints that autonomous agents can query:
+  - `GET /api/agent/security-context` — current threat level, incident counts, block counts, top threats, and a plain-language recommendation (`safe to proceed` / `proceed with caution` / `avoid risky operations`)
+  - `GET /api/agent/check-ip?ip=X` — check whether an IP appears in today's incidents or has been blocked; returns detector list, last-seen timestamp, and recommendation (`no threat data` / `caution` / `avoid`)
+  - `POST /api/agent/check-command` — static analysis of a shell command for dangerous patterns: reverse shells (score 60), download-and-execute pipelines (40), staged download+chmod+execute sequences (40), obfuscation (30), temp-dir execution (30), persistence indicators (20), destructive commands (50), insecure permissions (20); returns risk score, signals, severity, and recommendation (`allow` / `review` / `deny`)
+
 ---
 
 ## [0.1.24] — 2026-03-18

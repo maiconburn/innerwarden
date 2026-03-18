@@ -17,7 +17,7 @@ This roadmap is high-level only; implementation details live in the code, commit
 
 ---
 
-## Phase 1 — Foundation (shipped, v0.1.0–v0.1.24)
+## Phase 1 — Foundation (shipped, v0.1.0–v0.1.25)
 
 **Detection (8 detectors):**
 - ✅ SSH brute-force, credential stuffing, port scan, sudo abuse, search abuse
@@ -63,10 +63,16 @@ This roadmap is high-level only; implementation details live in the code, commit
 - ✅ enable/disable, setup wizard, doctor diagnostics, self-upgrade (SHA-256)
 - ✅ scan advisor (NATIVE/EXTERNAL badges, conflict detection, activation sequence)
 - ✅ incidents, decisions, entity timeline, block/unblock, export, tail, report, tune, watchdog
+- ✅ `innerwarden test` — pipeline test (synthetic incident → agent decision verification)
 - ✅ Structured allowlists (IP/CIDR + users, CLI add/remove/list)
 
+**AI agent protection:**
+- ✅ `openclaw-protection` module — pre-configured for OpenClaw, n8n, Langchain, or any autonomous AI agent
+- ✅ Agent API: `/api/agent/security-context`, `/api/agent/check-ip`, `/api/agent/check-command`
+- ✅ `check-command` static analysis: reverse shells, download+execute, staged attacks, obfuscation, persistence, destructive ops
+
 **Module system:**
-- ✅ 18 built-in modules with manifest, validate, install/uninstall, publish, update-all
+- ✅ 19 built-in modules with manifest, validate, install/uninstall, publish, update-all
 - ✅ Community module contribution workflow (CI validation, PR template)
 
 **Platform & CI:**
@@ -133,6 +139,8 @@ This roadmap is high-level only; implementation details live in the code, commit
 - 💡 **YARA rule scanner** — file-based malware detection as a collector
 - 💡 **Incident playbooks** — user-defined response chains (detect → enrich → block → notify → honeypot)
 - 💡 **REST API for external automation** — authenticated API for SOAR integration
+- 💡 **Agent API: check-command with AST** — upgrade `/api/agent/check-command` to use tree-sitter-bash for full structural analysis
+- 💡 **Agent API: bidirectional webhook** — Inner Warden notifies OpenClaw/n8n when threat detected, agent pauses risky operations automatically
 - 💡 **Package manager distribution** — Homebrew tap, APT/RPM repos, AUR
 
 ---
