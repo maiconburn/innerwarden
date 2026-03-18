@@ -20,23 +20,23 @@ jobs:
     steps:
       # ── Source ────────────────────────────────────────────────────────────
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # ── Rust + cross-compilation targets ──────────────────────────────────
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
       # ── Zig (required by cargo-zigbuild for cross-linking) ─────────────────
       - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: goto-bus-stop/setup-zig@abea47f85e598557f500fa1fd2ab7464fcb39406 # v2
         with:
           version: 0.13.0
 
       # ── cargo-zigbuild (cached via cargo bin dir) ──────────────────────────
       - name: Cache cargo registry + build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           # also persist the installed cargo-zigbuild binary across runs
           cache-directories: ~/.cargo/bin
@@ -139,7 +139,7 @@ jobs:
 
       # ── Create GitHub Release ─────────────────────────────────────────────
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           files: dist/*
           generate_release_notes: true
@@ -158,17 +158,17 @@ jobs:
     steps:
       # ── Source ────────────────────────────────────────────────────────────
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # ── Rust + macOS targets ───────────────────────────────────────────────
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       # ── Cache ──────────────────────────────────────────────────────────────
       - name: Cache cargo registry + build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       # ── Tests ──────────────────────────────────────────────────────────────
       - name: Run tests
@@ -218,7 +218,7 @@ jobs:
 
       # ── Upload macOS assets to existing release ────────────────────────────
       - name: Upload macOS assets to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           files: dist/*
           fail_on_unmatched_files: true
