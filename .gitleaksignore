@@ -1,5 +1,12 @@
-# Build artifacts contain test keys embedded in compiled crypto libraries
-target/
+# All false positives — no real secrets
 
-# Cargo.lock contains checksums that trigger generic-api-key false positives
-Cargo.lock
+# OSQUERY_KEY is a public GPG key, not a secret
+install.sh:generic-api-key:848
+modules/osquery-integration/docs/README.md:generic-api-key:84
+
+# Cargo.lock contains crate checksums, not API keys
+Cargo.lock:generic-api-key:1643
+
+# README example env var placeholders
+README.md:generic-api-key:574
+README.md:sidekiq-secret:47
