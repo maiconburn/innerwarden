@@ -22,6 +22,13 @@ pub struct OpenAiProvider {
     client: reqwest::Client,
 }
 
+/// Newer OpenAI models (gpt-5.x, o1, o3) use `max_completion_tokens`.
+/// Older models and most OpenAI-compatible providers use `max_tokens`.
+fn uses_new_token_param(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4")
+}
+
 impl OpenAiProvider {
     pub fn new(api_key: String, model: String) -> Self {
         Self::with_base_url(api_key, model, "https://api.openai.com".to_string())
@@ -57,6 +64,11 @@ impl AiProvider for OpenAiProvider {
 
         debug!(model = %self.model, "calling OpenAI API for chat");
 
+        let token_key = if uses_new_token_param(&self.model) {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
         let body = serde_json::json!({
             "model": self.model,
             "messages": [
@@ -64,7 +76,7 @@ impl AiProvider for OpenAiProvider {
                 { "role": "user",   "content": user_message }
             ],
             "temperature": 0.7,
-            "max_completion_tokens": 600,
+            token_key: 600,
         });
 
         let resp = self
@@ -108,6 +120,11 @@ impl AiProvider for OpenAiProvider {
         let prompt = build_prompt(ctx);
         debug!(model = %self.model, "calling OpenAI API");
 
+        let token_key = if uses_new_token_param(&self.model) {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
         let body = json!({
             "model": self.model,
             "messages": [
@@ -116,7 +133,7 @@ impl AiProvider for OpenAiProvider {
             ],
             "response_format": { "type": "json_object" },
             "temperature": 0.2,
-            "max_completion_tokens": 512,
+            token_key: 512,
         });
 
         let resp = self
