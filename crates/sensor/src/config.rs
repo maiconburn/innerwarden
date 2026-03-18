@@ -52,6 +52,8 @@ pub struct CollectorsConfig {
     pub wazuh_alerts: WazuhAlertsConfig,
     #[serde(default)]
     pub syslog_firewall: SyslogFirewallConfig,
+    #[serde(default)]
+    pub cloudtrail: CloudTrailConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -554,6 +556,28 @@ impl Default for SyslogFirewallConfig {
 
 fn default_syslog_firewall_path() -> String {
     "/var/log/syslog".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CloudTrailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory containing pre-extracted CloudTrail JSON files.
+    #[serde(default = "default_cloudtrail_dir")]
+    pub dir: String,
+}
+
+impl Default for CloudTrailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: default_cloudtrail_dir(),
+        }
+    }
+}
+
+fn default_cloudtrail_dir() -> String {
+    "/var/log/cloudtrail".to_string()
 }
 
 pub fn load(path: &str) -> Result<Config> {

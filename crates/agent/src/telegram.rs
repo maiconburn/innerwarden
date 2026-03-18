@@ -1134,7 +1134,7 @@ fn format_incident_message(
     let (mode_prefix, cta) = match mode {
         GuardianMode::Guard => (
             "⚡ Live threat —",
-            "\n<i>Analyzing TTPs… action report incoming.</i>".to_string(),
+            "\n<i>AI defense active.</i>".to_string(),
         ),
         GuardianMode::DryRun => (
             "🧪 Dry-run —",
@@ -1479,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn format_guard_mode_shows_analyzing_prefix() {
+    fn format_guard_mode_shows_defense_active() {
         let inc = make_incident(
             Severity::High,
             vec!["ssh".to_string()],
@@ -1487,8 +1487,8 @@ mod tests {
         );
         let msg = format_incident_message(&inc, None, GuardianMode::Guard);
         assert!(
-            msg.contains("Analyzing"),
-            "GUARD mode shows analyzing prefix"
+            msg.contains("AI defense active"),
+            "GUARD mode shows defense active"
         );
         assert!(!msg.contains("Block"), "GUARD mode has no block CTA");
     }

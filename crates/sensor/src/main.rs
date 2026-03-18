@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use clap::Parser;
 use collectors::{
-    auth_log::AuthLogCollector, docker::DockerCollector, exec_audit::ExecAuditCollector,
-    falco_log::FalcoLogCollector, integrity::IntegrityCollector, journald::JournaldCollector,
-    macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
+    auth_log::AuthLogCollector, cloudtrail::CloudTrailCollector, docker::DockerCollector,
+    exec_audit::ExecAuditCollector, falco_log::FalcoLogCollector, integrity::IntegrityCollector,
+    journald::JournaldCollector, macos_log::MacosLogCollector, nginx_access::NginxAccessCollector,
     nginx_error::NginxErrorCollector, osquery_log::OsqueryLogCollector,
     suricata_eve::SuricataEveCollector, syslog_firewall::SyslogFirewallCollector,
     wazuh_alerts::WazuhAlertsCollector,
@@ -446,6 +446,19 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = collector.run(tx_syslog, shared).await {
                 tracing::error!("syslog_firewall collector error: {e:#}");
+            }
+        });
+    }
+
+    // Spawn cloudtrail collector
+    if cfg.collectors.cloudtrail.enabled {
+        let cc = &cfg.collectors.cloudtrail;
+        let collector = CloudTrailCollector::new(&cc.dir, &cfg.agent.host_id);
+        info!(dir = %cc.dir, "starting cloudtrail collector");
+        let tx_cloudtrail = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = collector.run(tx_cloudtrail).await {
+                tracing::error!("cloudtrail collector error: {e:#}");
             }
         });
     }

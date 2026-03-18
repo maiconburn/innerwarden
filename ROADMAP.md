@@ -50,19 +50,29 @@ This roadmap is high-level only; implementation details live in the code, commit
 
 ---
 
-## v0.2.0 — Operator experience
+## v0.2.0 — Operator experience (shipped)
 
-- 📋 **`innerwarden module search`** — central community registry; `search <term>` lists modules with install URL
-- 📋 **Ollama provider** — local/offline AI (currently a stub)
-- 📋 **Dashboard D11** — browser push notifications (Web Notifications API)
-- 📋 **Structured allowlists** — per-user/per-IP/per-pattern temporary and permanent exceptions
+- ✅ **`innerwarden module search`** — central community registry; `search <term>` lists modules with install URL
+- ✅ **Ollama provider** — local/offline AI (cloud and self-hosted modes)
+- ✅ **Dashboard D11** — browser push notifications (Web Notifications API)
+- ✅ **Structured allowlists** — per-user/per-IP/per-pattern temporary and permanent exceptions
+
+---
+
+## v0.2.1 — Active response expansion (shipped)
+
+- ✅ **`kill-process` skill** — kills all processes owned by a user via `pkill -9 -u <user>`; AI action `KillProcess`; applicable to `suspicious_execution` / `execution_guard`
+- ✅ **`block-container` skill** — pauses a Docker container via `docker pause` with TTL and auto-unpause; AI action `BlockContainer`
+- ✅ **AWS CloudTrail collector** — polls a directory of pre-extracted CloudTrail JSON files; maps login failures, IAM changes, security group changes, root usage, secrets access, and audit tampering to InnerWarden events
+- ✅ **`execution_guard` active response** — `KillProcess` and `BlockContainer` skills are now tagged applicable to `execution_guard` detector incidents
 
 ---
 
 ## v0.3.0 — Windows + Cloud
 
 - 📋 **Windows support** — Sysmon + Windows Event Log collectors, `block-ip-netsh` skill
-- 📋 **Cloud audit log collectors** — AWS CloudTrail, GCP Cloud Audit Logs, Azure Activity Log
+- ✅ **AWS CloudTrail collector** — shipped in v0.2.1 (see above)
+- 📋 **GCP Cloud Audit Logs, Azure Activity Log** — planned
 - 📋 **Kubernetes** — kube-audit collector (Falco integration already covers eBPF)
 
 ---
@@ -72,7 +82,6 @@ This roadmap is high-level only; implementation details live in the code, commit
 - 💡 **cgroups / eBPF native sensor** — bypass auditd for lower overhead process tracing
 - 💡 **Multi-host agent** — single agent reading from multiple sensor data directories
 - 💡 **gRPC streaming** — replace JSONL polling with push-based sensor-to-agent transport
-- 💡 **Container isolation skill** — pause/stop Docker containers in response to anomalies
 
 ---
 

@@ -34,6 +34,8 @@ pub struct SkillContext {
     pub target_ip: Option<String>,
     /// Primary user target, if applicable.
     pub target_user: Option<String>,
+    /// Primary container target, if applicable (Docker container ID or name).
+    pub target_container: Option<String>,
     /// Optional action duration (seconds), used by temporary containment skills.
     pub duration_secs: Option<u64>,
     pub host: String,
@@ -309,6 +311,8 @@ impl SkillRegistry {
                 Box::new(Honeypot),
                 Box::new(SuspendUserSudo),
                 Box::new(RateLimitNginx),
+                Box::new(KillProcess),
+                Box::new(BlockContainer),
             ],
         }
     }
@@ -421,6 +425,8 @@ mod tests {
         assert!(reg.get("honeypot").is_some());
         assert!(reg.get("suspend-user-sudo").is_some());
         assert!(reg.get("rate-limit-nginx").is_some());
+        assert!(reg.get("kill-process").is_some());
+        assert!(reg.get("block-container").is_some());
         assert!(reg.get("nonexistent").is_none());
     }
 
@@ -428,7 +434,7 @@ mod tests {
     fn registry_infos_are_serializable() {
         let reg = SkillRegistry::default_builtin();
         let infos = reg.infos();
-        assert_eq!(infos.len(), 8);
+        assert_eq!(infos.len(), 10);
         let json = serde_json::to_string(&infos).unwrap();
         assert!(json.contains("block-ip-ufw"));
     }
@@ -468,6 +474,7 @@ mod tests {
             },
             target_ip: Some("1.2.3.4".into()),
             target_user: None,
+            target_container: None,
             duration_secs: None,
             host: "h".into(),
             data_dir: std::env::temp_dir(),

@@ -39,6 +39,17 @@ pub enum AiAction {
     /// Implemented by the `suspend-user-sudo` skill using a sudoers drop-in.
     SuspendUserSudo { user: String, duration_secs: u64 },
 
+    /// Kill all processes owned by a user (pkill -9 -u <user>).
+    /// Used for suspicious execution incidents.
+    KillProcess { user: String, duration_secs: u64 },
+
+    /// Pause or stop a Docker container in response to an anomaly.
+    /// `action` is "pause" (default, reversible) or "stop".
+    BlockContainer {
+        container_id: String,
+        action: String,
+    },
+
     /// Send a confirmation request to the operator webhook before acting.
     RequestConfirmation { summary: String },
 
@@ -76,6 +87,8 @@ impl AiAction {
             AiAction::Monitor { .. } => "monitor",
             AiAction::Honeypot { .. } => "honeypot",
             AiAction::SuspendUserSudo { .. } => "suspend_user_sudo",
+            AiAction::KillProcess { .. } => "kill_process",
+            AiAction::BlockContainer { .. } => "block_container",
             AiAction::RequestConfirmation { .. } => "request_confirmation",
             AiAction::Ignore { .. } => "ignore",
         }

@@ -343,6 +343,7 @@ mod tests {
             },
             target_ip: None,
             target_user: Some("deploy".to_string()),
+            target_container: None,
             duration_secs: Some(600),
             host: "host".to_string(),
             data_dir: std::env::temp_dir(),

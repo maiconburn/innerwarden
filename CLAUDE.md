@@ -32,7 +32,7 @@ collectors/
   journald.rs          nginx_error.rs       suricata_eve.rs
   exec_audit.rs        syslog_firewall.rs   wazuh_alerts.rs
   docker.rs            macos_log.rs         osquery_log.rs
-  integrity.rs
+  integrity.rs         cloudtrail.rs
 detectors/
   ssh_bruteforce.rs    search_abuse.rs      execution_guard.rs
   credential_stuffing.rs  web_scan.rs       user_agent_scanner.rs
@@ -49,7 +49,7 @@ ai/
   openai.rs   anthropic.rs   ollama.rs
 skills/builtin/
   block_ip_ufw.rs   block_ip_iptables.rs   block_ip_nftables.rs   block_ip_pf.rs
-  suspend_user_sudo.rs   monitor_ip.rs
+  suspend_user_sudo.rs   monitor_ip.rs   kill_process.rs   block_container.rs
   honeypot/ (mod.rs, ssh_interact.rs, http_interact.rs)
 dashboard.rs   report.rs        data_retention.rs
 correlation.rs telemetry.rs     narrative.rs

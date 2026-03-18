@@ -132,6 +132,18 @@ pub fn build_entry(
             Some(user.clone()),
             Some("suspend-user-sudo".to_string()),
         ),
+        AiAction::KillProcess { user, .. } => (
+            "kill_process".to_string(),
+            None,
+            Some(user.clone()),
+            Some("kill-process".to_string()),
+        ),
+        AiAction::BlockContainer { container_id, .. } => (
+            "block_container".to_string(),
+            Some(container_id.clone()),
+            None,
+            Some("block-container".to_string()),
+        ),
         AiAction::RequestConfirmation { .. } => {
             ("request_confirmation".to_string(), None, None, None)
         }

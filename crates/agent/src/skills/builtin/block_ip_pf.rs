@@ -115,6 +115,7 @@ mod tests {
             },
             target_ip: ip.map(str::to_string),
             target_user: None,
+            target_container: None,
             duration_secs: None,
             host: "h".into(),
             data_dir: std::env::temp_dir(),

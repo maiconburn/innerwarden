@@ -97,6 +97,9 @@ struct AgentState {
     /// Recent action decisions keyed by `action:detector:entity_kind:entity_value`.
     /// Used to suppress repeated AI decisions for the same scope within a short window.
     decision_cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// Recent notification alerts keyed by `detector:entity_kind:entity_value`.
+    /// Suppresses duplicate Telegram/Slack/webhook alerts for the same entity.
+    notification_cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
     correlator: correlation::TemporalCorrelator,
     telemetry: telemetry::TelemetryState,
     telemetry_writer: Option<telemetry::TelemetryWriter>,
@@ -158,6 +161,10 @@ struct PendingHoneypotChoice {
 }
 
 const DECISION_COOLDOWN_SECS: i64 = 3600;
+/// Notification cooldown: suppress duplicate Telegram/Slack/webhook alerts for the
+/// same detector+entity within this window. Prevents alert spam when the same attacker
+/// triggers multiple incidents in rapid succession.
+const NOTIFICATION_COOLDOWN_SECS: i64 = 600;
 
 fn incident_detector(incident_id: &str) -> &str {
     incident_id.split(':').next().unwrap_or("unknown")
@@ -531,6 +538,31 @@ fn strip_ansi(s: &str) -> String {
     result
 }
 
+/// Returns notification cooldown keys for an incident.
+/// One key per entity (IP or user): `detector:entity_kind:entity_value`.
+fn notification_cooldown_keys(incident: &innerwarden_core::incident::Incident) -> Vec<String> {
+    let detector = incident_detector(&incident.incident_id);
+    incident
+        .entities
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.r#type,
+                innerwarden_core::entities::EntityType::Ip
+                    | innerwarden_core::entities::EntityType::User
+            )
+        })
+        .map(|e| {
+            let kind = match e.r#type {
+                innerwarden_core::entities::EntityType::Ip => "ip",
+                innerwarden_core::entities::EntityType::User => "user",
+                _ => "other",
+            };
+            format!("{detector}:{kind}:{}", e.value)
+        })
+        .collect()
+}
+
 fn decision_cooldown_key(action: &str, detector: &str, entity_kind: &str, entity: &str) -> String {
     format!("{action}:{detector}:{entity_kind}:{entity}")
 }
@@ -594,6 +626,18 @@ fn decision_cooldown_key_for_decision(
             detector,
             "user",
             user,
+        )),
+        ai::AiAction::KillProcess { user, .. } => Some(decision_cooldown_key(
+            "kill_process",
+            detector,
+            "user",
+            user,
+        )),
+        ai::AiAction::BlockContainer { container_id, .. } => Some(decision_cooldown_key(
+            "block_container",
+            detector,
+            "container",
+            container_id,
         )),
         ai::AiAction::Ignore { .. } | ai::AiAction::RequestConfirmation { .. } => None,
     }
@@ -982,6 +1026,7 @@ async fn main() -> Result<()> {
         skill_registry: skills::SkillRegistry::default_builtin(),
         blocklist: startup_blocklist,
         decision_cooldowns: startup_cooldowns,
+        notification_cooldowns: HashMap::new(),
         correlator: correlation::TemporalCorrelator::new(cfg.correlation.window_seconds, 4096),
         telemetry: telemetry::TelemetryState::default(),
         telemetry_writer: if cfg.telemetry.enabled {
@@ -1407,6 +1452,28 @@ async fn process_incidents(
         }
     }
 
+    if cfg.responder.enabled
+        && cfg
+            .responder
+            .allowed_skills
+            .iter()
+            .any(|id| id == "block-container")
+    {
+        match skills::builtin::cleanup_expired_container_blocks(data_dir, cfg.responder.dry_run)
+            .await
+        {
+            Ok(removed) => {
+                if removed > 0 {
+                    info!(removed, "expired container pauses lifted");
+                }
+            }
+            Err(e) => {
+                state.telemetry.observe_error("block_container_cleanup");
+                warn!("failed to cleanup expired container blocks: {e:#}");
+            }
+        }
+    }
+
     let today = chrono::Local::now()
         .date_naive()
         .format("%Y-%m-%d")
@@ -1562,51 +1629,78 @@ async fn process_incidents(
             state.correlator.observe(incident);
         }
 
-        // 1. Webhook — fires for ALL incidents above configured threshold, regardless of AI gate
-        if let Some(min_rank) = webhook_min_rank {
-            if webhook::severity_rank(&incident.severity) >= min_rank {
-                if let Err(e) =
-                    webhook::send_incident(&cfg.webhook.url, cfg.webhook.timeout_secs, incident)
-                        .await
-                {
-                    state.telemetry.observe_error("webhook");
-                    warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
-                }
-            }
+        // 1. Notification cooldown — suppress duplicate alerts for the same entity
+        //    within a 10-minute window. Prevents alert spam during sustained attacks.
+        let notify_cutoff =
+            chrono::Utc::now() - chrono::Duration::seconds(NOTIFICATION_COOLDOWN_SECS);
+        let notify_keys = notification_cooldown_keys(incident);
+        let notify_suppressed = notify_keys.iter().any(|k| {
+            state
+                .notification_cooldowns
+                .get(k)
+                .is_some_and(|ts| *ts > notify_cutoff)
+        });
+
+        if notify_suppressed {
+            info!(
+                incident_id = %incident.incident_id,
+                "notification cooldown: suppressing duplicate alert"
+            );
         }
 
-        // 1b. Telegram T.1 — push notification for High/Critical incidents
-        if let Some(min_rank) = telegram_min_rank {
-            if webhook::severity_rank(&incident.severity) >= min_rank {
-                // Clone the Arc to avoid holding a borrow on state during the await
-                let tg = state.telegram_client.clone();
-                if let Some(tg) = tg {
-                    let mode = guardian_mode(cfg);
-                    if let Err(e) = tg.send_incident_alert(incident, mode).await {
-                        warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
+        // 1a. Webhook — fires for ALL incidents above configured threshold, regardless of AI gate
+        if !notify_suppressed {
+            if let Some(min_rank) = webhook_min_rank {
+                if webhook::severity_rank(&incident.severity) >= min_rank {
+                    if let Err(e) =
+                        webhook::send_incident(&cfg.webhook.url, cfg.webhook.timeout_secs, incident)
+                            .await
+                    {
+                        state.telemetry.observe_error("webhook");
+                        warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");
                     }
                 }
             }
-        }
 
-        // 1c. Slack — push notification via Incoming Webhook
-        if let Some(min_rank) = slack_min_rank {
-            if webhook::severity_rank(&incident.severity) >= min_rank {
-                if let Some(ref sc) = state.slack_client {
-                    let dashboard_url = if cfg.slack.dashboard_url.is_empty() {
-                        None
-                    } else {
-                        Some(cfg.slack.dashboard_url.as_str())
-                    };
-                    if let Err(e) = sc.send_incident_alert(incident, dashboard_url).await {
-                        warn!(incident_id = %incident.incident_id, "Slack alert failed: {e:#}");
+            // 1b. Telegram T.1 — push notification for High/Critical incidents
+            if let Some(min_rank) = telegram_min_rank {
+                if webhook::severity_rank(&incident.severity) >= min_rank {
+                    // Clone the Arc to avoid holding a borrow on state during the await
+                    let tg = state.telegram_client.clone();
+                    if let Some(tg) = tg {
+                        let mode = guardian_mode(cfg);
+                        if let Err(e) = tg.send_incident_alert(incident, mode).await {
+                            warn!(incident_id = %incident.incident_id, "Telegram alert failed: {e:#}");
+                        }
                     }
                 }
             }
-        }
 
-        // 1d. Web Push — browser notification for High/Critical incidents
-        web_push::notify_incident(incident, data_dir, &cfg.web_push).await;
+            // 1c. Slack — push notification via Incoming Webhook
+            if let Some(min_rank) = slack_min_rank {
+                if webhook::severity_rank(&incident.severity) >= min_rank {
+                    if let Some(ref sc) = state.slack_client {
+                        let dashboard_url = if cfg.slack.dashboard_url.is_empty() {
+                            None
+                        } else {
+                            Some(cfg.slack.dashboard_url.as_str())
+                        };
+                        if let Err(e) = sc.send_incident_alert(incident, dashboard_url).await {
+                            warn!(incident_id = %incident.incident_id, "Slack alert failed: {e:#}");
+                        }
+                    }
+                }
+            }
+
+            // 1d. Web Push — browser notification for High/Critical incidents
+            web_push::notify_incident(incident, data_dir, &cfg.web_push).await;
+
+            // Mark notification cooldown for all entities in this incident
+            let now = chrono::Utc::now();
+            for k in &notify_keys {
+                state.notification_cooldowns.insert(k.clone(), now);
+            }
+        } // end if !notify_suppressed
 
         // 2. AI analysis — only when AI is enabled and incident passes the gate
         if !ai_enabled {
@@ -2062,6 +2156,12 @@ async fn process_incidents(
                     AiAction::SuspendUserSudo { user, .. } => {
                         ("Suspended sudo for".to_string(), user.clone())
                     }
+                    AiAction::KillProcess { user, .. } => {
+                        ("Killed processes for".to_string(), user.clone())
+                    }
+                    AiAction::BlockContainer { container_id, .. } => {
+                        ("Paused container".to_string(), container_id.clone())
+                    }
                     AiAction::Ignore { .. } => ("Ignored".to_string(), "—".to_string()),
                     AiAction::RequestConfirmation { .. } => {
                         ("Requested confirmation for".to_string(), "—".to_string())
@@ -2153,6 +2253,7 @@ async fn execute_decision(
                         incident: incident.clone(),
                         target_ip: Some(ip.clone()),
                         target_user: None,
+                        target_container: None,
                         duration_secs: None,
                         host: incident.host.clone(),
                         data_dir: data_dir.to_path_buf(),
@@ -2188,6 +2289,7 @@ async fn execute_decision(
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
                     target_user: None,
+                    target_container: None,
                     duration_secs: None,
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
@@ -2211,6 +2313,7 @@ async fn execute_decision(
                     incident: incident.clone(),
                     target_ip: Some(ip.clone()),
                     target_user: None,
+                    target_container: None,
                     duration_secs: None,
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
@@ -2304,6 +2407,7 @@ async fn execute_decision(
                     incident: incident.clone(),
                     target_ip: None,
                     target_user: Some(user.clone()),
+                    target_container: None,
                     duration_secs: Some(*duration_secs),
                     host: incident.host.clone(),
                     data_dir: data_dir.to_path_buf(),
@@ -2317,6 +2421,74 @@ async fn execute_decision(
             } else {
                 (
                     "skipped: suspend-user-sudo skill not available".to_string(),
+                    false,
+                )
+            }
+        }
+        AiAction::KillProcess {
+            user,
+            duration_secs,
+        } => {
+            let skill_id = "kill-process";
+            if !cfg.responder.allowed_skills.iter().any(|id| id == skill_id) {
+                return (
+                    format!("skipped: skill '{skill_id}' not in allowed_skills"),
+                    false,
+                );
+            }
+            if let Some(skill) = state.skill_registry.get(skill_id) {
+                let ctx = skills::SkillContext {
+                    incident: incident.clone(),
+                    target_ip: None,
+                    target_user: Some(user.clone()),
+                    target_container: None,
+                    duration_secs: Some(*duration_secs),
+                    host: incident.host.clone(),
+                    data_dir: data_dir.to_path_buf(),
+                    honeypot: honeypot_runtime(cfg),
+                    ai_provider: state.ai_provider.clone(),
+                };
+                (
+                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
+                    false,
+                )
+            } else {
+                (
+                    "skipped: kill-process skill not available".to_string(),
+                    false,
+                )
+            }
+        }
+        AiAction::BlockContainer {
+            container_id,
+            action: _,
+        } => {
+            let skill_id = "block-container";
+            if !cfg.responder.allowed_skills.iter().any(|id| id == skill_id) {
+                return (
+                    format!("skipped: skill '{skill_id}' not in allowed_skills"),
+                    false,
+                );
+            }
+            if let Some(skill) = state.skill_registry.get(skill_id) {
+                let ctx = skills::SkillContext {
+                    incident: incident.clone(),
+                    target_ip: None,
+                    target_user: None,
+                    target_container: Some(container_id.clone()),
+                    duration_secs: None,
+                    host: incident.host.clone(),
+                    data_dir: data_dir.to_path_buf(),
+                    honeypot: honeypot_runtime(cfg),
+                    ai_provider: state.ai_provider.clone(),
+                };
+                (
+                    skill.execute(&ctx, cfg.responder.dry_run).await.message,
+                    false,
+                )
+            } else {
+                (
+                    "skipped: block-container skill not available".to_string(),
                     false,
                 )
             }
@@ -3099,6 +3271,7 @@ async fn process_telegram_approval(
             incident: inc.clone(),
             target_ip: Some(ip.clone()),
             target_user: None,
+            target_container: None,
             duration_secs: None,
             host: inc.host.clone(),
             data_dir: data_dir.to_path_buf(),
@@ -3175,6 +3348,7 @@ async fn process_telegram_approval(
                         incident: choice.incident.clone(),
                         target_ip: Some(ip.clone()),
                         target_user: None,
+                        target_container: None,
                         duration_secs: None,
                         host: host.clone(),
                         data_dir: data_dir.to_path_buf(),
@@ -3254,6 +3428,7 @@ async fn process_telegram_approval(
                         incident: choice.incident.clone(),
                         target_ip: Some(ip.clone()),
                         target_user: None,
+                        target_container: None,
                         duration_secs: None,
                         host: host.clone(),
                         data_dir: data_dir.to_path_buf(),
@@ -3865,6 +4040,7 @@ async fn spawn_post_session_tasks(
                 incident: inc,
                 target_ip: Some(ip.to_string()),
                 target_user: None,
+                target_container: None,
                 duration_secs: None,
                 host: std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
                 data_dir: data_dir.to_path_buf(),
@@ -4099,6 +4275,7 @@ async fn handle_always_on_connection(
                 incident: inc,
                 target_ip: Some(ip.clone()),
                 target_user: None,
+                target_container: None,
                 duration_secs: None,
                 host: host.clone(),
                 data_dir: data_dir.clone(),
@@ -4417,6 +4594,7 @@ async fn always_on_abuseipdb_block(
             incident: inc,
             target_ip: Some(ip.to_string()),
             target_user: None,
+            target_container: None,
             duration_secs: None,
             host,
             data_dir: data_dir.to_path_buf(),
@@ -4601,6 +4779,7 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             decision_cooldowns: HashMap::new(),
+            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -4714,6 +4893,7 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             decision_cooldowns: HashMap::new(),
+            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -4802,6 +4982,7 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             decision_cooldowns: HashMap::new(),
+            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -4902,6 +5083,7 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             decision_cooldowns: HashMap::new(),
+            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -4979,6 +5161,7 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             decision_cooldowns: HashMap::new(),
+            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,
@@ -5068,6 +5251,7 @@ mod tests {
             skill_registry: skills::SkillRegistry::default_builtin(),
             blocklist: skills::Blocklist::default(),
             decision_cooldowns: HashMap::new(),
+            notification_cooldowns: HashMap::new(),
             correlator: correlation::TemporalCorrelator::new(300, 4096),
             telemetry: telemetry::TelemetryState::default(),
             telemetry_writer: None,

@@ -405,6 +405,50 @@ fn parse_decision(content: &str) -> Result<AiDecision> {
                 duration_secs,
             }
         }
+        "kill_process" => {
+            let Some(user) = raw.target_user.clone() else {
+                warn!("AI returned kill_process with no target_user — downgrading to ignore");
+                return Ok(AiDecision {
+                    action: AiAction::Ignore {
+                        reason: "kill_process action had no target user".to_string(),
+                    },
+                    confidence: raw.confidence.clamp(0.0, 1.0),
+                    auto_execute: false,
+                    reason: raw.reason,
+                    alternatives: raw.alternatives,
+                    estimated_threat: raw.estimated_threat,
+                });
+            };
+            let duration_secs = raw.duration_secs.unwrap_or(300).clamp(60, 86_400);
+            AiAction::KillProcess {
+                user,
+                duration_secs,
+            }
+        }
+        "block_container" => {
+            let container_id = match &raw.target_ip {
+                Some(id) if !id.is_empty() => id.clone(),
+                _ => {
+                    warn!(
+                        "AI returned block_container with no container_id — downgrading to ignore"
+                    );
+                    return Ok(AiDecision {
+                        action: AiAction::Ignore {
+                            reason: "block_container action had no container_id".to_string(),
+                        },
+                        confidence: raw.confidence.clamp(0.0, 1.0),
+                        auto_execute: false,
+                        reason: raw.reason,
+                        alternatives: raw.alternatives,
+                        estimated_threat: raw.estimated_threat,
+                    });
+                }
+            };
+            AiAction::BlockContainer {
+                container_id,
+                action: "pause".to_string(),
+            }
+        }
         "request_confirmation" => AiAction::RequestConfirmation {
             summary: raw.reason.clone(),
         },

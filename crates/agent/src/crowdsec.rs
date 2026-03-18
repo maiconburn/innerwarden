@@ -231,6 +231,7 @@ pub async fn sync_tick(
                     incident: synthetic_incident,
                     target_ip: Some(ip.clone()),
                     target_user: None,
+                    target_container: None,
                     duration_secs: None,
                     host: host.to_string(),
                     data_dir: std::path::PathBuf::new(),

@@ -11,6 +11,29 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.24] — 2026-03-18
+
+### Response skills
+
+- **`kill-process` skill** — kills all processes for a user via `pkill -9 -u <user>` with TTL metadata; applicable to `suspicious_execution` incidents from the execution guard detector
+- **`block-container` skill** — pauses Docker containers via `docker pause` with TTL-based auto-unpause; `cleanup_expired_container_blocks` restores paused containers after expiry
+- **`execution_guard` active response** — the execution guard detector (previously observe-only) can now trigger `kill-process` and `suspend-user-sudo` skills via AI triage
+
+### Cloud
+
+- **AWS CloudTrail collector** — polls a directory of CloudTrail JSON files; maps `ConsoleLogin` failures, IAM changes, security group modifications, root account usage, secrets access, and audit tampering (`StopLogging`, `DeleteTrail`) to InnerWarden events with appropriate severity levels
+
+### Notification fix
+
+- **Notification cooldown (10 min)** — duplicate Telegram/Slack/Webhook/Web Push alerts for the same detector+entity are suppressed within a 10-minute window; fixes alert spam during sustained attacks from a single IP
+- **Guard mode CTA** — changed from "Analyzing TTPs… action report incoming" to "AI defense active" — no longer promises follow-up that may not arrive when the decision cooldown suppresses the AI call
+
+### Version
+
+- Bumped to `0.1.24` — 573 tests
+
+---
+
 ## [0.1.23] — 2026-03-18
 
 ### Allowlists

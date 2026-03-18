@@ -441,6 +441,7 @@ mod tests {
             },
             target_ip: Some(ip.to_string()),
             target_user: None,
+            target_container: None,
             duration_secs: Some(300),
             host: "host".into(),
             data_dir: data_dir.to_path_buf(),

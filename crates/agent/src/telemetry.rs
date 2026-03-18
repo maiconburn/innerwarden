@@ -190,6 +190,8 @@ fn action_tag(action: &AiAction) -> &'static str {
         AiAction::Monitor { .. } => "monitor",
         AiAction::Honeypot { .. } => "honeypot",
         AiAction::SuspendUserSudo { .. } => "suspend_user_sudo",
+        AiAction::KillProcess { .. } => "kill_process",
+        AiAction::BlockContainer { .. } => "block_container",
         AiAction::RequestConfirmation { .. } => "request_confirmation",
         AiAction::Ignore { .. } => "ignore",
     }
