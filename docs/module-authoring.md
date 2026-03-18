@@ -647,6 +647,102 @@ When the module is ready to be merged into the main codebase:
 
 ---
 
+## Contributing a module
+
+Community contributions are welcome. The process is a pull request to the main repository.
+
+### What reviewers check
+
+When your PR is reviewed, maintainers will run:
+
+```bash
+innerwarden module validate --strict modules/<your-id>
+```
+
+This checks:
+
+| Category | What is verified |
+|----------|-----------------|
+| **Structure** | `module.toml`, `docs/README.md`, and `tests/` exist |
+| **Manifest** | All required fields present; ID is kebab-case; version is semver; tier is `open` or `premium` |
+| **Rules** | `[[rules]]` detectors and skills reference declared `[provides]` entries; `min_confidence` is in `[0.0, 1.0]` |
+| **Docs** | README has `## Overview`, `## Configuration`, `## Security` sections and is at least 300 chars |
+| **Security** | No `.arg(format!(...))` calls; no `sh -c` invocations; every skill checks `dry_run` before executing; `unsafe` blocks have `// SAFETY:` comments |
+
+Validation failures block merge. Warnings are reviewed and may be accepted.
+
+### Step-by-step submission
+
+**1. Fork and branch**
+
+```bash
+git checkout -b module/<your-module-id>
+```
+
+**2. Create the module directory**
+
+Follow the structure described above:
+
+```
+modules/your-module-id/
+  module.toml
+  docs/README.md
+  tests/integration.rs
+  config/your-module-id.example.toml   # optional
+```
+
+**3. Set `builtin = false`**
+
+Community modules are external. Set `builtin = false` in `module.toml`. The `src/` directory holds your collector/detector/skill code if the module adds new logic.
+
+**4. Validate locally**
+
+```bash
+cargo build --bin innerwarden --release
+./target/release/innerwarden module validate --strict modules/your-module-id
+```
+
+All checks must pass before opening a PR.
+
+**5. Run the test suite**
+
+```bash
+make test
+```
+
+Your module's tests must pass alongside the existing suite.
+
+**6. Open a pull request**
+
+Use the PR template. Fill in the **Module submission** section. The `Validate Modules` GitHub Actions workflow runs automatically on any PR that touches `modules/`.
+
+**7. After merge**
+
+Once merged, maintainers update `registry.toml` so the module becomes available via:
+
+```bash
+innerwarden module install your-module-id
+```
+
+### Branch naming
+
+| PR type | Branch prefix |
+|---------|---------------|
+| New module | `module/<id>` |
+| Fix existing module | `fix/module-<id>-<short-desc>` |
+| Module docs update | `docs/module-<id>` |
+
+### What makes a module accepted
+
+- Solves a real, specific security problem
+- Passes `innerwarden module validate --strict`
+- Has at least one meaningful test
+- `auto_execute = false` by default — operator must opt in to autonomous response
+- `[security].allowed_commands` is minimal and accurate
+- `docs/README.md` explains what the module does, what it requires, and what the security trade-offs are
+
+---
+
 ## Existing modules (built-in)
 
 | Module ID | Detectors | Skills | Tier |
