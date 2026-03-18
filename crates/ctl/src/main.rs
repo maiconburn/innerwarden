@@ -157,6 +157,20 @@ enum Command {
         command: Option<NotifyCommand>,
     },
 
+    /// Configure system components (AI provider, responder mode).
+    ///
+    /// Run without arguments to see an interactive menu.
+    ///
+    /// Examples:
+    ///   innerwarden configure ai
+    ///   innerwarden configure ai openai --key sk-...
+    ///   innerwarden configure ai groq --key gsk-...
+    ///   innerwarden configure responder --enable --dry-run false
+    Configure {
+        #[command(subcommand)]
+        command: Option<ConfigureCommand>,
+    },
+
     /// Configure external integrations (GeoIP, AbuseIPDB, fail2ban, watchdog).
     ///
     /// Run without arguments to see an interactive menu.
@@ -430,6 +444,50 @@ enum Command {
         /// Maximum seconds to wait for the agent to respond (default: 12)
         #[arg(long, default_value = "12")]
         wait: u64,
+    },
+}
+
+/// System configuration sub-commands.
+#[derive(Subcommand)]
+enum ConfigureCommand {
+    /// Configure AI provider and model.
+    ///
+    /// Run without arguments for an interactive wizard that lists providers,
+    /// validates your API key, and fetches available models from the provider.
+    ///
+    /// Examples:
+    ///   innerwarden configure ai
+    ///   innerwarden configure ai openai --key sk-...
+    ///   innerwarden configure ai groq --key gsk-... --model llama-3.3-70b-versatile
+    Ai {
+        /// Provider name: openai, anthropic, groq, deepseek, mistral, xai, gemini, ollama, etc.
+        provider: Option<String>,
+
+        /// API key for the provider
+        #[arg(long)]
+        key: Option<String>,
+
+        /// Model to use (if omitted, the wizard fetches available models)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Custom base URL for OpenAI-compatible APIs
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+
+    /// Configure responder mode (enable/disable, dry-run).
+    ///
+    /// Examples:
+    ///   innerwarden configure responder --enable --dry-run false
+    Responder {
+        /// Enable the responder (allow skill execution)
+        #[arg(long)]
+        enable: bool,
+
+        /// Dry-run mode: true = log only, false = execute for real
+        #[arg(long)]
+        dry_run: Option<String>,
     },
 }
 
@@ -840,6 +898,50 @@ fn main() -> Result<()> {
             ref capability,
             yes,
         } => cmd_disable(&cli, &registry, capability, yes),
+        Command::Configure { ref command } => match command {
+            None => cmd_configure_menu(&cli),
+            Some(ConfigureCommand::Ai {
+                ref provider,
+                ref key,
+                ref model,
+                ref base_url,
+            }) => {
+                if provider.is_none() {
+                    cmd_configure_ai_interactive(&cli)
+                } else {
+                    cmd_configure_ai(
+                        &cli,
+                        provider.as_deref().unwrap(),
+                        key.as_deref(),
+                        model.as_deref(),
+                        base_url.as_deref(),
+                    )
+                }
+            }
+            Some(ConfigureCommand::Responder {
+                enable,
+                ref dry_run,
+            }) => {
+                if !cli.dry_run {
+                    require_sudo(&cli);
+                }
+                if *enable {
+                    config_editor::write_bool(&cli.agent_config, "responder", "enabled", true)?;
+                    println!("  [ok] responder enabled");
+                }
+                if let Some(val) = dry_run {
+                    let dr = val != "false";
+                    config_editor::write_bool(&cli.agent_config, "responder", "dry_run", dr)?;
+                    println!(
+                        "  [ok] dry_run = {dr}{}",
+                        if dr { "" } else { " — LIVE MODE" }
+                    );
+                }
+                systemd::restart_service("innerwarden-agent", false)?;
+                println!("  [ok] innerwarden-agent restarted");
+                Ok(())
+            }
+        },
         Command::Notify { ref command } => match command {
             None => cmd_configure_menu(&cli),
             Some(NotifyCommand::Telegram {
