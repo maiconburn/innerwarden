@@ -11,6 +11,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.22] — 2026-03-18
+
+### Community modules
+
+- **Module contribution workflow** — contributors can submit new modules via PR; GitHub Actions (`validate-modules.yml`) automatically runs `innerwarden module validate --strict` on every changed `modules/<id>/` directory and fails the PR on any validation error
+- **PR template** — updated with a Type section and a Module submission checklist matching validator checks (manifest fields, security patterns, `dry_run` guard, `auto_execute` safety)
+- **`docs/module-authoring.md`** — new "Contributing a module" section: what reviewers check, step-by-step submission guide, branch naming conventions, and acceptance criteria
+
+---
+
 ## [0.1.21] — 2026-03-17
 
 ### Dashboard
