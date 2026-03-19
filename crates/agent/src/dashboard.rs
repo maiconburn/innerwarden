@@ -5264,8 +5264,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <div class="kpi-grid" style="grid-template-columns: repeat(4,1fr)">
         <div class="kpi-card"><div class="kpi-label">Date</div><div class="kpi-value" id="kpi-date" style="font-size:0.7rem">—</div></div>
         <div class="kpi-card"><div class="kpi-label">Activity</div><div class="kpi-value" id="kpi-events">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Threats</div><div class="kpi-value" id="kpi-incidents">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Actions</div><div class="kpi-value" id="kpi-decisions">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Blocked</div><div class="kpi-value" id="kpi-incidents" style="color:var(--ok)">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Contained</div><div class="kpi-value" id="kpi-decisions" style="color:var(--ok)">100%</div></div>
       </div>
 
       <!-- Date + advanced filters (hidden by default) -->
@@ -5312,7 +5312,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
       </div>
 
       <!-- Threat list -->
-      <div class="section-title" id="entityTitle">Threats Today</div>
+      <div class="section-title" id="entityTitle">Defense Activity</div>
       <div id="attackerList"><div class="empty">Loading…</div></div>
 
     </aside>
@@ -5541,27 +5541,34 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const sub = document.getElementById('heroSub');
     if (!hero || !icon || !title || !sub) return;
 
-    const highCount = (incidents || []).filter(i => ['critical','high'].includes((i.severity||'').toLowerCase())).length;
     const totalThreats = (incidents || []).length;
-    const blockedCount = (decisions || []).filter(d => d.action_type === 'block_ip' && d.auto_executed).length;
-    const ago = incidents && incidents.length > 0 ? timeAgo(incidents[0].ts) : null;
+    const resolved = (incidents || []).filter(i => i.outcome && i.outcome !== 'open').length;
+    const openThreats = totalThreats - resolved;
+    const blockedCount = (decisions || []).filter(d => ['block_ip','suspend_user_sudo','kill_process','block_container'].includes(d.action_type)).length;
+    const containmentRate = totalThreats > 0 ? Math.round((resolved / totalThreats) * 100) : 100;
 
-    if (highCount > 0) {
+    if (openThreats > 0 && openThreats >= totalThreats / 2) {
       hero.className = 'status-hero danger';
-      icon.textContent = '🚨';
-      title.textContent = highCount === 1 ? 'Active Threat Detected' : highCount + ' Active Threats';
-      sub.textContent = 'High-severity activity found — check the threat list on the left' + (ago ? ' · last seen ' + ago : '');
+      icon.textContent = '🛡️';
+      title.textContent = 'Defending — ' + openThreats + ' unresolved';
+      sub.textContent = blockedCount + ' attacks blocked · ' + containmentRate + '% contained · investigating remaining threats';
     } else if (totalThreats > 0) {
-      hero.className = 'status-hero warn';
-      icon.textContent = '⚠️';
-      title.textContent = totalThreats + ' Threat' + (totalThreats !== 1 ? 's' : '') + ' Today';
-      sub.textContent = (blockedCount > 0 ? blockedCount + ' blocked automatically' : 'Being monitored') + (ago ? ' · last ' + ago : '');
+      hero.className = 'status-hero safe';
+      icon.textContent = '🛡️';
+      title.textContent = 'Server Protected';
+      sub.textContent = totalThreats + ' threats detected · ' + blockedCount + ' blocked · ' + containmentRate + '% contained';
     } else {
       hero.className = 'status-hero safe';
       icon.textContent = '✅';
-      title.textContent = 'Server Protected';
-      sub.textContent = 'No threats detected today · AI guard active';
+      title.textContent = 'All Clear';
+      sub.textContent = 'No threats detected today · defense active';
     }
+
+    // Update KPIs to focus on protection
+    const kpiInc = document.getElementById('kpi-incidents');
+    const kpiDec = document.getElementById('kpi-decisions');
+    if (kpiInc) kpiInc.textContent = blockedCount || '0';
+    if (kpiDec) kpiDec.textContent = containmentRate + '%';
   }
 
   function buildActivityFeed(incidents, decisions) {
@@ -5593,24 +5600,29 @@ const INDEX_HTML: &str = r##"<!doctype html>
       const label = detectorLabels[detectorSlug] || inc.title || detectorSlug;
       const ago = timeAgo(inc.ts);
 
-      let icon, actionText;
-      if (dec && dec.action_type === 'block_ip' && dec.auto_executed && !dec.dry_run) {
-        icon = '🚫'; actionText = 'Blocked' + (ip ? ' ' + ip : '');
-      } else if (dec && dec.action_type === 'block_ip' && dec.dry_run) {
-        icon = '🧪'; actionText = 'Would block' + (ip ? ' ' + ip : '') + ' (test mode)';
-      } else if (dec && dec.action_type === 'monitor_ip') {
-        icon = '👁'; actionText = 'Monitoring' + (ip ? ' ' + ip : '');
+      const outcome = inc.outcome || 'open';
+      const isResolved = outcome !== 'open';
+      let icon, actionText, rowStyle;
+
+      if (isResolved && outcome === 'blocked') {
+        icon = '🛡️'; actionText = 'Blocked ' + (ip || ''); rowStyle = 'opacity:0.7';
+      } else if (isResolved && outcome === 'suspended') {
+        icon = '🔒'; actionText = 'Sudo suspended' + (ip ? ' for ' + ip : ''); rowStyle = 'opacity:0.7';
+      } else if (isResolved && outcome === 'ignored') {
+        icon = '✓'; actionText = 'Reviewed — no action needed'; rowStyle = 'opacity:0.5';
+      } else if (isResolved) {
+        icon = '✓'; actionText = 'Contained' + (ip ? ' ' + ip : ''); rowStyle = 'opacity:0.7';
       } else if (sev === 'critical' || sev === 'high') {
-        icon = '🚨'; actionText = ip ? 'Attack from ' + ip : 'Threat detected';
+        icon = '⚠️'; actionText = ip ? 'Investigating ' + ip : 'Active threat';  rowStyle = '';
       } else {
-        icon = '⚠️'; actionText = ip ? 'Suspicious activity from ' + ip : 'Suspicious activity';
+        icon = '•'; actionText = ip ? 'Monitoring ' + ip : 'Monitoring'; rowStyle = 'opacity:0.8';
       }
 
-      return '<div class="activity-row" onclick="handleCardClickByValue(\'ip\',\'' + esc(ip) + '\')">' +
+      return '<div class="activity-row" style="' + rowStyle + '" onclick="handleCardClickByValue(\'ip\',\'' + esc(ip) + '\')">' +
         '<div class="activity-icon">' + icon + '</div>' +
         '<div class="activity-body">' +
           '<div class="activity-title">' + esc(actionText) + '</div>' +
-          '<div class="activity-meta">' + esc(label) + '</div>' +
+          '<div class="activity-meta">' + esc(label) + (isResolved ? ' · ' + outcome : '') + '</div>' +
         '</div>' +
         '<div class="activity-time">' + esc(ago) + '</div>' +
         '</div>';
