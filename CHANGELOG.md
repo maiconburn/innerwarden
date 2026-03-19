@@ -11,6 +11,29 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.4] — 2026-03-19
+
+### New commands
+- **`innerwarden backup`** — archive configs to tar.gz for safe upgrades
+- **`innerwarden metrics`** — events per collector, incidents per detector, AI latency, uptime
+
+### Security hardening
+- **Disk exhaustion protection** — events file capped at 200MB/day, auto-pauses writes
+- **Constant-time auth** — dashboard username comparison prevents timing attacks
+- **Prompt sanitization on all providers** — Anthropic provider now sanitizes attacker-controlled strings (was OpenAI/Ollama only)
+
+### Performance
+- **Dashboard 15x faster** — overview loads in 0.2s instead of 3s by counting lines instead of parsing 165MB of events JSON
+
+### New detector
+- **osquery anomaly** — promotes High/Critical osquery events (sudoers, SUID, authorized_keys, crontab) to incidents
+
+### Fixes
+- **install.sh preserves configs** — detects existing installation and skips config overwrite on upgrade
+- **Dashboard protection-first UX** — hero shows "Server Protected" with containment rate, resolved incidents faded
+
+---
+
 ## [0.1.3] — 2026-03-19
 
 ### Security hardening

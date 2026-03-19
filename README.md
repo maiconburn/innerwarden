@@ -18,7 +18,7 @@ Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 ## What it does
 
 1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs
-2. **Detects** — eight stateful detectors identify brute-force, credential stuffing, port scans, sudo abuse, and more
+2. **Detects** — eleven stateful detectors identify brute-force, credential stuffing, port scans, sudo abuse, and more
 3. **Alerts you** — Telegram, Slack, browser push, webhook — real time, on your phone
 4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
 5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
@@ -77,7 +77,11 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 | `search_abuse` | High-rate requests to expensive endpoints | — |
 | `execution_guard` | Suspicious shell commands via AST analysis | T1059 |
 | `web_scan` | HTTP error floods — path traversal, LFI probing | T1190 |
-| `user_agent_scanner` | Known scanner signatures (Nikto, sqlmap, Nuclei, 17+) | T1595.002 |
+| `user_agent_scanner` | Known scanner signatures (Nikto, sqlmap, Nuclei, 20+) with rDNS bot verification | T1595.002 |
+| `suricata_alert` | Repeated IDS alerts from same source IP (Suricata integration) | — |
+| `docker_anomaly` | Rapid container restarts, OOM kills | T1610 |
+| `integrity_alert` | Changes to /etc/passwd, /etc/shadow, sudoers, SSH keys | T1098 |
+| `osquery_anomaly` | New SUID binaries, unauthorized SSH keys, crontab changes | T1053 |
 
 `execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
@@ -367,6 +371,11 @@ innerwarden --dry-run enable block-ip               # preview
 innerwarden scan                                    # detect + recommend
 innerwarden allowlist add --ip 10.0.0.0/8           # skip AI for trusted ranges
 innerwarden allowlist add --user deploy             # skip AI for trusted users
+innerwarden configure ai                            # interactive AI provider setup (12 providers)
+innerwarden configure responder --enable --dry-run false
+innerwarden backup                                  # archive configs to tar.gz
+innerwarden metrics                                 # events, decisions, AI latency, uptime
+innerwarden test                                    # verify full pipeline end-to-end
 ```
 
 ---
@@ -383,7 +392,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test       # 573 tests
+make test       # 609 tests
 make build      # debug build (sensor + agent + ctl)
 make replay-qa  # end-to-end integration test
 ```
@@ -408,7 +417,7 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has eight detectors, seven response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), AI-assisted triage, Telegram approval workflows, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has eleven detectors, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, CrowdSec + AbuseIPDB intelligence sharing, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).

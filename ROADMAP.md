@@ -72,14 +72,14 @@ This roadmap is high-level only; implementation details live in the code, commit
 - ✅ `check-command` static analysis: reverse shells, download+execute, staged attacks, obfuscation, persistence, destructive ops
 
 **Module system:**
-- ✅ 19 built-in modules with manifest, validate, install/uninstall, publish, update-all
+- ✅ 20 built-in modules with manifest, validate, install/uninstall, publish, update-all
 - ✅ Community module contribution workflow (CI validation, PR template)
 
 **Platform & CI:**
 - ✅ Linux (x86_64 + arm64) + macOS (x86_64 + arm64) binaries via GitHub Actions
 - ✅ install.sh with `--with-integrations` flag
 - ✅ replay-qa CI job for end-to-end validation
-- ✅ 573 tests across three crates
+- ✅ 609 tests across four crates
 
 ---
 
