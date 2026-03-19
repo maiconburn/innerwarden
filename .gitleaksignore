@@ -8,9 +8,8 @@ modules/osquery-integration/docs/README.md:generic-api-key:95
 install.sh:generic-api-key:844
 install.sh:generic-api-key:848
 
-# Cargo.lock contains crate checksums
-Cargo.lock:generic-api-key:1643
-Cargo.lock:generic-api-key:1656
+# Cargo.lock contains crate checksums and names, never real secrets
+Cargo.lock:generic-api-key:*
 
 # README example env var placeholders
 README.md:generic-api-key:574
