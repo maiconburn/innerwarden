@@ -39,6 +39,10 @@ impl WebScanDetector {
             return None;
         }
 
+        if event.tags.iter().any(|t| t == "bot:known") {
+            return None;
+        }
+
         let ip = event.details["ip"].as_str()?.to_string();
         if super::is_internal_ip(&ip) {
             return None;

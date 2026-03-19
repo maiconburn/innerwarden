@@ -86,7 +86,13 @@ impl NginxAccessCollector {
                                     "bytes": entry.bytes,
                                     "user_agent": entry.user_agent,
                                 }),
-                                tags: vec!["http".to_string()],
+                                tags: {
+                                    let mut t = vec!["http".to_string()];
+                                    if is_known_good_bot(&entry.user_agent) {
+                                        t.push("bot:known".to_string());
+                                    }
+                                    t
+                                },
                                 entities: vec![EntityRef::ip(&entry.ip)],
                             };
                             if tx.send(event).await.is_err() {
@@ -105,6 +111,46 @@ impl NginxAccessCollector {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Known good bots — excluded from abuse detection
+// ---------------------------------------------------------------------------
+
+const KNOWN_GOOD_BOTS: &[&str] = &[
+    "googlebot",
+    "bingbot",
+    "duckduckbot",
+    "baiduspider",
+    "yandexbot",
+    "slurp", // Yahoo
+    "facebookexternalhit",
+    "twitterbot",
+    "linkedinbot",
+    "amazonbot",
+    "applebot",
+    "pinterestbot",
+    "redditbot",
+    "discordbot",
+    "telegrambot",
+    "whatsapp",
+    "chatgpt-user",
+    "gptbot",
+    "claudebot",
+    "anthropic-ai",
+    "petalbot", // Ahrefs
+    "semrushbot",
+    "ahrefsbot",
+    "mj12bot", // Majestic
+    "dotbot",
+    "rogerbot",
+    "archive.org_bot",
+    "ia_archiver",
+];
+
+fn is_known_good_bot(user_agent: &str) -> bool {
+    let ua = user_agent.to_ascii_lowercase();
+    KNOWN_GOOD_BOTS.iter().any(|bot| ua.contains(bot))
 }
 
 // ---------------------------------------------------------------------------

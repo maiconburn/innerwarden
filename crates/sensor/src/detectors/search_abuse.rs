@@ -45,6 +45,11 @@ impl SearchAbuseDetector {
             return None;
         }
 
+        // Skip known good bots (Googlebot, Bingbot, etc.)
+        if event.tags.iter().any(|t| t == "bot:known") {
+            return None;
+        }
+
         // Only track requests matching the configured path prefix
         let path = event.details["path"].as_str().unwrap_or("");
         let path_without_qs = path.split('?').next().unwrap_or(path);
