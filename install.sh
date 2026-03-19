@@ -370,6 +370,23 @@ run_root install -o root -g root -m 755 "${IW_CTL_BIN}"    "${BIN_DIR}/innerward
 
 HOST_ID="$(hostname -f 2>/dev/null || hostname)"
 
+# ── Preserve existing configs on upgrade ──────────────────────────────────
+# If config files already exist, this is an upgrade — skip overwriting.
+# Only binaries and systemd units are updated.
+EXISTING_INSTALL=false
+if [[ -f "${SENSOR_CONFIG}" && -f "${AGENT_CONFIG}" ]]; then
+  EXISTING_INSTALL=true
+  BAKSUFFIX="$(date +%Y%m%d%H%M%S)"
+  log "existing installation detected — preserving configs"
+  log "backup created: ${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
+  run_root cp "${SENSOR_CONFIG}" "${SENSOR_CONFIG}.bak.${BAKSUFFIX}"
+  run_root cp "${AGENT_CONFIG}" "${AGENT_CONFIG}.bak.${BAKSUFFIX}"
+  run_root cp "${ENV_FILE}" "${ENV_FILE}.bak.${BAKSUFFIX}" 2>/dev/null || true
+fi
+
+if [[ "${EXISTING_INSTALL}" == "true" ]]; then
+  log "configs preserved — skipping config overwrite (upgrade mode)"
+else
 log "writing sensor config: ${SENSOR_CONFIG}"
 if [[ "$OS_TYPE" == "Darwin" ]]; then
   install_from_stdin "${SENSOR_CONFIG}" 640 root "${IW_USER}" <<EOF
@@ -603,6 +620,8 @@ fi
 backup_if_exists "${AGENT_ENV}"
 run_root install -o root -g "${IW_USER}" -m 640 "${tmp_env}" "${AGENT_ENV}"
 rm -f "${tmp_env}"
+
+fi  # end of "if not EXISTING_INSTALL" config block
 
 if [[ "$OS_TYPE" == "Darwin" ]]; then
   log "writing launchd plist: ${SENSOR_PLIST}"

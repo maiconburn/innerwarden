@@ -22,6 +22,7 @@ use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::integrity_alert::IntegrityAlertDetector;
+use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
@@ -57,6 +58,7 @@ struct DetectorSet {
     suricata_alert: Option<SuricataAlertDetector>,
     docker_anomaly: Option<DockerAnomalyDetector>,
     integrity_alert: Option<IntegrityAlertDetector>,
+    osquery_anomaly: Option<OsqueryAnomalyDetector>,
 }
 
 #[derive(Default)]
@@ -212,6 +214,14 @@ async fn main() -> Result<()> {
         );
         IntegrityAlertDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
     });
+    let osquery_anomaly_detector = cfg.detectors.osquery_anomaly.enabled.then(|| {
+        let d = &cfg.detectors.osquery_anomaly;
+        info!(
+            cooldown_seconds = d.cooldown_seconds,
+            "osquery_anomaly detector enabled"
+        );
+        OsqueryAnomalyDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
+    });
     let mut detectors = DetectorSet {
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
@@ -224,6 +234,7 @@ async fn main() -> Result<()> {
         suricata_alert: suricata_alert_detector,
         docker_anomaly: docker_anomaly_detector,
         integrity_alert: integrity_alert_detector,
+        osquery_anomaly: osquery_anomaly_detector,
     };
 
     // Spawn auth_log collector
@@ -745,6 +756,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.integrity_alert {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.osquery_anomaly {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }

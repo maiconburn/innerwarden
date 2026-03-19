@@ -240,6 +240,8 @@ pub struct DetectorsConfig {
     pub docker_anomaly: DockerAnomalyConfig,
     #[serde(default)]
     pub integrity_alert: IntegrityAlertConfig,
+    #[serde(default)]
+    pub osquery_anomaly: OsqueryAnomalyConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -442,6 +444,27 @@ impl Default for IntegrityAlertConfig {
             cooldown_seconds: default_integrity_alert_cooldown_seconds(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OsqueryAnomalyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_osquery_anomaly_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+
+impl Default for OsqueryAnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cooldown_seconds: default_osquery_anomaly_cooldown_seconds(),
+        }
+    }
+}
+
+fn default_osquery_anomaly_cooldown_seconds() -> u64 {
+    3600
 }
 
 fn default_true() -> bool {
