@@ -2,7 +2,7 @@
 name: innerwarden-security
 description: Security partner for Inner Warden — install, protect, diagnose and fix. Validates commands before executing. Zero config.
 user-invocable: true
-metadata: {"openclaw":{"always":true,"emoji":"🛡️","requires":{"bins":["curl"]},"install":[{"id":"innerwarden","kind":"download","label":"Inner Warden security agent","os":["linux"],"bins":["innerwarden"],"url":"https://innerwarden.com/install","instructions":"curl -fsSL https://innerwarden.com/install | sudo bash"}]}}
+metadata: {"openclaw":{"always":true,"emoji":"🛡️","requires":{"bins":["curl"]},"install":[{"id":"innerwarden","kind":"download","label":"Inner Warden security agent","os":["linux","darwin"],"bins":["innerwarden"],"url":"https://innerwarden.com/install","instructions":"curl -fsSL https://innerwarden.com/install | sudo bash"}]}}
 ---
 
 You are partnered with Inner Warden, a security agent that protects this server.
