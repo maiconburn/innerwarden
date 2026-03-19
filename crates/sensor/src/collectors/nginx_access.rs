@@ -89,7 +89,17 @@ impl NginxAccessCollector {
                                 tags: {
                                     let mut t = vec!["http".to_string()];
                                     if is_known_good_bot(&entry.user_agent) {
-                                        t.push("bot:known".to_string());
+                                        // Verify via rDNS for major bots that can be spoofed
+                                        let ua = entry.user_agent.clone();
+                                        let ip = entry.ip.clone();
+                                        let verified = tokio::task::block_in_place(|| {
+                                            verify_bot_rdns(&ua, &ip)
+                                        });
+                                        if verified {
+                                            t.push("bot:known".to_string());
+                                        } else {
+                                            t.push("bot:spoofed".to_string());
+                                        }
                                     }
                                     t
                                 },
@@ -151,6 +161,68 @@ const KNOWN_GOOD_BOTS: &[&str] = &[
 fn is_known_good_bot(user_agent: &str) -> bool {
     let ua = user_agent.to_ascii_lowercase();
     KNOWN_GOOD_BOTS.iter().any(|bot| ua.contains(bot))
+}
+
+/// Known rDNS suffixes for legitimate bot IPs.
+/// If a request claims to be Googlebot but the IP doesn't resolve to
+/// *.googlebot.com, it's a fake.
+const BOT_RDNS_PATTERNS: &[(&str, &[&str])] = &[
+    ("googlebot", &[".googlebot.com", ".google.com"]),
+    ("bingbot", &[".search.msn.com"]),
+    ("yandexbot", &[".yandex.ru", ".yandex.net", ".yandex.com"]),
+    ("baiduspider", &[".baidu.com", ".baidu.jp"]),
+    ("duckduckbot", &[".duckduckgo.com"]),
+    ("applebot", &[".apple.com", ".applebot.apple.com"]),
+];
+
+/// Verify a claimed bot identity via reverse DNS.
+/// Returns true if the bot is verified or if verification is not applicable
+/// (bot not in the rDNS check list — we give benefit of the doubt).
+/// Returns false if the bot claims to be e.g. Googlebot but rDNS doesn't match.
+fn verify_bot_rdns(user_agent: &str, ip: &str) -> bool {
+    let ua = user_agent.to_ascii_lowercase();
+
+    // Find which bot this claims to be
+    let expected_suffixes = BOT_RDNS_PATTERNS
+        .iter()
+        .find(|(bot, _)| ua.contains(bot))
+        .map(|(_, suffixes)| *suffixes);
+
+    let Some(suffixes) = expected_suffixes else {
+        // Bot not in rDNS check list — allow (benefit of the doubt)
+        return true;
+    };
+
+    // Reverse DNS lookup with timeout
+    let Ok(addr) = ip.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+
+    match dns_lookup_with_timeout(addr) {
+        Some(hostname) => {
+            let host = hostname.to_lowercase();
+            suffixes.iter().any(|s| host.ends_with(s))
+        }
+        None => false, // DNS failed or timeout — don't trust the claim
+    }
+}
+
+/// Blocking rDNS lookup with a 2-second timeout.
+fn dns_lookup_with_timeout(addr: std::net::IpAddr) -> Option<String> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    let addr_clone = addr;
+    std::thread::spawn(move || {
+        let result = dns_lookup::lookup_addr(&addr_clone);
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(hostname)) => Some(hostname),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

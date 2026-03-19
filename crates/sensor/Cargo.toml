@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Structural command analysis (AST) for execution-guard detector
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
+dns-lookup = "2"
 
 [dev-dependencies]
 tempfile = "3"
