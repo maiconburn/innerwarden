@@ -10,6 +10,7 @@ install.sh:generic-api-key:848
 
 # Cargo.lock contains crate checksums
 Cargo.lock:generic-api-key:1643
+Cargo.lock:generic-api-key:1656
 
 # README example env var placeholders
 README.md:generic-api-key:574
