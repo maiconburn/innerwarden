@@ -2701,8 +2701,8 @@ async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<
 // ---------------------------------------------------------------------------
 
 fn compute_overview(data_dir: &Path, date: &str) -> OverviewResponse {
-    let events =
-        read_jsonl::<innerwarden_core::event::Event>(&dated_path(data_dir, "events", date));
+    // Count events by line count (fast) instead of parsing 100MB+ of JSON
+    let events_count = count_file_lines(&dated_path(data_dir, "events", date));
     let incidents = read_jsonl::<innerwarden_core::incident::Incident>(&dated_path(
         data_dir,
         "incidents",
@@ -2729,13 +2729,26 @@ fn compute_overview(data_dir: &Path, date: &str) -> OverviewResponse {
 
     OverviewResponse {
         date: date.to_string(),
-        events_count: events.len(),
+        events_count,
         incidents_count: incidents.len(),
         decisions_count: decisions.len(),
         top_detectors,
         latest_telemetry: crate::telemetry::read_latest_snapshot(data_dir, date),
     }
 }
+
+/// Count non-empty lines in a file without parsing JSON (fast for large files).
+fn count_file_lines(path: &Path) -> usize {
+    let Ok(file) = std::fs::File::open(path) else {
+        return 0;
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .filter(|l| l.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false))
+        .count()
+}
+
+use std::io::BufRead;
 
 // ---------------------------------------------------------------------------
 // Business logic — D2 entities / journey
@@ -7593,7 +7606,8 @@ mod tests {
         .unwrap();
 
         let ov = compute_overview(dir.path(), date);
-        assert_eq!(ov.events_count, 1);
+        // events_count uses fast line counting (not JSON parsing), so malformed lines count too
+        assert_eq!(ov.events_count, 2);
         assert_eq!(ov.incidents_count, 1);
         assert_eq!(ov.decisions_count, 1);
         assert_eq!(ov.top_detectors.len(), 1);

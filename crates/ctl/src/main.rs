@@ -445,6 +445,30 @@ enum Command {
         #[arg(long, default_value = "12")]
         wait: u64,
     },
+
+    /// Back up InnerWarden configuration files to a tar.gz archive.
+    ///
+    /// Creates a compressed archive containing config.toml, agent.toml,
+    /// and agent.env from /etc/innerwarden/. Requires sudo (configs are
+    /// owned by root:innerwarden).
+    ///
+    /// Examples:
+    ///   innerwarden backup
+    ///   innerwarden backup --output /tmp/my-backup.tar.gz
+    Backup {
+        /// Output path for the archive (default: /tmp/innerwarden-backup-YYYYMMDD.tar.gz)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Show detailed metrics from today's telemetry snapshot.
+    ///
+    /// Reads the latest telemetry file and displays events processed,
+    /// incidents detected, decisions made, AI latency, and agent uptime.
+    ///
+    /// Examples:
+    ///   innerwarden metrics
+    Metrics,
 }
 
 /// System configuration sub-commands.
@@ -1073,6 +1097,8 @@ fn main() -> Result<()> {
             AllowlistCommand::List => cmd_allowlist_list(&cli),
         },
         Command::PipelineTest { wait } => cmd_pipeline_test(&cli, wait, &cli.data_dir.clone()),
+        Command::Backup { ref output } => cmd_backup(&cli, output.as_deref()),
+        Command::Metrics => cmd_metrics(&cli, &cli.data_dir.clone()),
     }
 }
 
@@ -6217,6 +6243,206 @@ fn cmd_sensor_status(cli: &Cli, data_dir: &Path) -> Result<()> {
             for (comp, count) in map {
                 println!("  ✗ {comp}: {}", count.as_u64().unwrap_or(0));
             }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden backup
+// ---------------------------------------------------------------------------
+
+fn cmd_backup(cli: &Cli, output: Option<&Path>) -> Result<()> {
+    if !cli.dry_run {
+        require_sudo(cli);
+    }
+
+    let today = epoch_secs_to_date(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+
+    let default_path = PathBuf::from(format!("/tmp/innerwarden-backup-{}.tar.gz", today));
+    let output_path = output.unwrap_or(&default_path);
+
+    let files = [
+        "etc/innerwarden/config.toml",
+        "etc/innerwarden/agent.toml",
+        "etc/innerwarden/agent.env",
+    ];
+
+    println!("InnerWarden — backup\n");
+    println!("Backing up configuration files:");
+    for f in &files {
+        let abs = Path::new("/").join(f);
+        let exists = abs.exists();
+        println!("  {} /{}", if exists { "●" } else { "○ (missing)" }, f);
+    }
+    println!();
+    println!("Output: {}", output_path.display());
+
+    if cli.dry_run {
+        println!("\n  [dry-run] would create archive — skipping.");
+        return Ok(());
+    }
+
+    let status = std::process::Command::new("tar")
+        .arg("czf")
+        .arg(output_path)
+        .arg("-C")
+        .arg("/")
+        .args(files)
+        .status()
+        .context("failed to run tar")?;
+
+    if status.success() {
+        println!("\n  [ok] backup saved to {}", output_path.display());
+    } else {
+        anyhow::bail!(
+            "tar exited with status {} — some files may be missing from /etc/innerwarden/",
+            status
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// innerwarden metrics
+// ---------------------------------------------------------------------------
+
+fn cmd_metrics(cli: &Cli, data_dir: &Path) -> Result<()> {
+    let effective_dir = resolve_data_dir(cli, data_dir);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today = epoch_secs_to_date(now_secs);
+
+    let telemetry_path = effective_dir.join(format!("telemetry-{today}.jsonl"));
+    let content = std::fs::read_to_string(&telemetry_path)
+        .with_context(|| format!("cannot read {}", telemetry_path.display()))?;
+
+    let first_line: Option<serde_json::Value> = content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .and_then(|line| serde_json::from_str(line).ok());
+
+    let snapshot: Option<serde_json::Value> = content
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .and_then(|line| serde_json::from_str(line).ok());
+
+    let Some(snap) = snapshot else {
+        println!("InnerWarden — metrics  ({})\n", today);
+        println!("  No telemetry data for today.");
+        println!("  Is the agent running?  innerwarden status");
+        return Ok(());
+    };
+
+    println!("InnerWarden — metrics  ({})\n", today);
+
+    // --- Events processed today ---
+    println!("Events processed today:");
+    let by_collector = snap["events_by_collector"].as_object();
+    let mut total_events: u64 = 0;
+    match by_collector {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| {
+                    let c = v.as_u64().unwrap_or(0);
+                    total_events += c;
+                    (k, c)
+                })
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (source, count) in &pairs {
+                println!("  {:<30} {:>6}", source, count);
+            }
+            println!("  {:<30} {:>6}", "TOTAL", total_events);
+        }
+        _ => println!("  (no events recorded yet today)"),
+    }
+
+    // --- Incidents detected today ---
+    println!();
+    println!("Incidents detected today:");
+    let by_detector = snap["incidents_by_detector"].as_object();
+    let mut total_incidents: u64 = 0;
+    match by_detector {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| {
+                    let c = v.as_u64().unwrap_or(0);
+                    total_incidents += c;
+                    (k, c)
+                })
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (detector, count) in &pairs {
+                println!("  {:<30} {:>6}", detector, count);
+            }
+            println!("  {:<30} {:>6}", "TOTAL", total_incidents);
+        }
+        _ => println!("  (no incidents today)"),
+    }
+
+    // --- Decisions made today ---
+    println!();
+    println!("Decisions made today:");
+    let by_action = snap["decisions_by_action"].as_object();
+    let mut total_decisions: u64 = 0;
+    match by_action {
+        Some(map) if !map.is_empty() => {
+            let mut pairs: Vec<(&String, u64)> = map
+                .iter()
+                .map(|(k, v)| {
+                    let c = v.as_u64().unwrap_or(0);
+                    total_decisions += c;
+                    (k, c)
+                })
+                .collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            for (action, count) in &pairs {
+                println!("  {:<30} {:>6}", action, count);
+            }
+            println!("  {:<30} {:>6}", "TOTAL", total_decisions);
+        }
+        _ => println!("  (no decisions today)"),
+    }
+
+    // --- AI decision latency ---
+    let avg_ms = snap["avg_decision_latency_ms"].as_f64().unwrap_or(0.0);
+    let ai_sent = snap["ai_sent_count"].as_u64().unwrap_or(0);
+    let ai_decided = snap["ai_decision_count"].as_u64().unwrap_or(0);
+    let gate_pass = snap["gate_pass_count"].as_u64().unwrap_or(0);
+    let real_exec = snap["real_execution_count"].as_u64().unwrap_or(0);
+    let dry_exec = snap["dry_run_execution_count"].as_u64().unwrap_or(0);
+
+    println!();
+    println!("AI pipeline:");
+    println!("  Passed algorithm gate:    {:>6}", gate_pass);
+    println!("  Sent to AI:               {:>6}", ai_sent);
+    println!("  AI decisions:             {:>6}", ai_decided);
+    println!("  Avg decision latency:     {:>5.0} ms", avg_ms);
+    println!("  Actions executed (live):  {:>6}", real_exec);
+    println!("  Actions simulated (dry):  {:>6}", dry_exec);
+
+    // --- Agent uptime estimate ---
+    // The first telemetry line's timestamp vs now gives approximate uptime.
+    if let Some(ref first) = first_line {
+        if let Some(first_ts) = first["ts"].as_u64().or_else(|| first["timestamp"].as_u64()) {
+            let uptime_secs = now_secs.saturating_sub(first_ts);
+            let hours = uptime_secs / 3600;
+            let minutes = (uptime_secs % 3600) / 60;
+            println!();
+            println!("Agent uptime (approx):      {}h {}m", hours, minutes);
         }
     }
 
