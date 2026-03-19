@@ -209,14 +209,24 @@ fn trunc(s: &str, max: usize) -> &str {
     }
 }
 
+/// Sanitize attacker-controlled strings before injecting into AI prompts.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn build_prompt(ctx: &DecisionContext<'_>) -> String {
     let inc = ctx.incident;
     let incident_json = json!({
         "ts": inc.ts,
         "incident_id": inc.incident_id,
         "severity": format!("{:?}", inc.severity),
-        "title": trunc(&inc.title, 200),
-        "summary": trunc(&inc.summary, 500),
+        "title": sanitize(trunc(&inc.title, 200)),
+        "summary": sanitize(trunc(&inc.summary, 500)),
         "entities": inc.entities,
         "tags": inc.tags,
     });
@@ -231,7 +241,7 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
                 json!({
                     "ts": e.ts,
                     "kind": e.kind,
-                    "summary": trunc(&e.summary, 200),
+                    "summary": sanitize(trunc(&e.summary, 200)),
                     "severity": format!("{:?}", e.severity),
                     "source": e.source,
                 })
@@ -249,8 +259,8 @@ fn build_prompt(ctx: &DecisionContext<'_>) -> String {
                     "ts": r.ts,
                     "incident_id": r.incident_id,
                     "severity": format!("{:?}", r.severity),
-                    "title": trunc(&r.title, 200),
-                    "summary": trunc(&r.summary, 300),
+                    "title": sanitize(trunc(&r.title, 200)),
+                    "summary": sanitize(trunc(&r.summary, 300)),
                     "entities": r.entities,
                 })
             })
