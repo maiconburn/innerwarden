@@ -1,78 +1,63 @@
 ---
 name: innerwarden-security
-description: Security partner for Inner Warden — install, protect, diagnose and fix. Validates commands before executing. Zero config.
+description: Security partner for Inner Warden — validates commands before execution, monitors server health, diagnoses and fixes issues. Requires Inner Warden installed.
 user-invocable: true
-metadata: {"openclaw":{"always":true,"emoji":"🛡️","requires":{"bins":["curl"]},"install":[{"id":"innerwarden","kind":"download","label":"Inner Warden security agent","os":["linux","darwin"],"bins":["innerwarden"],"url":"https://innerwarden.com/install","instructions":"curl -fsSL https://innerwarden.com/install | sudo bash"}]}}
+metadata: {"openclaw":{"always":false,"emoji":"🛡️","requires":{"bins":["curl"]},"os":["linux","darwin"]}}
 ---
 
-You are partnered with Inner Warden, a security agent that protects this server.
-Inner Warden watches for attacks and blocks threats. You keep Inner Warden healthy
-and help the operator manage security.
+You are partnered with Inner Warden, an open-source security agent that protects
+servers from attacks. It detects SSH brute-force, blocks IPs, deploys honeypots,
+and reports threats to AbuseIPDB — automatically. Built in Rust, 600 tests.
 
-## PART 0: Installation
+Website: https://innerwarden.com
+GitHub: https://github.com/InnerWarden/innerwarden
 
-First check if Inner Warden is installed:
+## PART 0: Check if Inner Warden is installed
+
+ALWAYS run this first:
 ```bash
-which innerwarden 2>/dev/null && innerwarden status 2>/dev/null || echo "NOT_INSTALLED"
+which innerwarden 2>/dev/null && sudo innerwarden status 2>/dev/null || echo "NOT_INSTALLED"
 ```
 
-If NOT_INSTALLED, offer to install it:
-"Inner Warden is not installed yet. It's a security agent that protects your server from attacks. Want me to install it? It takes about 10 seconds."
+If NOT_INSTALLED, tell the user:
 
-If the user agrees:
-```bash
-curl -fsSL https://innerwarden.com/install | sudo bash
+"Inner Warden is not installed on this server. It's a free, open-source security
+agent that protects your server from SSH brute-force, web scanners, and other
+attacks. It installs in 10 seconds and starts in safe observe-only mode.
+
+To install (SHA-256 verified binaries from GitHub):
+```
+curl -fsSL https://github.com/InnerWarden/innerwarden/releases/latest/download/install.sh | sudo bash
 ```
 
-After install, configure AI using the SAME provider the user already has configured in OpenClaw.
-Check what provider OpenClaw uses:
+After install, run `innerwarden scan` to see what protections are recommended
+for your server, then `innerwarden configure ai` to set up AI-powered decisions.
+
+Want me to guide you through the setup?"
+
+Do NOT install automatically. Wait for the user to confirm.
+After the user installs, continue with the rest of this skill.
+
+## Credentials
+
+This skill reads dashboard credentials from the environment variable
+INNERWARDEN_DASHBOARD_USER and from /etc/innerwarden/agent.env (which
+contains the password hash). These are local credentials for the Inner
+Warden dashboard API running on localhost:8787.
+
+If INNERWARDEN_DASHBOARD_USER is not set, the dashboard API runs without
+auth and no credentials are needed.
+
 ```bash
-cat ~/.openclaw/openclaw.json 2>/dev/null | python3 -c "import sys,json; c=json.load(sys.stdin); ai=c.get('ai',{}); print(ai.get('provider',''), ai.get('model',''))" 2>/dev/null
+IW_USER="${INNERWARDEN_DASHBOARD_USER:-}"
+IW_PASS_HASH=$(sudo grep INNERWARDEN_DASHBOARD_PASSWORD_HASH /etc/innerwarden/agent.env 2>/dev/null | cut -d= -f2-)
 ```
 
-Then configure Inner Warden to use the same provider:
-- If OpenClaw uses OpenAI: `sudo innerwarden configure ai openai --key $OPENAI_API_KEY`
-- If OpenClaw uses Anthropic: `sudo innerwarden configure ai anthropic --key $ANTHROPIC_API_KEY`
-- If OpenClaw uses another provider: `sudo innerwarden configure ai`
-
-After AI is configured, enable basic protections:
-```bash
-sudo innerwarden enable block-ip
-sudo innerwarden enable sudo-protection
-sudo innerwarden scan
-```
-
-Finally, run the pipeline test to confirm everything works:
-```bash
-sudo innerwarden test
-```
-
-If the test says PASS, Inner Warden is ready.
-
-## Setup (credentials — automatic)
-
-Inner Warden credentials are read directly from the server. Run this to get them:
-```bash
-IW_PASS=$(sudo grep INNERWARDEN_DASHBOARD_PASSWORD_HASH /etc/innerwarden/agent.env 2>/dev/null | head -1)
-IW_USER=$(sudo grep INNERWARDEN_DASHBOARD_USER /etc/innerwarden/agent.env 2>/dev/null | cut -d= -f2)
-```
-
-If dashboard auth is not configured, the API is open (no auth needed):
+Test API access:
 ```bash
 curl -s http://localhost:8787/api/agent/security-context
 ```
-
-If auth IS configured, use:
-```bash
-curl -s -u "$IW_USER:$IW_PASS" http://localhost:8787/api/agent/security-context
-```
-
-To detect which mode, try without auth first. If you get 401, read credentials from agent.env.
-
-The dashboard port is 8787 by default. If it fails, check:
-```bash
-sudo ss -tlnp | grep innerwarden
-```
+If you get 401, auth is required. If you get JSON, no auth needed.
 
 ## PART 1: Security operations
 
