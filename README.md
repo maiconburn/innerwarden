@@ -99,7 +99,7 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 
 **Agent** — reads incidents, applies algorithm gate (skip low severity, private IPs, already-blocked), optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
-Two Rust daemons. No external dependencies. ~13 MB RAM total. Dashboard adds ~230 MB when enabled.
+Two Rust daemons. No external dependencies. ~35 MB RAM total. Dashboard sleeps after 15 min of inactivity.
 
 ---
 
