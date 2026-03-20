@@ -105,18 +105,33 @@ jobs:
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
+          pip install -q cryptography
+          python3 -c "
+          import sys, base64, hashlib
+          from cryptography.hazmat.primitives.serialization import load_pem_private_key
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          key = load_pem_private_key(open('/tmp/sign-key.pem','rb').read(), password=None)
+          binary_path = sys.argv[1]
+          digest = hashlib.sha256(open(binary_path,'rb').read()).digest()
+          sig = key.sign(digest)
+          print(base64.b64encode(sig).decode(), end='')
+          " --version > /dev/null 2>&1 || true
+
           echo "$RELEASE_SIGNING_KEY" > /tmp/sign-key.pem
           for binary in dist/innerwarden-*; do
             [[ "$binary" == *.sha256 ]] && continue
             [[ "$binary" == *.sig ]] && continue
             [[ "$binary" == */install.sh ]] && continue
             echo "signing $(basename $binary)..."
-            # Ed25519: hash first (openssl pkeyutl -rawin can't handle large files via stdin),
-            # then sign the 32-byte digest.
-            sha256sum "$binary" | awk '{print $1}' | xxd -r -p > /tmp/digest.bin
-            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -in /tmp/digest.bin -out /tmp/sig.raw
-            base64 -w0 /tmp/sig.raw > "${binary}.sig"
-            rm -f /tmp/sig.raw /tmp/digest.bin
+            python3 -c "
+          import sys, base64, hashlib
+          from cryptography.hazmat.primitives.serialization import load_pem_private_key
+          key = load_pem_private_key(open('/tmp/sign-key.pem','rb').read(), password=None)
+          digest = hashlib.sha256(open(sys.argv[1],'rb').read()).digest()
+          sig = key.sign(digest)
+          print(base64.b64encode(sig).decode(), end='')
+          " "$binary" > "${binary}.sig"
           done
           rm -f /tmp/sign-key.pem
           echo "=== Signed assets ==="
@@ -245,16 +260,20 @@ jobs:
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
+          pip install -q cryptography
           echo "$RELEASE_SIGNING_KEY" > /tmp/sign-key.pem
           for binary in dist/innerwarden-*; do
             [[ "$binary" == *.sha256 ]] && continue
             [[ "$binary" == *.sig ]] && continue
             echo "signing $(basename $binary)..."
-            # Ed25519: hash first, then sign the 32-byte digest
-            shasum -a 256 "$binary" | awk '{print $1}' | xxd -r -p > /tmp/digest.bin
-            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -in /tmp/digest.bin -out /tmp/sig.raw
-            base64 /tmp/sig.raw | tr -d '\n' > "${binary}.sig"
-            rm -f /tmp/sig.raw /tmp/digest.bin
+            python3 -c "
+          import sys, base64, hashlib
+          from cryptography.hazmat.primitives.serialization import load_pem_private_key
+          key = load_pem_private_key(open('/tmp/sign-key.pem','rb').read(), password=None)
+          digest = hashlib.sha256(open(sys.argv[1],'rb').read()).digest()
+          sig = key.sign(digest)
+          print(base64.b64encode(sig).decode(), end='')
+          " "$binary" > "${binary}.sig"
           done
           rm -f /tmp/sign-key.pem
 
