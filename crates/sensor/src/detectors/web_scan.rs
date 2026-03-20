@@ -82,11 +82,17 @@ impl WebScanDetector {
             .take(200)
             .collect::<String>();
 
+        let severity = if count >= self.threshold * 3 {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+
         Some(Incident {
             ts: now,
             host: self.host.clone(),
             incident_id: format!("web_scan:{}:{}", ip, now.format("%Y-%m-%dT%H:%MZ")),
-            severity: Severity::High,
+            severity,
             title: format!("Possible web scan / probe from {ip}"),
             summary: format!(
                 "{count} HTTP errors from {ip} in the last {} seconds — likely automated scan or probe",
@@ -164,7 +170,7 @@ mod tests {
             last = det.process(&error_event("1.2.3.4", base + Duration::seconds(i)));
         }
         let inc = last.unwrap();
-        assert_eq!(inc.severity, Severity::High);
+        assert_eq!(inc.severity, Severity::Medium); // at threshold = Medium, 3x threshold = High
         assert!(inc.incident_id.starts_with("web_scan:1.2.3.4:"));
         assert_eq!(inc.evidence[0]["count"], 5);
     }

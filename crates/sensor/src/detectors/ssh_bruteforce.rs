@@ -60,11 +60,20 @@ impl SshBruteforceDetector {
 
         self.alerted.insert(ip.clone(), now);
 
+        // Scale severity by attempt count:
+        // threshold..2x → Medium (generic bot noise)
+        // 2x+        → High (real directed attack)
+        let severity = if count >= self.threshold * 2 {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+
         Some(Incident {
             ts: now,
             host: self.host.clone(),
             incident_id: format!("ssh_bruteforce:{}:{}", ip, now.format("%Y-%m-%dT%H:%MZ")),
-            severity: Severity::High,
+            severity,
             title: format!("Possible SSH brute force from {ip}"),
             summary: format!(
                 "{count} failed SSH login attempts from {ip} in the last {} seconds",
@@ -148,7 +157,7 @@ mod tests {
             incident = det.process(&ev);
         }
         let inc = incident.unwrap();
-        assert_eq!(inc.severity, Severity::High);
+        assert_eq!(inc.severity, Severity::Medium); // at threshold = Medium, 2x threshold = High
         assert!(inc.incident_id.starts_with("ssh_bruteforce:1.2.3.4:"));
         assert_eq!(inc.evidence[0]["count"], 5);
     }
