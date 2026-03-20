@@ -668,7 +668,19 @@ pub async fn serve(
         }
     });
 
-    let app = Router::new()
+    // Agent API routes — no auth required (localhost service-to-service)
+    // These are used by AI agents (OpenClaw, n8n, etc.) to query security state.
+    let agent_api = Router::new()
+        .route(
+            "/api/agent/security-context",
+            get(api_agent_security_context),
+        )
+        .route("/api/agent/check-ip", get(api_agent_check_ip))
+        .route("/api/agent/check-command", post(api_agent_check_command))
+        .with_state(state.clone());
+
+    // Dashboard routes — auth required
+    let dashboard = Router::new()
         .route("/", get(index))
         .route("/api/overview", get(api_overview))
         .route("/api/incidents", get(api_incidents))
@@ -691,13 +703,6 @@ pub async fn serve(
         // Honeypot tab
         .route("/api/honeypot/sessions", get(api_honeypot_sessions))
         .route("/api/action/honeypot", post(api_action_honeypot))
-        // Agent API — for AI agents (OpenClaw, n8n, etc.) to query security state
-        .route(
-            "/api/agent/security-context",
-            get(api_agent_security_context),
-        )
-        .route("/api/agent/check-ip", get(api_agent_check_ip))
-        .route("/api/agent/check-command", post(api_agent_check_command))
         // D6 — SSE live event stream
         .route("/api/events/stream", get(api_events_stream))
         // Web Push
@@ -708,8 +713,9 @@ pub async fn serve(
             post(api_push_subscribe).delete(api_push_unsubscribe),
         )
         .layer(auth_layer)
-        .layer(activity_layer)
         .with_state(state);
+
+    let app = agent_api.merge(dashboard).layer(activity_layer);
 
     // D6: spawn file watcher and heartbeat tasks
     tokio::spawn(watch_for_new_entries(data_dir, event_tx.clone()));
