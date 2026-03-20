@@ -6,7 +6,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/stargazers)
 [![Last Commit](https://img.shields.io/github/last-commit/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/commits/main)
-[![Code Size](https://img.shields.io/github/languages/code-size/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden)
+
+![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
+![Memory](https://img.shields.io/badge/memory-~35MB-green)
+![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 
 **Your server should defend itself.**
 
