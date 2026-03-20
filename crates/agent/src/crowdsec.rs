@@ -114,28 +114,28 @@ impl CrowdSecClient {
         }
 
         // 200 with body = list of decisions (may be null if empty).
-        // Cap response body at 2MB to prevent OOM from massive community lists.
-        const MAX_BODY: usize = 2 * 1024 * 1024;
+        // Cap response body at 8MB — CrowdSec CAPI can return 3-5MB for large community lists.
+        // The real memory protection is the 500-decision hard cap below + max_per_sync in sync_tick.
+        const MAX_BODY: usize = 8 * 1024 * 1024;
         let bytes = resp.bytes().await?;
         if bytes.len() > MAX_BODY {
             warn!(
                 body_bytes = bytes.len(),
                 max = MAX_BODY,
-                "CrowdSec LAPI response too large, truncating parse"
+                "CrowdSec LAPI response too large, skipping this tick"
             );
+            return Ok(vec![]);
         }
-        let text = std::str::from_utf8(&bytes[..bytes.len().min(MAX_BODY)]).unwrap_or("null");
+        let text = std::str::from_utf8(&bytes).unwrap_or("null");
         if text.trim() == "null" || text.trim().is_empty() {
             return Ok(vec![]);
         }
 
-        // Truncated JSON may fail to parse — that's fine, we'll retry next tick
-        let all = serde_json::from_str::<Vec<CrowdSecDecision>>(text).unwrap_or_else(|e| {
-            warn!(error = %e, "CrowdSec: JSON parse failed (possibly truncated), will retry");
-            vec![]
-        });
+        let all = serde_json::from_str::<Vec<CrowdSecDecision>>(text)
+            .context("failed to parse CrowdSec decision list")?;
 
-        // Hard cap: never return more than 500 decisions per fetch
+        // Hard cap: never return more than 500 decisions per fetch.
+        // The vec is dropped immediately after — only 500 entries survive.
         if all.len() > 500 {
             info!(
                 total = all.len(),
