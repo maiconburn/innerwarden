@@ -107,15 +107,35 @@ impl SudoersDropIn {
 
 /// Returns the sudoers rule for a given block-ip backend.
 pub fn block_ip_rule(backend: &str) -> Option<String> {
+    // Minimal sudoers: only the exact subcommands Inner Warden needs.
+    // No wildcard access to `ufw disable`, `iptables -F`, etc.
     let rule = match backend {
-        "ufw" => "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/ufw deny from *\n",
-        "iptables" => "innerwarden ALL=(ALL) NOPASSWD: /sbin/iptables -A INPUT *\n",
-        "nftables" => "innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/nft add element *\n",
+        "ufw" => {
+            "\
+            innerwarden ALL=(ALL) NOPASSWD: /usr/sbin/ufw deny from *, \\\n  \
+            /usr/sbin/ufw delete deny from *, \\\n  \
+            /usr/sbin/ufw status\n"
+        }
+        "iptables" => {
+            "\
+            innerwarden ALL=(ALL) NOPASSWD: \\\n  \
+            /sbin/iptables -A INPUT -s * -j DROP, \\\n  \
+            /sbin/iptables -D INPUT -s * -j DROP, \\\n  \
+            /sbin/iptables -L INPUT -n\n"
+        }
+        "nftables" => {
+            "\
+            innerwarden ALL=(ALL) NOPASSWD: \\\n  \
+            /usr/sbin/nft add element inet innerwarden-blocked blocked-ips *, \\\n  \
+            /usr/sbin/nft delete element inet innerwarden-blocked blocked-ips *, \\\n  \
+            /usr/sbin/nft list set inet innerwarden-blocked blocked-ips\n"
+        }
         _ => return None,
     };
     Some(format!(
         "# Managed by innerwarden-ctl — do not edit manually\n\
          # Generated for capability: block-ip (backend: {backend})\n\
+         # Minimal permissions: deny/delete/status only — no disable, flush, or reset\n\
          {rule}"
     ))
 }

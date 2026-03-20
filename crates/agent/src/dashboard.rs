@@ -118,6 +118,9 @@ struct DashboardState {
     /// Web Push: VAPID public key (base64url) served to subscribing browsers.
     /// Empty string when web push is not configured.
     web_push_vapid_public_key: String,
+    /// True when auth is configured but dashboard is exposed over HTTP on
+    /// a non-localhost address. Actions are disabled in this mode.
+    insecure_http: bool,
 }
 
 #[derive(Clone)]
@@ -628,11 +631,19 @@ pub async fn serve(
     // D6: broadcast channel — capacity 64 is plenty; lagged receivers are dropped.
     let (event_tx, _) = broadcast::channel::<SsePayload>(64);
 
+    let insecure_http = auth.is_some() && {
+        let is_localhost = bind.starts_with("127.0.0.1")
+            || bind.starts_with("[::1]")
+            || bind.starts_with("localhost");
+        !is_localhost
+    };
+
     let state = DashboardState {
         data_dir: data_dir.clone(),
         action_cfg: Arc::new(action_cfg),
         event_tx: event_tx.clone(),
         web_push_vapid_public_key,
+        insecure_http,
     };
     let auth_layer = middleware::from_fn_with_state(auth, require_basic_auth);
 
@@ -1861,6 +1872,17 @@ async fn api_action_block_ip(
     State(state): State<DashboardState>,
     Json(body): Json<BlockIpRequest>,
 ) -> Json<ActionResponse> {
+    if state.insecure_http {
+        return Json(ActionResponse {
+            success: false,
+            dry_run: state.action_cfg.dry_run,
+            message: "actions disabled — dashboard is exposed over HTTP without TLS. \
+                      Use a reverse proxy with TLS or bind to 127.0.0.1."
+                .to_string(),
+            skill_id: String::new(),
+        });
+    }
+
     if !state.action_cfg.enabled {
         return Json(ActionResponse {
             success: false,
