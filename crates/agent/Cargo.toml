@@ -10,6 +10,9 @@ description = "AI-assisted defense agent with response skills for InnerWarden."
 keywords = ["security", "incident-response", "autonomous-defense", "linux", "rust"]
 categories = ["command-line-utilities", "network-programming"]
 
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tikv-jemallocator = "0.6"
+
 [dependencies]
 innerwarden_core = { path = "../core" }
 anyhow = "1"

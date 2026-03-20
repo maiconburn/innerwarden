@@ -1,3 +1,10 @@
+// Use jemalloc on Linux — the default glibc allocator fragments memory and
+// never returns it to the OS, causing apparent "leaks" under sustained load.
+// jemalloc aggressively returns unused pages via madvise(MADV_DONTNEED).
+#[cfg(not(target_os = "macos"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod abuseipdb;
 mod ai;
 mod allowlist;
