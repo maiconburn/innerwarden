@@ -282,15 +282,22 @@ impl Handler for HoneypotSshHandler {
                     }
 
                     let user = accepted_user.as_deref().unwrap_or("root").to_string();
-                    let sys_prompt = build_shell_system_prompt(&user, hostname, history);
 
-                    // Call AI — clone the Arc so we don't hold a borrow across await.
-                    let ai_clone = Arc::clone(ai);
-                    let response = match ai_clone.chat(&sys_prompt, &cmd).await {
-                        Ok(r) => r.trim().to_string(),
-                        Err(e) => {
-                            debug!("honeypot LLM shell AI error: {e}");
-                            String::new()
+                    // Try deterministic fake shell first (zero tokens, instant response).
+                    // Falls back to LLM only for unknown commands.
+                    let response = if let Some(fake_output) =
+                        super::fake_shell::try_handle(&cmd, &user, hostname)
+                    {
+                        fake_output
+                    } else {
+                        let sys_prompt = build_shell_system_prompt(&user, hostname, history);
+                        let ai_clone = Arc::clone(ai);
+                        match ai_clone.chat(&sys_prompt, &cmd).await {
+                            Ok(r) => r.trim().to_string(),
+                            Err(e) => {
+                                debug!("honeypot LLM shell AI error: {e}");
+                                String::new()
+                            }
                         }
                     };
 

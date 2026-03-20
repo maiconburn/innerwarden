@@ -1,3 +1,4 @@
+mod fake_shell;
 pub(crate) mod http_interact;
 pub(crate) mod ssh_interact;
 
