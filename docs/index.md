@@ -10,7 +10,16 @@
 | [ROADMAP.md](../ROADMAP.md) | Planned features and milestones |
 | [CHANGELOG.md](../CHANGELOG.md) | Release notes |
 
-## For developers
+## Architecture and capabilities
+
+| Document | What it covers |
+|----------|---------------|
+| [docs/sensor-capabilities.md](sensor-capabilities.md) | All collectors, detectors, and output format |
+| [docs/agent-capabilities.md](agent-capabilities.md) | AI pipeline, skills, dashboard, notifications, enrichment |
+| [docs/configuration.md](configuration.md) | Full TOML config reference + environment variables |
+| [docs/operations.md](operations.md) | Build, deploy, CLI reference, permissions, service management |
+
+## Extending InnerWarden
 
 | Document | What it covers |
 |----------|---------------|
@@ -24,7 +33,3 @@
 | Document | What it covers |
 |----------|---------------|
 | [docs/integrated-setup.md](integrated-setup.md) | Full stack on Ubuntu 22.04: InnerWarden + Falco + Suricata + osquery + Telegram |
-
-## Maintainer reference
-
-[CLAUDE.md](../CLAUDE.md) — deep operational context: architecture, config fields, workspace map, dev process.

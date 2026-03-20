@@ -117,10 +117,10 @@ timeout_secs = 10
 
 [ai]
 enabled = true
-provider = "openai"        # openai | anthropic | ollama
+provider = "openai"        # openai | anthropic | ollama | groq | deepseek | mistral | xai | gemini | openrouter | together | fireworks | cerebras
 # api_key = ""             # or env OPENAI_API_KEY / ANTHROPIC_API_KEY
 model = "gpt-4o-mini"
-# base_url = ""            # ollama: override endpoint (default http://localhost:11434)
+# base_url = ""            # override API endpoint (used by ollama and OpenAI-compatible providers)
                            # or env OLLAMA_BASE_URL
 context_events = 20        # recent events sent as context to AI
 confidence_threshold = 0.8 # below this → no auto-execution
@@ -233,6 +233,13 @@ enabled = false
 # api_token = ""           # or env CLOUDFLARE_API_TOKEN
 auto_push_blocks = true
 block_notes_prefix = "InnerWarden:"
+
+[crowdsec]
+enabled = false
+# lapi_url = "http://localhost:8080"
+# api_key = ""             # or env CROWDSEC_API_KEY; find in /etc/crowdsec/local_api_credentials.yaml
+poll_secs = 60             # how often to poll LAPI for new ban decisions
+max_per_sync = 50          # max new IPs to block per tick (prevents OOM from large community lists)
 
 [data]
 events_keep_days = 7

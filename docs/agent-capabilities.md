@@ -36,17 +36,29 @@ Webhook + Telegram + Slack notifications
 
 ## AI Providers
 
-**OpenAI** — `gpt-4o-mini` default; real HTTP via `reqwest`
+12 providers supported via OpenAI-compatible API or native SDK:
 
-**Anthropic** — `claude-haiku-4-5-20251001` default; automatic model fallback from OpenAI default
+| Provider | Default model | Notes |
+|----------|--------------|-------|
+| OpenAI | gpt-4o-mini | Native API |
+| Anthropic | claude-haiku-4-5-20251001 | Native API |
+| Ollama | llama3.2 | Fully local, no API key |
+| Groq | llama-3.3-70b-versatile | Fast inference |
+| DeepSeek | deepseek-chat | OpenAI-compatible |
+| Mistral | mistral-small-latest | OpenAI-compatible |
+| xAI | grok-2-latest | OpenAI-compatible |
+| Gemini | gemini-2.0-flash | OpenAI-compatible endpoint |
+| OpenRouter | meta-llama/llama-3.3-70b-instruct | Multi-model gateway |
+| Together AI | meta-llama/Llama-3.3-70B-Instruct-Turbo | OpenAI-compatible |
+| Fireworks | accounts/fireworks/models/llama-v3p3-70b-instruct | OpenAI-compatible |
+| Cerebras | llama-3.3-70b | OpenAI-compatible |
 
-**Ollama** — local LLM (llama3.2, mistral, gemma2, qwen2.5, etc.); POST `/api/chat`, `format: "json"`, 120s timeout; 5 tests
+Dynamic model discovery: `innerwarden configure ai` fetches available models from the provider's `/v1/models` endpoint.
 
 All providers implement `AiProvider` trait; `Arc<dyn AiProvider>` in `AgentState`.
 
 ## Skills (Response Actions)
 
-### Open Tier
 | Skill ID | What it does |
 |----------|-------------|
 | `block-ip-ufw` | `ufw deny from <IP>` |
@@ -55,12 +67,10 @@ All providers implement `AiProvider` trait; `Arc<dyn AiProvider>` in `AgentState
 | `block-ip-pf` | `pfctl -t innerwarden-blocked -T add <IP>` (macOS) |
 | `suspend-user-sudo` | Drop-in file in `/etc/sudoers.d/` with TTL; auto-cleanup on expiry |
 | `rate-limit-nginx` | nginx-layer deny (HTTP 403) with TTL + auto-cleanup |
-
-### Premium Tier
-| Skill ID | What it does |
-|----------|-------------|
 | `monitor-ip` | Limited traffic capture via `tcpdump` + sidecar metadata `.pcap` |
-| `honeypot` | SSH/HTTP decoy with jail profiles, external handoff attestation |
+| `kill-process` | Terminates all processes for a compromised user. TTL-bounded. |
+| `block-container` | Pauses a Docker container. Auto-unpauses after TTL. |
+| `honeypot` | SSH/HTTP decoy with LLM-powered shell, credential capture |
 
 All skills: bounded, audited, reversible. Dry-run logs what would happen without executing.
 

@@ -80,7 +80,7 @@ make run-agent        # agent reading ./data/
 make replay-qa        # end-to-end multi-source replay validation
 ```
 
-See [docs/internal/operations.md](docs/internal/operations.md) for full command reference, deployment, and permissions.
+See [docs/operations.md](docs/operations.md) for full command reference, deployment, and permissions.
 
 ---
 
@@ -132,10 +132,10 @@ For each feature or fix, in this order:
 
 | Document | Content |
 |----------|---------|
-| [docs/internal/sensor-capabilities.md](docs/internal/sensor-capabilities.md) | All sensor collectors, detectors, output format |
-| [docs/internal/agent-capabilities.md](docs/internal/agent-capabilities.md) | Agent pipeline, AI providers, skills, dashboard, notifications |
-| [docs/internal/configuration.md](docs/internal/configuration.md) | Full TOML config reference + environment variables |
-| [docs/internal/operations.md](docs/internal/operations.md) | CLI reference, build, deploy, permissions, service management |
+| [docs/sensor-capabilities.md](docs/sensor-capabilities.md) | All sensor collectors, detectors, output format |
+| [docs/agent-capabilities.md](docs/agent-capabilities.md) | Agent pipeline, AI providers, skills, dashboard, notifications |
+| [docs/configuration.md](docs/configuration.md) | Full TOML config reference + environment variables |
+| [docs/operations.md](docs/operations.md) | CLI reference, build, deploy, permissions, service management |
 | [docs/module-authoring.md](docs/module-authoring.md) | Guide for creating new modules |
 | [docs/integration-recipes.md](docs/integration-recipes.md) | Declarative integration recipe format |
 | [docs/integrated-setup.md](docs/integrated-setup.md) | Ubuntu 22.04 setup: Falco + Suricata + osquery + Telegram |
