@@ -24,6 +24,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Prompt sanitization on all AI providers** — Anthropic provider now sanitizes attacker-controlled fields (was OpenAI/Ollama only)
 - **Disk exhaustion protection** — events file capped at 200MB/day
 - **Constant-time auth** — dashboard username comparison prevents timing attacks
+- **Ed25519 binary signatures** — `innerwarden upgrade` verifies release signatures when `.sig` sidecars are present
+- **Minimal sudoers** — ufw/iptables/nftables restricted to deny/delete/status only (no disable, flush, or reset)
+- **Dashboard blocks actions over insecure HTTP** — operator actions disabled when auth configured on non-localhost without TLS
 
 ---
 
