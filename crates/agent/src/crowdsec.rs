@@ -132,6 +132,9 @@ impl CrowdSecClient {
 // Sync tick — called from the agent's fast loop
 // ---------------------------------------------------------------------------
 
+/// Max entries to keep in known_ips before trimming.
+const KNOWN_IPS_MAX: usize = 10_000;
+
 /// State persisted between ticks so we only act on *new* decisions.
 pub struct CrowdSecState {
     /// IPs we have already processed (blocked via InnerWarden or already in blocklist).
@@ -146,10 +149,29 @@ impl CrowdSecState {
             client: CrowdSecClient::new(cfg),
         }
     }
+
+    /// Trim known_ips if it grows beyond KNOWN_IPS_MAX to prevent memory leak.
+    fn trim_if_needed(&mut self) {
+        if self.known_ips.len() > KNOWN_IPS_MAX {
+            let excess = self.known_ips.len() - (KNOWN_IPS_MAX / 2);
+            let to_remove: Vec<String> = self.known_ips.iter().take(excess).cloned().collect();
+            for ip in to_remove {
+                self.known_ips.remove(&ip);
+            }
+            info!(
+                retained = self.known_ips.len(),
+                "CrowdSec: trimmed known_ips set"
+            );
+        }
+    }
 }
 
 /// Process CrowdSec decisions for one tick.
 /// Returns the number of new IPs blocked.
+///
+/// Caps the number of new blocks per tick to `cfg.crowdsec.max_per_sync`
+/// (default: 50) to prevent flooding the firewall and exhausting memory
+/// when CrowdSec CAPI returns thousands of community bans at once.
 pub async fn sync_tick(
     cs: &mut CrowdSecState,
     blocklist: &mut Blocklist,
@@ -171,17 +193,23 @@ pub async fn sync_tick(
         }
     };
 
-    let mut new_blocks = 0;
+    let total_from_api = decisions.len();
+    let max_per_sync = cfg.crowdsec.max_per_sync;
+    let mut new_blocks = 0usize;
+    let mut skipped_known = 0usize;
 
     for decision in decisions {
         let ip = &decision.value;
 
-        // Skip non-IP scopes, simulated decisions, and already-known IPs
+        // Skip simulated decisions
         if decision.simulated == Some(true) {
             continue;
         }
+
+        // Skip already-known IPs (fast path — no firewall call)
         if cs.known_ips.contains(ip) || blocklist.contains(ip) {
             cs.known_ips.insert(ip.clone());
+            skipped_known += 1;
             continue;
         }
 
@@ -202,6 +230,16 @@ pub async fn sync_tick(
         {
             cs.known_ips.insert(ip.clone());
             continue;
+        }
+
+        // Cap: stop blocking after max_per_sync new IPs this tick.
+        // The remaining IPs stay unknown and will be picked up next tick.
+        if new_blocks >= max_per_sync {
+            debug!(
+                max_per_sync,
+                "CrowdSec: hit per-sync cap, deferring remaining IPs to next tick"
+            );
+            break;
         }
 
         info!(
@@ -294,12 +332,18 @@ pub async fn sync_tick(
         }
     }
 
-    if new_blocks > 0 {
+    if new_blocks > 0 || total_from_api > 100 {
         info!(
-            count = new_blocks,
-            "CrowdSec: blocked {} new IP(s)", new_blocks
+            new_blocks,
+            total_from_api,
+            skipped_known,
+            max_per_sync,
+            "CrowdSec sync: {new_blocks} blocked, {skipped_known} already known, {total_from_api} total from API"
         );
     }
+
+    // Prevent unbounded memory growth
+    cs.trim_if_needed();
 
     new_blocks
 }

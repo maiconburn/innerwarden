@@ -1270,6 +1270,13 @@ pub struct CrowdSecConfig {
     /// How often to poll the LAPI for new ban decisions (seconds, default: 60)
     #[serde(default = "default_crowdsec_poll_secs")]
     pub poll_secs: u64,
+
+    /// Max new IPs to block per sync cycle (default: 50).
+    /// CrowdSec CAPI can return thousands of IPs at once; blocking them all
+    /// in a single tick stalls the agent and exhausts memory.
+    /// Remaining IPs are processed in subsequent ticks.
+    #[serde(default = "default_crowdsec_max_per_sync")]
+    pub max_per_sync: usize,
 }
 
 impl Default for CrowdSecConfig {
@@ -1279,6 +1286,7 @@ impl Default for CrowdSecConfig {
             url: default_crowdsec_url(),
             api_key: String::new(),
             poll_secs: default_crowdsec_poll_secs(),
+            max_per_sync: default_crowdsec_max_per_sync(),
         }
     }
 }
@@ -1289,6 +1297,10 @@ fn default_crowdsec_url() -> String {
 
 fn default_crowdsec_poll_secs() -> u64 {
     60
+}
+
+fn default_crowdsec_max_per_sync() -> usize {
+    50
 }
 
 fn default_telegram_approval_ttl_secs() -> u64 {
