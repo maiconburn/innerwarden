@@ -19,6 +19,7 @@ use collectors::{
     wazuh_alerts::WazuhAlertsCollector,
 };
 use detectors::credential_stuffing::CredentialStuffingDetector;
+use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
 use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::integrity_alert::IntegrityAlertDetector;
@@ -59,6 +60,7 @@ struct DetectorSet {
     docker_anomaly: Option<DockerAnomalyDetector>,
     integrity_alert: Option<IntegrityAlertDetector>,
     osquery_anomaly: Option<OsqueryAnomalyDetector>,
+    distributed_ssh: Option<DistributedSshDetector>,
 }
 
 #[derive(Default)]
@@ -222,6 +224,15 @@ async fn main() -> Result<()> {
         );
         OsqueryAnomalyDetector::new(&cfg.agent.host_id, d.cooldown_seconds)
     });
+    // Distributed SSH detector — always on when ssh_bruteforce is on
+    let distributed_ssh_detector = cfg.detectors.ssh_bruteforce.enabled.then(|| {
+        info!(
+            threshold = 8,
+            window_seconds = 300,
+            "distributed_ssh detector enabled"
+        );
+        DistributedSshDetector::new(&cfg.agent.host_id, 8, 300)
+    });
     let mut detectors = DetectorSet {
         ssh: ssh_detector,
         credential_stuffing: credential_stuffing_detector,
@@ -235,6 +246,7 @@ async fn main() -> Result<()> {
         docker_anomaly: docker_anomaly_detector,
         integrity_alert: integrity_alert_detector,
         osquery_anomaly: osquery_anomaly_detector,
+        distributed_ssh: distributed_ssh_detector,
     };
 
     // Spawn auth_log collector
@@ -781,6 +793,12 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.osquery_anomaly {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.distributed_ssh {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
