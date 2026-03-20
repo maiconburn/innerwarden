@@ -111,10 +111,9 @@ jobs:
             [[ "$binary" == *.sig ]] && continue
             [[ "$binary" == */install.sh ]] && continue
             echo "signing $(basename $binary)..."
-            openssl pkcs8 -topk8 -nocrypt -in /tmp/sign-key.pem -out /tmp/sign-key-pkcs8.pem 2>/dev/null
-            openssl dgst -sign /tmp/sign-key-pkcs8.pem -out /tmp/sig.raw "$binary"
+            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -out /tmp/sig.raw -rawin < "$binary"
             base64 -w0 /tmp/sig.raw > "${binary}.sig"
-            rm -f /tmp/sig.raw /tmp/sign-key-pkcs8.pem
+            rm -f /tmp/sig.raw
           done
           rm -f /tmp/sign-key.pem
           echo "=== Signed assets ==="
@@ -248,10 +247,9 @@ jobs:
             [[ "$binary" == *.sha256 ]] && continue
             [[ "$binary" == *.sig ]] && continue
             echo "signing $(basename $binary)..."
-            openssl pkcs8 -topk8 -nocrypt -in /tmp/sign-key.pem -out /tmp/sign-key-pkcs8.pem 2>/dev/null
-            openssl dgst -sign /tmp/sign-key-pkcs8.pem -out /tmp/sig.raw "$binary"
+            openssl pkeyutl -sign -inkey /tmp/sign-key.pem -out /tmp/sig.raw -rawin < "$binary"
             base64 /tmp/sig.raw | tr -d '\n' > "${binary}.sig"
-            rm -f /tmp/sig.raw /tmp/sign-key-pkcs8.pem
+            rm -f /tmp/sig.raw
           done
           rm -f /tmp/sign-key.pem
 
