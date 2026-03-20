@@ -185,6 +185,11 @@ pub struct AiConfig {
     /// How long (seconds) to keep the circuit breaker open after it trips (default: 60).
     #[serde(default = "default_circuit_breaker_cooldown_secs")]
     pub circuit_breaker_cooldown_secs: u64,
+
+    /// IPs that should NEVER be blocked, regardless of AI decision.
+    /// Protects internal infrastructure from false positives.
+    #[serde(default = "default_protected_ips")]
+    pub protected_ips: Vec<String>,
 }
 
 impl Default for AiConfig {
@@ -201,6 +206,7 @@ impl Default for AiConfig {
             max_ai_calls_per_tick: default_max_ai_calls_per_tick(),
             circuit_breaker_threshold: 0,
             circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
+            protected_ips: default_protected_ips(),
         }
     }
 }
@@ -1035,6 +1041,16 @@ fn default_max_ai_calls_per_tick() -> usize {
 
 fn default_circuit_breaker_cooldown_secs() -> u64 {
     60
+}
+
+fn default_protected_ips() -> Vec<String> {
+    vec![
+        "10.0.0.0/8".to_string(),
+        "172.16.0.0/12".to_string(),
+        "192.168.0.0/16".to_string(),
+        "127.0.0.0/8".to_string(),
+        "::1/128".to_string(),
+    ]
 }
 
 fn default_block_backend() -> String {

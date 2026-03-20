@@ -2071,6 +2071,7 @@ async fn api_action_honeypot(
                 } else {
                     "incident_injected".to_string()
                 },
+                prev_hash: None,
             };
             if let Err(e) = append_decision_entry(&state.data_dir, &entry) {
                 warn!("failed to write honeypot test decision entry: {e}");
@@ -2169,6 +2170,7 @@ async fn execute_block_ip(
         reason: reason.to_string(),
         estimated_threat: "manual".to_string(),
         execution_result: result_str,
+        prev_hash: None,
     };
 
     append_decision_entry(data_dir, &entry)?;
@@ -2253,6 +2255,7 @@ async fn execute_suspend_user(
         reason: reason.to_string(),
         estimated_threat: "manual".to_string(),
         execution_result: result_str,
+        prev_hash: None,
     };
 
     append_decision_entry(data_dir, &entry)?;
@@ -7591,6 +7594,7 @@ mod tests {
             reason: "r".to_string(),
             estimated_threat: "high".to_string(),
             execution_result: "ok".to_string(),
+            prev_hash: None,
         };
         std::fs::write(
             &decision_path,
@@ -7750,6 +7754,7 @@ mod tests {
             reason: "brute force detected".to_string(),
             estimated_threat: "critical".to_string(),
             execution_result: "ok (dry_run)".to_string(),
+            prev_hash: None,
         };
 
         std::fs::write(
@@ -7839,6 +7844,7 @@ mod tests {
             reason: "brute force detected".to_string(),
             estimated_threat: "critical".to_string(),
             execution_result: "ok".to_string(),
+            prev_hash: None,
         };
 
         std::fs::write(
@@ -7945,6 +7951,7 @@ mod tests {
             reason: "brute force detected".to_string(),
             estimated_threat: "critical".to_string(),
             execution_result: "ok".to_string(),
+            prev_hash: None,
         };
 
         std::fs::write(
@@ -8115,6 +8122,7 @@ mod tests {
             reason: "r".to_string(),
             estimated_threat: "high".to_string(),
             execution_result: "ok".to_string(),
+            prev_hash: None,
         };
         assert_eq!(determine_outcome(&[blocked], "1.2.3.4", true), "blocked");
 
@@ -8133,6 +8141,7 @@ mod tests {
             reason: "r".to_string(),
             estimated_threat: "high".to_string(),
             execution_result: "ok (dry_run)".to_string(),
+            prev_hash: None,
         };
         assert_eq!(
             determine_outcome(&[dry_run_block], "1.2.3.4", true),
@@ -8155,6 +8164,7 @@ mod tests {
             reason: "r".to_string(),
             estimated_threat: "high".to_string(),
             execution_result: "error: permission denied".to_string(),
+            prev_hash: None,
         };
         assert_eq!(determine_outcome(&[failed], "1.2.3.4", true), "active");
 
@@ -8195,6 +8205,7 @@ mod tests {
             reason: "manual block for testing".to_string(),
             estimated_threat: "manual".to_string(),
             execution_result: "ok (dry_run)".to_string(),
+            prev_hash: None,
         };
 
         append_decision_entry(dir.path(), &entry).unwrap();

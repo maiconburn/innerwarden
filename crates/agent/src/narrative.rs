@@ -564,14 +564,21 @@ mod tests {
     #[test]
     fn write_and_cleanup() {
         let dir = TempDir::new().unwrap();
-        let date = "2026-03-12";
-        let md = generate(date, "host", &[], &[], 300);
-        write(dir.path(), date, &md).unwrap();
+        // Use today's date so it always survives cleanup
+        let date = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let md = generate(&date, "host", &[], &[], 300);
+        write(dir.path(), &date, &md).unwrap();
         assert!(dir.path().join(format!("summary-{date}.md")).exists());
 
-        // Write an old summary
-        let old_date = "2026-03-01";
-        write(dir.path(), old_date, "old").unwrap();
+        // Write an old summary (30 days ago — always older than keep_days=7)
+        let old_date = (chrono::Local::now() - chrono::Duration::days(30))
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        write(dir.path(), &old_date, "old").unwrap();
         assert!(dir.path().join(format!("summary-{old_date}.md")).exists());
 
         // Cleanup keeping 7 days — the old file should be removed

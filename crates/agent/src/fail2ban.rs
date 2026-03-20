@@ -402,6 +402,7 @@ pub async fn sync_tick(
                     reason: format!("fail2ban ban in jail '{}'", jail),
                     estimated_threat: "high".to_string(),
                     execution_result,
+                    prev_hash: None,
                 };
                 // Send Telegram follow-up so the operator knows the outcome
                 if cfg.telegram.bot.enabled {

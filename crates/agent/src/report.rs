@@ -1720,6 +1720,7 @@ mod tests {
             reason: "test".to_string(),
             estimated_threat: "low".to_string(),
             execution_result: "skipped".to_string(),
+            prev_hash: None,
         };
         fs::write(
             &decisions_path,
@@ -1853,6 +1854,7 @@ mod tests {
                     reason: "prev".to_string(),
                     estimated_threat: "high".to_string(),
                     execution_result: "skipped".to_string(),
+                    prev_hash: None,
                 })
                 .unwrap()
             })
@@ -1943,6 +1945,7 @@ mod tests {
                     reason: "current".to_string(),
                     estimated_threat: "medium".to_string(),
                     execution_result: "skipped".to_string(),
+                    prev_hash: None,
                 })
                 .unwrap()
             })
@@ -2044,6 +2047,7 @@ mod tests {
                     reason: "test".to_string(),
                     estimated_threat: "low".to_string(),
                     execution_result: "skipped".to_string(),
+                    prev_hash: None,
                 })
                 .unwrap()
             ),

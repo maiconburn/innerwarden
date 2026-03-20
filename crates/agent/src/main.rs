@@ -1743,6 +1743,7 @@ async fn process_incidents(
                     .to_string(),
                 estimated_threat: "none".to_string(),
                 execution_result: "test-ok".to_string(),
+                prev_hash: None,
             };
             if let Some(writer) = &mut state.decision_writer {
                 if let Err(e) = writer.write(&entry) {
@@ -1902,95 +1903,105 @@ async fn process_incidents(
                     .find(|e| e.r#type == innerwarden_core::entities::EntityType::Ip)
                     .map(|e| e.value.clone());
                 if let Some(ip) = primary_ip {
-                    info!(
-                        incident_id = %incident.incident_id,
-                        ip,
-                        score = rep.confidence_score,
-                        threshold,
-                        "AbuseIPDB auto-block: score exceeds threshold, skipping AI"
-                    );
-                    let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
-                    let auto_decision = ai::AiDecision {
-                        action: ai::AiAction::BlockIp {
-                            ip: ip.clone(),
-                            skill_id,
-                        },
-                        confidence: 1.0,
-                        auto_execute: true,
-                        reason: format!(
-                            "AbuseIPDB auto-block: score={}/100 (threshold={})",
-                            rep.confidence_score, threshold
-                        ),
-                        alternatives: vec![],
-                        estimated_threat: "high".into(),
-                    };
-                    blocked_set.insert(ip.clone());
-                    state.blocklist.insert(ip.clone());
-                    if let Some(key) = decision_cooldown_key_for_decision(incident, &auto_decision)
-                    {
-                        state.decision_cooldowns.insert(key, chrono::Utc::now());
-                    }
-                    let (execution_result, _cf_pushed) = if cfg.responder.enabled {
-                        execute_decision(&auto_decision, incident, data_dir, cfg, state).await
-                    } else {
-                        ("skipped: responder disabled".to_string(), false)
-                    };
-                    if let Some(writer) = &mut state.decision_writer {
-                        let entry = decisions::build_entry(
-                            &incident.incident_id,
-                            &incident.host,
-                            "abuseipdb",
-                            &auto_decision,
-                            cfg.responder.dry_run,
-                            &execution_result,
+                    // Protected IP check: skip auto-block for protected ranges
+                    if allowlist::is_ip_allowlisted(&ip, &cfg.ai.protected_ips) {
+                        warn!(
+                            ip = %ip,
+                            incident_id = %incident.incident_id,
+                            "AbuseIPDB auto-block tried to block protected IP {ip} — skipped"
                         );
-                        if let Err(e) = writer.write(&entry) {
-                            warn!("failed to write abuseipdb auto-block decision: {e:#}");
+                    } else {
+                        info!(
+                            incident_id = %incident.incident_id,
+                            ip,
+                            score = rep.confidence_score,
+                            threshold,
+                            "AbuseIPDB auto-block: score exceeds threshold, skipping AI"
+                        );
+                        let skill_id = format!("block-ip-{}", cfg.responder.block_backend);
+                        let auto_decision = ai::AiDecision {
+                            action: ai::AiAction::BlockIp {
+                                ip: ip.clone(),
+                                skill_id,
+                            },
+                            confidence: 1.0,
+                            auto_execute: true,
+                            reason: format!(
+                                "AbuseIPDB auto-block: score={}/100 (threshold={})",
+                                rep.confidence_score, threshold
+                            ),
+                            alternatives: vec![],
+                            estimated_threat: "high".into(),
+                        };
+                        blocked_set.insert(ip.clone());
+                        state.blocklist.insert(ip.clone());
+                        if let Some(key) =
+                            decision_cooldown_key_for_decision(incident, &auto_decision)
+                        {
+                            state.decision_cooldowns.insert(key, chrono::Utc::now());
                         }
-                    }
-
-                    // Telegram notification for auto-block
-                    if cfg.telegram.bot.enabled {
-                        if let Some(ref tg) = state.telegram_client {
-                            let tg = tg.clone();
-                            let ip_clone = ip.clone();
-                            let score = rep.confidence_score;
-                            let total_reports = rep.total_reports;
-                            let title_clone = incident.title.clone();
-                            let dry_run = cfg.responder.dry_run;
-                            let dashboard_url = if cfg.telegram.dashboard_url.is_empty() {
-                                None
-                            } else {
-                                Some(cfg.telegram.dashboard_url.clone())
-                            };
-                            // Resolve GeoIP synchronously (already have client ref)
-                            let geo = if let Some(ref gc) = state.geoip_client {
-                                gc.lookup(&ip).await
-                            } else {
-                                None
-                            };
-                            let country = geo.as_ref().map(|g| g.country_code.clone());
-                            let isp = geo.as_ref().map(|g| g.isp.clone());
-                            tokio::spawn(async move {
-                                let _ = tg
-                                    .send_abuseipdb_autoblock(
-                                        &ip_clone,
-                                        score,
-                                        threshold,
-                                        total_reports,
-                                        country.as_deref(),
-                                        isp.as_deref(),
-                                        &title_clone,
-                                        dry_run,
-                                        dashboard_url.as_deref(),
-                                    )
-                                    .await;
-                            });
+                        let (execution_result, _cf_pushed) = if cfg.responder.enabled {
+                            execute_decision(&auto_decision, incident, data_dir, cfg, state).await
+                        } else {
+                            ("skipped: responder disabled".to_string(), false)
+                        };
+                        if let Some(writer) = &mut state.decision_writer {
+                            let entry = decisions::build_entry(
+                                &incident.incident_id,
+                                &incident.host,
+                                "abuseipdb",
+                                &auto_decision,
+                                cfg.responder.dry_run,
+                                &execution_result,
+                            );
+                            if let Err(e) = writer.write(&entry) {
+                                warn!("failed to write abuseipdb auto-block decision: {e:#}");
+                            }
                         }
-                    }
 
-                    handled += 1;
-                    continue;
+                        // Telegram notification for auto-block
+                        if cfg.telegram.bot.enabled {
+                            if let Some(ref tg) = state.telegram_client {
+                                let tg = tg.clone();
+                                let ip_clone = ip.clone();
+                                let score = rep.confidence_score;
+                                let total_reports = rep.total_reports;
+                                let title_clone = incident.title.clone();
+                                let dry_run = cfg.responder.dry_run;
+                                let dashboard_url = if cfg.telegram.dashboard_url.is_empty() {
+                                    None
+                                } else {
+                                    Some(cfg.telegram.dashboard_url.clone())
+                                };
+                                // Resolve GeoIP synchronously (already have client ref)
+                                let geo = if let Some(ref gc) = state.geoip_client {
+                                    gc.lookup(&ip).await
+                                } else {
+                                    None
+                                };
+                                let country = geo.as_ref().map(|g| g.country_code.clone());
+                                let isp = geo.as_ref().map(|g| g.isp.clone());
+                                tokio::spawn(async move {
+                                    let _ = tg
+                                        .send_abuseipdb_autoblock(
+                                            &ip_clone,
+                                            score,
+                                            threshold,
+                                            total_reports,
+                                            country.as_deref(),
+                                            isp.as_deref(),
+                                            &title_clone,
+                                            dry_run,
+                                            dashboard_url.as_deref(),
+                                        )
+                                        .await;
+                                });
+                            }
+                        }
+
+                        handled += 1;
+                        continue;
+                    } // else (not protected IP)
                 }
             }
         }
@@ -2058,6 +2069,7 @@ async fn process_incidents(
                         reason: format!("{e:#}"),
                         estimated_threat: "unknown".to_string(),
                         execution_result: "ai_error".to_string(),
+                        prev_hash: None,
                     };
                     if let Err(we) = writer.write(&entry) {
                         warn!("failed to write fallback decision: {we:#}");
@@ -2073,6 +2085,33 @@ async fn process_incidents(
             .telemetry
             .observe_ai_decision(&decision.action, latency_ms);
         ai_calls_this_tick += 1;
+
+        // Protected IP sandbox: if AI tries to block a protected IP (RFC 1918,
+        // loopback, or operator-configured ranges), downgrade to ignore.
+        if let ai::AiAction::BlockIp { ip, .. } = &decision.action {
+            if allowlist::is_ip_allowlisted(ip, &cfg.ai.protected_ips) {
+                warn!(
+                    ip = %ip,
+                    incident_id = %incident.incident_id,
+                    "AI tried to block protected IP {ip} — downgraded to ignore"
+                );
+                decision = ai::AiDecision {
+                    action: ai::AiAction::Ignore {
+                        reason: format!(
+                            "protected IP: AI recommended blocking {ip} but it matches a protected range"
+                        ),
+                    },
+                    confidence: decision.confidence,
+                    auto_execute: false,
+                    reason: format!(
+                        "{} [BLOCKED: target IP {ip} is in protected range]",
+                        decision.reason
+                    ),
+                    alternatives: decision.alternatives,
+                    estimated_threat: decision.estimated_threat,
+                };
+            }
+        }
 
         // Update the in-memory blocked_set immediately after a BlockIp decision.
         // This prevents a second incident from the same IP (arriving in the same 2s tick)
@@ -3202,7 +3241,13 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let tg = state.telegram_client.clone();
             tokio::spawn(async move {
+                // Warn before executing destructive command
                 if let Some(ref tg) = tg {
+                    let _ = tg
+                        .send_text_message(&format!(
+                            "\u{26a0}\u{fe0f} Executing: <b>innerwarden enable {cap_args}</b>. Use the CLI for undo."
+                        ))
+                        .await;
                     tg.send_typing().await;
                 }
                 // Parse "block-ip --param backend=ufw" → ["enable", "block-ip", "--param", "backend=ufw"]
@@ -3211,7 +3256,7 @@ async fn process_telegram_approval(
                 args.extend(parts.iter().copied());
                 let output = run_innerwarden_cli(&args).await;
                 let text = format!(
-                    "🔧 <b>innerwarden enable {cap_args}</b>\n\n<pre>{output}</pre>",
+                    "\u{1f527} <b>innerwarden enable {cap_args}</b>\n\n<pre>{output}</pre>",
                     cap_args = cap_args,
                     output = output.chars().take(2000).collect::<String>()
                 );
@@ -3230,7 +3275,13 @@ async fn process_telegram_approval(
         if cfg.telegram.bot.enabled {
             let tg = state.telegram_client.clone();
             tokio::spawn(async move {
+                // Warn before executing destructive command
                 if let Some(ref tg) = tg {
+                    let _ = tg
+                        .send_text_message(&format!(
+                            "\u{26a0}\u{fe0f} Executing: <b>innerwarden disable {cap_args}</b>. Use the CLI for undo."
+                        ))
+                        .await;
                     tg.send_typing().await;
                 }
                 let parts: Vec<&str> = cap_args.split_whitespace().collect();
@@ -3238,7 +3289,7 @@ async fn process_telegram_approval(
                 args.extend(parts.iter().copied());
                 let output = run_innerwarden_cli(&args).await;
                 let text = format!(
-                    "🔧 <b>innerwarden disable {cap_args}</b>\n\n<pre>{output}</pre>",
+                    "\u{1f527} <b>innerwarden disable {cap_args}</b>\n\n<pre>{output}</pre>",
                     cap_args = cap_args,
                     output = output.chars().take(2000).collect::<String>()
                 );
@@ -3414,6 +3465,7 @@ async fn process_telegram_approval(
                 reason: format!("Quick block requested by operator {operator} via Telegram"),
                 estimated_threat: "manual".to_string(),
                 execution_result: exec_result.message.clone(),
+                prev_hash: None,
             };
             if let Err(e) = writer.write(&entry) {
                 warn!("failed to write quick-block decision entry: {e:#}");
@@ -3506,6 +3558,7 @@ async fn process_telegram_approval(
                             reason: format!("Operator {operator} chose honeypot via Telegram"),
                             estimated_threat: "high".to_string(),
                             execution_result: msg.clone(),
+                            prev_hash: None,
                         };
                         if let Err(e) = writer.write(&entry) {
                             warn!("failed to write honeypot decision entry: {e:#}");
@@ -3566,6 +3619,7 @@ async fn process_telegram_approval(
                             reason: format!("Operator {operator} chose block via Telegram"),
                             estimated_threat: "high".to_string(),
                             execution_result: exec_result.message.clone(),
+                            prev_hash: None,
                         };
                         if let Err(e) = writer.write(&entry) {
                             warn!("failed to write honeypot-block decision entry: {e:#}");
@@ -3600,6 +3654,7 @@ async fn process_telegram_approval(
                         reason: format!("Operator {operator} chose monitor via Telegram"),
                         estimated_threat: "medium".to_string(),
                         execution_result: "monitoring: no active action taken".to_string(),
+                        prev_hash: None,
                     };
                     if let Err(e) = writer.write(&entry) {
                         warn!("failed to write monitor decision entry: {e:#}");
@@ -3625,6 +3680,7 @@ async fn process_telegram_approval(
                         reason: format!("Operator {operator} chose ignore via Telegram"),
                         estimated_threat: "low".to_string(),
                         execution_result: "ignored by operator".to_string(),
+                        prev_hash: None,
                     };
                     if let Err(e) = writer.write(&entry) {
                         warn!("failed to write ignore decision entry: {e:#}");
@@ -4203,6 +4259,7 @@ async fn spawn_post_session_tasks(
                         } else {
                             format!("failed: {}", result.message)
                         },
+                        prev_hash: None,
                     };
                     let path = data_dir.join(format!("decisions-{today}.jsonl"));
                     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -4436,6 +4493,7 @@ async fn handle_always_on_connection(
                         } else {
                             format!("failed: {}", result.message)
                         },
+                        prev_hash: None,
                     };
                     let path = data_dir.join(format!("decisions-{today}.jsonl"));
                     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -4681,6 +4739,7 @@ async fn always_on_abuseipdb_block(
         ),
         estimated_threat: "known-malicious".to_string(),
         execution_result: "ok".to_string(),
+        prev_hash: None,
     };
 
     let path = data_dir.join(format!("decisions-{today}.jsonl"));

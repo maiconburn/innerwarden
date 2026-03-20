@@ -286,6 +286,7 @@ pub async fn sync_tick(
                 ),
                 estimated_threat: "high".to_string(),
                 execution_result,
+                prev_hash: None,
             };
             if let Err(e) = writer.write(&entry) {
                 warn!(error = %e, "failed to write CrowdSec decision to audit trail");

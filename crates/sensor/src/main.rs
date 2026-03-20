@@ -268,13 +268,32 @@ async fn main() -> Result<()> {
         // Seed shared hashes with whatever we loaded from state
         *shared_integrity_hashes.lock().unwrap() = known_hashes.clone();
 
-        let paths = ic.paths.iter().map(|p| Path::new(p).to_owned()).collect();
-        let collector =
-            IntegrityCollector::new(paths, &cfg.agent.host_id, ic.poll_seconds, known_hashes);
+        // Always monitor Inner Warden's own config files for tampering,
+        // regardless of user configuration.
+        let self_monitor_paths = [
+            "/etc/innerwarden/config.toml",
+            "/etc/innerwarden/agent.toml",
+            "/etc/innerwarden/agent.env",
+        ];
+        let mut all_paths: Vec<std::path::PathBuf> =
+            ic.paths.iter().map(|p| Path::new(p).to_owned()).collect();
+        for sp in &self_monitor_paths {
+            let p = Path::new(sp).to_owned();
+            if !all_paths.contains(&p) {
+                all_paths.push(p);
+            }
+        }
+
+        let collector = IntegrityCollector::new(
+            all_paths.clone(),
+            &cfg.agent.host_id,
+            ic.poll_seconds,
+            known_hashes,
+        );
         info!(
-            paths = ic.paths.len(),
+            paths = all_paths.len(),
             poll_secs = ic.poll_seconds,
-            "starting integrity collector"
+            "starting integrity collector (includes self-monitoring)"
         );
         let tx3 = tx.clone();
         let shared = Arc::clone(&shared_integrity_hashes);
