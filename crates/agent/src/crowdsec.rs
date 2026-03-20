@@ -192,8 +192,8 @@ pub struct CrowdSecState {
     /// IPs we have already processed (blocked via InnerWarden or already in blocklist).
     pub known_ips: std::collections::HashSet<String>,
     pub client: CrowdSecClient,
-    /// True on first tick — tells the stream API to send current bans.
-    /// After first tick, only new/deleted decisions are returned.
+    /// Always false — we never request the full list. Delta-only from the start.
+    /// CrowdSec CAPI returns 24k+ decisions on startup=true which causes OOM.
     pub is_startup: bool,
 }
 
@@ -202,7 +202,7 @@ impl CrowdSecState {
         Self {
             known_ips: std::collections::HashSet::new(),
             client: CrowdSecClient::new(cfg),
-            is_startup: true,
+            is_startup: false, // never request full list — delta only
         }
     }
 
