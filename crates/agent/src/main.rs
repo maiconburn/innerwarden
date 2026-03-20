@@ -690,10 +690,27 @@ fn load_startup_decision_state(
         // Caller is responsible for awaiting the async ufw load and inserting later.
     }
 
+    // Cap: only read the last 500KB of each decisions file to prevent OOM
+    // on hosts that accumulated thousands of CrowdSec entries.
+    const MAX_DECISION_READ: u64 = 512 * 1024;
+
     for date in recent_decision_dates() {
         let decisions_path = data_dir.join(format!("decisions-{date}.jsonl"));
-        let Ok(content) = std::fs::read_to_string(&decisions_path) else {
-            continue;
+        let file_size = std::fs::metadata(&decisions_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let content = if file_size > MAX_DECISION_READ {
+            // Read only the tail of the file (most recent decisions)
+            let Ok(full) = std::fs::read(&decisions_path) else {
+                continue;
+            };
+            let start = full.len().saturating_sub(MAX_DECISION_READ as usize);
+            String::from_utf8_lossy(&full[start..]).to_string()
+        } else {
+            let Ok(c) = std::fs::read_to_string(&decisions_path) else {
+                continue;
+            };
+            c
         };
         for line in content.lines() {
             let line = line.trim();
