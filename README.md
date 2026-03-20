@@ -8,7 +8,7 @@
 [![Last Commit](https://img.shields.io/github/last-commit/InnerWarden/innerwarden)](https://github.com/InnerWarden/innerwarden/commits/main)
 
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
-![Memory](https://img.shields.io/badge/memory-~35MB-green)
+![Memory](https://img.shields.io/badge/memory-under%2050MB-green)
 ![AI Optional](https://img.shields.io/badge/AI-optional-lightgrey)
 
 **Your server should defend itself.**
@@ -107,7 +107,7 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 
 **Agent** — reads incidents, applies algorithm gate (skip low severity, private IPs, already-blocked), optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
-Two Rust daemons. No external dependencies. ~35 MB RAM total. Dashboard sleeps after 15 min of inactivity.
+Two Rust daemons. No external dependencies. Under 50 MB RAM total. Dashboard sleeps after 15 min of inactivity.
 
 ---
 
