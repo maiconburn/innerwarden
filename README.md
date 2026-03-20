@@ -185,7 +185,7 @@ Enable what you need.
 | `abuseipdb-enrichment` | IP reputation context | Enriched AI prompt |
 | `geoip-enrichment` | Country/ISP geolocation | Enriched AI prompt |
 | `fail2ban-integration` | Sync active fail2ban bans | Block enforcement |
-| `crowdsec-integration` | CrowdSec community intel | Block enforcement |
+| `crowdsec-integration` | CrowdSec community intel | Block enforcement (experimental) |
 | `falco-integration` | Kernel/container anomalies | Incident passthrough |
 | `suricata-integration` | Network IDS alerts | Incident passthrough |
 | `osquery-integration` | Host state queries | Enriched events |
@@ -432,7 +432,7 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has eleven detectors, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, CrowdSec + AbuseIPDB intelligence sharing, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has eleven detectors, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).

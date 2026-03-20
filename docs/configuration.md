@@ -234,6 +234,9 @@ enabled = false
 auto_push_blocks = true
 block_notes_prefix = "InnerWarden:"
 
+# EXPERIMENTAL — CrowdSec CAPI can return 10k+ IPs which stresses ufw.
+# Works well with small local decision lists. Large community lists
+# require ipset/nftables backend (planned).
 [crowdsec]
 enabled = false
 # lapi_url = "http://localhost:8080"
