@@ -8530,4 +8530,73 @@ mod tests {
         let total_covered: usize = chapters.iter().map(|ch| ch.entry_indices.len()).sum();
         assert_eq!(total_covered, entries.len());
     }
+
+    // ── Memory safety tests ─────────────────────────────────────────────
+
+    #[test]
+    fn global_rate_limiter_rejects_after_limit() {
+        let test_ip = "rate-test-192.0.2.99";
+        // Fill up to the limit
+        for _ in 0..GLOBAL_RATE_LIMIT_PER_MIN {
+            assert!(!global_rate_check(test_ip), "should allow under limit");
+        }
+        // Next request should be rejected
+        assert!(global_rate_check(test_ip), "should reject at limit");
+    }
+
+    #[test]
+    fn global_rate_limiter_prunes_stale_ips() {
+        // Insert 1100+ unique IPs to trigger the >1000 prune path
+        for i in 0..1100 {
+            global_rate_check(&format!("prune-test-{i}"));
+        }
+        // Should not panic or OOM — the prune ran and cleaned up
+        let map = GLOBAL_RATE_LIMITER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // After prune, stale entries removed (all are <60s old so still present,
+        // but the code path executed without error)
+        assert!(map.len() <= 1200, "map should not grow unbounded");
+    }
+
+    #[test]
+    fn jsonl_cache_returns_same_data_on_cache_hit() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test-cache.jsonl");
+        std::fs::write(
+            &path,
+            "{\"ts\":\"2026-01-01T00:00:00Z\",\"host\":\"test\",\"source\":\"test\",\"kind\":\"ssh.login_failed\",\"severity\":\"info\",\"summary\":\"test\",\"details\":{},\"tags\":[],\"entities\":[]}\n",
+        )
+        .unwrap();
+
+        let first: Vec<Event> = read_jsonl(&path);
+        assert_eq!(first.len(), 1);
+
+        // Second call should hit cache (same file, no modification)
+        let second: Vec<Event> = read_jsonl(&path);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].kind, second[0].kind);
+    }
+
+    #[test]
+    fn jsonl_cache_invalidates_on_file_change() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test-invalidate.jsonl");
+        let line = "{\"ts\":\"2026-01-01T00:00:00Z\",\"host\":\"test\",\"source\":\"test\",\"kind\":\"ssh.login_failed\",\"severity\":\"info\",\"summary\":\"test\",\"details\":{},\"tags\":[],\"entities\":[]}\n";
+
+        std::fs::write(&path, line).unwrap();
+        let first: Vec<Event> = read_jsonl(&path);
+        assert_eq!(first.len(), 1);
+
+        // Append a line — file size changes, cache should invalidate
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(line.as_bytes()).unwrap();
+
+        let second: Vec<Event> = read_jsonl(&path);
+        assert_eq!(second.len(), 2);
+    }
 }

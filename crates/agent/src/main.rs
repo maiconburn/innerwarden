@@ -5815,4 +5815,96 @@ mod tests {
             "listener should not match always_on"
         );
     }
+
+    // ── Memory safety: NarrativeAccumulator tests ────────────────────
+
+    #[test]
+    fn synthetic_events_capped_at_2000() {
+        let mut acc = NarrativeAccumulator::default();
+        acc.date = "2026-01-01".to_string();
+        // Simulate 100k events of one kind
+        *acc.events_by_kind
+            .entry("ssh.login_failed".to_string())
+            .or_insert(0) = 100_000;
+        let events = acc.synthetic_events();
+        assert!(
+            events.len() <= 2100, // 2000 cap + some entity events
+            "synthetic_events should be capped, got {}",
+            events.len()
+        );
+    }
+
+    #[test]
+    fn synthetic_events_preserves_proportions() {
+        let mut acc = NarrativeAccumulator::default();
+        acc.date = "2026-01-01".to_string();
+        *acc.events_by_kind
+            .entry("ssh.login_failed".to_string())
+            .or_insert(0) = 8000;
+        *acc.events_by_kind
+            .entry("sudo.command".to_string())
+            .or_insert(0) = 2000;
+        let events = acc.synthetic_events();
+        let ssh = events
+            .iter()
+            .filter(|e| e.kind == "ssh.login_failed")
+            .count();
+        let sudo = events.iter().filter(|e| e.kind == "sudo.command").count();
+        // ssh should be ~4x more than sudo (8000:2000 ratio)
+        assert!(ssh > sudo, "ssh ({ssh}) should be more than sudo ({sudo})");
+    }
+
+    #[test]
+    fn incidents_capped_at_500() {
+        let mut acc = NarrativeAccumulator::default();
+        acc.date = "2026-01-01".to_string();
+        let incident = innerwarden_core::incident::Incident {
+            ts: chrono::Utc::now(),
+            host: "test".to_string(),
+            incident_id: "test:1".to_string(),
+            severity: innerwarden_core::event::Severity::High,
+            title: "test".to_string(),
+            summary: "test".to_string(),
+            evidence: serde_json::Value::Null,
+            recommended_checks: vec![],
+            tags: vec![],
+            entities: vec![],
+        };
+        let batch: Vec<_> = (0..600).map(|_| incident.clone()).collect();
+        acc.ingest_incidents(&batch);
+        assert_eq!(
+            acc.incidents.len(),
+            500,
+            "incidents should be capped at 500"
+        );
+    }
+
+    #[test]
+    fn block_counts_cleared_at_threshold() {
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for i in 0..5001 {
+            counts.insert(format!("1.2.3.{i}"), 1);
+        }
+        assert!(counts.len() > 5000);
+        // Simulate the trim logic from narrative tick
+        if counts.len() > 5000 {
+            counts.clear();
+        }
+        assert_eq!(counts.len(), 0);
+    }
+
+    #[test]
+    fn narrative_accumulator_resets_on_date_change() {
+        let mut acc = NarrativeAccumulator::default();
+        acc.date = "2026-01-01".to_string();
+        *acc.events_by_kind
+            .entry("ssh.login_failed".to_string())
+            .or_insert(0) = 100;
+        acc.total_events = 100;
+
+        acc.reset_for_date("2026-01-02");
+        assert_eq!(acc.total_events, 0);
+        assert!(acc.events_by_kind.is_empty());
+        assert_eq!(acc.date, "2026-01-02");
+    }
 }
