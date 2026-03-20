@@ -3,6 +3,16 @@ use std::fmt::Write;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+/// Sanitize a date string to prevent path injection.
+/// Only allows digits and hyphens (YYYY-MM-DD format).
+fn safe_dated_file(dir: &Path, prefix: &str, date: &str, ext: &str) -> PathBuf {
+    let safe: String = date
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    dir.join(format!("{prefix}-{safe}.{ext}"))
+}
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
@@ -223,10 +233,10 @@ pub fn compute_for_date(data_dir: &Path, date: Option<&str>) -> TrialReport {
     let previous_date = detect_previous_date(data_dir, &analyzed_date);
     let analyzed_is_today = analyzed_date == today;
 
-    let events = data_dir.join(format!("events-{analyzed_date}.jsonl"));
-    let incidents = data_dir.join(format!("incidents-{analyzed_date}.jsonl"));
-    let decisions = data_dir.join(format!("decisions-{analyzed_date}.jsonl"));
-    let summary = data_dir.join(format!("summary-{analyzed_date}.md"));
+    let events = safe_dated_file(data_dir, "events", &analyzed_date, "jsonl");
+    let incidents = safe_dated_file(data_dir, "incidents", &analyzed_date, "jsonl");
+    let decisions = safe_dated_file(data_dir, "decisions", &analyzed_date, "jsonl");
+    let summary = safe_dated_file(data_dir, "summary", &analyzed_date, "md");
     let state = data_dir.join("state.json");
     let agent_state = data_dir.join("agent-state.json");
 
@@ -355,8 +365,8 @@ pub fn generate(data_dir: &Path, output_dir: &Path) -> Result<GeneratedReport> {
     let report_date = Local::now().date_naive().format("%Y-%m-%d").to_string();
     let report = compute_for_date(data_dir, None);
 
-    let json_path = output_dir.join(format!("trial-report-{report_date}.json"));
-    let md_path = output_dir.join(format!("trial-report-{report_date}.md"));
+    let json_path = safe_dated_file(output_dir, "trial-report", &report_date, "json");
+    let md_path = safe_dated_file(output_dir, "trial-report", &report_date, "md");
 
     let json_file = File::create(&json_path)
         .with_context(|| format!("failed to create {}", json_path.display()))?;
@@ -602,7 +612,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
 
     for date in &dates_to_scan {
         // ── Events ──────────────────────────────────────────────────────────
-        let path = data_dir.join(format!("events-{date}.jsonl"));
+        let path = safe_dated_file(data_dir, "events", date, "jsonl");
         if let Ok(f) = File::open(&path) {
             for line in BufReader::new(f).lines().map_while(Result::ok) {
                 let trimmed = line.trim();
@@ -628,7 +638,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
         }
 
         // ── Incidents ────────────────────────────────────────────────────────
-        let path = data_dir.join(format!("incidents-{date}.jsonl"));
+        let path = safe_dated_file(data_dir, "incidents", date, "jsonl");
         if let Ok(f) = File::open(&path) {
             for line in BufReader::new(f).lines().map_while(Result::ok) {
                 let trimmed = line.trim();
@@ -662,7 +672,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
         }
 
         // ── Decisions ────────────────────────────────────────────────────────
-        let path = data_dir.join(format!("decisions-{date}.jsonl"));
+        let path = safe_dated_file(data_dir, "decisions", date, "jsonl");
         if let Ok(f) = File::open(&path) {
             for line in BufReader::new(f).lines().map_while(Result::ok) {
                 let trimmed = line.trim();
@@ -695,7 +705,7 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
     }
 
     // ── Telemetry latest (today only, most recent snapshot) ─────────────────
-    let telem_path = data_dir.join(format!("telemetry-{analyzed_date}.jsonl"));
+    let telem_path = safe_dated_file(data_dir, "telemetry", analyzed_date, "jsonl");
     if let Ok(f) = File::open(&telem_path) {
         for line in BufReader::new(f).lines().map_while(Result::ok) {
             let trimmed = line.trim();
@@ -727,9 +737,9 @@ fn compute_recent_window(data_dir: &Path, analyzed_date: &str) -> RecentWindow {
 }
 
 fn compute_day_counters(data_dir: &Path, date: &str) -> Counters {
-    let events = data_dir.join(format!("events-{date}.jsonl"));
-    let incidents = data_dir.join(format!("incidents-{date}.jsonl"));
-    let decisions = data_dir.join(format!("decisions-{date}.jsonl"));
+    let events = safe_dated_file(data_dir, "events", date, "jsonl");
+    let incidents = safe_dated_file(data_dir, "incidents", date, "jsonl");
+    let decisions = safe_dated_file(data_dir, "decisions", date, "jsonl");
 
     let mut counters = Counters::default();
     parse_events_file(&events, &mut counters);

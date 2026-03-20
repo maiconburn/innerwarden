@@ -163,7 +163,11 @@ impl TelemetryWriter {
 }
 
 pub fn read_latest_snapshot(data_dir: &Path, date: &str) -> Option<TelemetrySnapshot> {
-    let path = data_dir.join(format!("telemetry-{date}.jsonl"));
+    let safe_date: String = date
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    let path = data_dir.join(format!("telemetry-{safe_date}.jsonl"));
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 

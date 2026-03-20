@@ -4114,8 +4114,22 @@ fn normalize_limit(limit: Option<usize>) -> usize {
     limit.unwrap_or(50).clamp(1, 500)
 }
 
+/// Build a dated JSONL path, rejecting any path-traversal attempts.
+/// Only allows YYYY-MM-DD date strings (already validated by resolve_date).
 fn dated_path(data_dir: &Path, prefix: &str, date: &str) -> PathBuf {
-    data_dir.join(format!("{prefix}-{date}.jsonl"))
+    // Defense-in-depth: strip any path separators or dots from date
+    let safe_date: String = date
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    let filename = format!("{prefix}-{safe_date}.jsonl");
+    // Ensure filename has no path components
+    let safe_filename = Path::new(&filename)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    data_dir.join(safe_filename)
 }
 
 /// File content cache entry — avoids re-reading + re-parsing JSONL on every request.
