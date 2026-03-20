@@ -2849,14 +2849,15 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     } else {
         println!("Step 1/4 — AI provider\n");
         println!("InnerWarden uses AI to evaluate threats and decide how to respond.");
-        println!("All three providers work well — choose based on what you already have:\n");
+        println!("12 providers supported — pick what you have:\n");
+        println!("  1. Ollama    — fully local, free, no API key needed");
+        println!("  2. OpenAI    — gpt-4.1-nano, cheapest ($0.10/1M tokens)");
+        println!("  3. Anthropic — claude-haiku, fast and cheap");
         println!(
-            "  1. Ollama    — free tier available (Ollama cloud), no credit card for basic models"
+            "  4. Advanced  — interactive wizard (Groq, DeepSeek, Mistral, xAI, Gemini, etc.)"
         );
-        println!("  2. OpenAI    — gpt-4o-mini, pay-as-you-go (very low cost for this workload)");
-        println!("  3. Anthropic — claude-haiku, pay-as-you-go (very low cost for this workload)");
         println!("  s. Skip for now\n");
-        let choice = prompt("Choose provider [1/2/3/s]")?;
+        let choice = prompt("Choose provider [1/2/3/4/s]")?;
         println!();
         match choice.trim().to_lowercase().as_str() {
             "1" | "" => {
@@ -2889,6 +2890,13 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
                     _ => println!(
                         "  Skipped. Run later:  innerwarden configure ai anthropic --key <key>"
                     ),
+                }
+            }
+            "4" => {
+                // Full interactive wizard with all 12 providers
+                if let Err(e) = cmd_configure_ai(cli, "", None, None, None) {
+                    println!("  Could not configure AI: {e:#}");
+                    println!("  Run later:  innerwarden configure ai");
                 }
             }
             _ => println!("  Skipped. Run later:  innerwarden configure ai"),
