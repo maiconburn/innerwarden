@@ -15,7 +15,7 @@ tikv-jemallocator = "0.6"
 
 [dependencies]
 innerwarden_core = { path = "../core" }
-innerwarden-mesh = { git = "https://github.com/InnerWarden/innerwarden-mesh.git", branch = "master", optional = true }
+innerwarden-mesh = { git = "https://github.com/InnerWarden/innerwarden-mesh.git", branch = "master" }
 anyhow = "1"
 dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
@@ -42,9 +42,6 @@ regex = "1"
 p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
-
-[features]
-mesh = ["innerwarden-mesh"]
 
 [dev-dependencies]
 tempfile = "3"

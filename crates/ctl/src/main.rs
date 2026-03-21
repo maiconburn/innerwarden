@@ -197,6 +197,20 @@ enum Command {
         command: Option<IntegrateCommand>,
     },
 
+    /// Collaborative defense mesh network.
+    ///
+    /// Share threat intelligence with other Inner Warden nodes.
+    /// Attacking one server protects all others.
+    ///
+    /// Examples:
+    ///   innerwarden mesh enable
+    ///   innerwarden mesh add-peer https://peer:8790
+    ///   innerwarden mesh status
+    Mesh {
+        #[command(subcommand)]
+        command: MeshCommand,
+    },
+
     /// Module management commands
     Module {
         #[command(subcommand)]
@@ -696,6 +710,37 @@ enum AllowlistCommand {
     List,
 }
 
+#[derive(Subcommand)]
+enum MeshCommand {
+    /// Enable the mesh collaborative defense network.
+    ///
+    /// Starts sharing threat signals with other Inner Warden nodes.
+    /// Disabled by default. Safe — blocks are staged with TTL, never permanent.
+    Enable,
+
+    /// Disable the mesh network.
+    Disable,
+
+    /// Add a peer node to the mesh.
+    ///
+    /// The peer's identity will be discovered automatically via ping.
+    ///
+    /// Examples:
+    ///   innerwarden mesh add-peer https://peer-server:8790
+    ///   innerwarden mesh add-peer https://10.0.1.5:8790 --label prod-eu
+    AddPeer {
+        /// Peer endpoint URL (e.g., https://peer:8790)
+        endpoint: String,
+
+        /// Human-friendly label for this peer
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// Show mesh network status.
+    Status,
+}
+
 /// External integration setup sub-commands.
 #[derive(Subcommand)]
 enum IntegrateCommand {
@@ -1035,6 +1080,15 @@ fn main() -> Result<()> {
             Some(IntegrateCommand::Watchdog { interval }) => {
                 cmd_configure_watchdog(&cli, *interval)
             }
+        },
+        Command::Mesh { ref command } => match command {
+            MeshCommand::Enable => cmd_mesh_enable(&cli),
+            MeshCommand::Disable => cmd_mesh_disable(&cli),
+            MeshCommand::AddPeer {
+                ref endpoint,
+                ref label,
+            } => cmd_mesh_add_peer(&cli, endpoint, label.as_deref()),
+            MeshCommand::Status => cmd_mesh_status(&cli),
         },
         Command::Module { ref command } => match command {
             ModuleCommand::Validate { ref path, strict } => cmd_module_validate(path, *strict),
@@ -9016,6 +9070,150 @@ fn cmd_pipeline_test(cli: &Cli, wait_secs: u64, data_dir: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Mesh network commands
+// ---------------------------------------------------------------------------
+
+fn cmd_mesh_enable(cli: &Cli) -> anyhow::Result<()> {
+    let agent_cfg = cli.agent_config.clone();
+    let content = std::fs::read_to_string(&agent_cfg).unwrap_or_default();
+
+    if content.contains("[mesh]") && content.contains("enabled = true") {
+        println!("Mesh network is already enabled.");
+        return Ok(());
+    }
+
+    // Append or update mesh section
+    if content.contains("[mesh]") {
+        let updated = content.replace("enabled = false", "enabled = true");
+        std::fs::write(&agent_cfg, updated)?;
+    } else {
+        let mut f = std::fs::OpenOptions::new().append(true).open(&agent_cfg)?;
+        use std::io::Write;
+        writeln!(f, "\n[mesh]\nenabled = true\nbind = \"0.0.0.0:8790\"\npoll_secs = 30\nauto_broadcast = true")?;
+    }
+
+    println!("✅ Mesh network enabled.");
+    println!("   Listening on port 8790 for peer connections.");
+    println!("   Add peers: innerwarden mesh add-peer https://peer:8790");
+    println!("   Restart agent to apply: sudo systemctl restart innerwarden-agent");
+    Ok(())
+}
+
+fn cmd_mesh_disable(cli: &Cli) -> anyhow::Result<()> {
+    let agent_cfg = cli.agent_config.clone();
+    let content = std::fs::read_to_string(&agent_cfg).unwrap_or_default();
+
+    if !content.contains("[mesh]") || content.contains("enabled = false") {
+        println!("Mesh network is already disabled.");
+        return Ok(());
+    }
+
+    let updated = content.replace("enabled = true", "enabled = false");
+    std::fs::write(&agent_cfg, updated)?;
+
+    println!("✅ Mesh network disabled.");
+    println!("   Restart agent to apply: sudo systemctl restart innerwarden-agent");
+    Ok(())
+}
+
+fn cmd_mesh_add_peer(cli: &Cli, endpoint: &str, label: Option<&str>) -> anyhow::Result<()> {
+    let agent_cfg = cli.agent_config.clone();
+    let content = std::fs::read_to_string(&agent_cfg).unwrap_or_default();
+
+    if !content.contains("[mesh]") {
+        println!("Mesh not configured. Run 'innerwarden mesh enable' first.");
+        return Ok(());
+    }
+
+    if content.contains(endpoint) {
+        println!("Peer {} already configured.", endpoint);
+        return Ok(());
+    }
+
+    let mut f = std::fs::OpenOptions::new().append(true).open(&agent_cfg)?;
+    use std::io::Write;
+    if let Some(lbl) = label {
+        writeln!(
+            f,
+            "\n[[mesh.peers]]\nendpoint = \"{}\"\npublic_key = \"\"\nlabel = \"{}\"",
+            endpoint, lbl
+        )?;
+    } else {
+        writeln!(
+            f,
+            "\n[[mesh.peers]]\nendpoint = \"{}\"\npublic_key = \"\"",
+            endpoint
+        )?;
+    }
+
+    println!("✅ Peer added: {}", endpoint);
+    if let Some(lbl) = label {
+        println!("   Label: {}", lbl);
+    }
+    println!("   Identity will be discovered automatically via ping.");
+    println!("   Restart agent to apply: sudo systemctl restart innerwarden-agent");
+    Ok(())
+}
+
+fn cmd_mesh_status(cli: &Cli) -> anyhow::Result<()> {
+    let data_dir = cli.data_dir.clone();
+    let state_path = data_dir.join("mesh-state.json");
+
+    if !state_path.exists() {
+        println!("Mesh network: not initialized");
+        println!("Run 'innerwarden mesh enable' to get started.");
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&state_path)?;
+    let state: serde_json::Value = serde_json::from_str(&content)?;
+
+    let identity_path = data_dir.join("mesh-identity.key");
+    let has_identity = identity_path.exists();
+
+    println!("═══════════════════════════════════════════════════");
+    println!("  MESH NETWORK STATUS");
+    println!("═══════════════════════════════════════════════════");
+    println!();
+    println!(
+        "  Identity: {}",
+        if has_identity {
+            "active"
+        } else {
+            "not generated"
+        }
+    );
+
+    let peers = state["peers"].as_array().map(|a| a.len()).unwrap_or(0);
+    let reputations = state["reputations"].as_array();
+
+    println!("  Peers: {}", peers);
+    println!();
+
+    if let Some(reps) = reputations {
+        for rep in reps {
+            let node_id = rep["node_id"].as_str().unwrap_or("?");
+            let trust = rep["trust_score"].as_f64().unwrap_or(0.0);
+            let sent = rep["signals_sent"].as_u64().unwrap_or(0);
+            let confirmed = rep["signals_confirmed"].as_u64().unwrap_or(0);
+            let short_id = if node_id.len() > 16 {
+                &node_id[..16]
+            } else {
+                node_id
+            };
+            println!(
+                "  Peer {}...  trust={:.2}  signals={}/{}confirmed",
+                short_id, trust, sent, confirmed
+            );
+        }
+    }
+
+    println!();
+    println!("═══════════════════════════════════════════════════");
+    Ok(())
+}
+
 // Tests
 // ---------------------------------------------------------------------------
 
