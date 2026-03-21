@@ -2680,6 +2680,19 @@ async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<
         "socat udp",
         "0>&1",
         ">&/dev/tcp",
+        // Python reverse shells
+        "socket.socket",
+        "subprocess.call",
+        "pty.spawn",
+        // Perl reverse shells
+        "use socket",
+        "perl -mio",
+        // PHP reverse shells
+        "fsockopen",
+        // Ruby reverse shells
+        "-rsocket",
+        // mkfifo pipe
+        "mkfifo /tmp/",
     ];
     for indicator in REVERSE_SHELL {
         if lower.contains(indicator) {
@@ -2747,6 +2760,25 @@ async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<
         "eval $(echo",
         "eval \"$(echo",
         "eval `echo",
+        "eval $(base64",
+        "eval $(printf",
+        "| rev |",
+        "printf '\\x",
+        "printf \"\\x",
+        "echo -e '\\x",
+        "echo -e \"\\x",
+        "echo -ne '\\x",
+        "$'\\x",
+        "python -c \"import os",
+        "python3 -c \"import os",
+        "python -c 'import os",
+        "python3 -c 'import os",
+        "python -c \"import subprocess",
+        "python3 -c \"import subprocess",
+        "perl -e 'system",
+        "perl -e 'exec",
+        "ruby -e 'system",
+        "ruby -e '`",
     ];
     for indicator in OBFUSCATION {
         if lower.contains(indicator) {
