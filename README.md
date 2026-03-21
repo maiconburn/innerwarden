@@ -419,8 +419,8 @@ innerwarden test                                    # verify full pipeline end-t
 
 ## Supported environments
 
-- **Linux** — Ubuntu 22.04+, any systemd-based distro
-- **macOS** — Ventura and later (launchd, pf firewall, unified log)
+- **Linux** — Ubuntu 22.04+, any systemd-based distro. Full feature set including eBPF kernel tracing (tracepoints, kprobe, LSM, XDP).
+- **macOS** — Ventura and later (launchd, pf firewall, unified log). Detection and response work fully, but eBPF kernel programs are Linux-only. macOS uses log-based collectors instead.
 
 Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 
