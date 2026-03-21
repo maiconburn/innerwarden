@@ -33,7 +33,7 @@ Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 ## What it does
 
 1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs, **eBPF kernel tracing** (every process, connection, and file access)
-2. **Detects** — eighteen stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, container escapes, suspicious process trees, and more
+2. **Detects** — nineteen stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, privilege escalation, container escapes, suspicious process trees, and more
 3. **Alerts you** — Telegram, Slack, browser push, webhook — real time, on your phone
 4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
 5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
@@ -69,7 +69,8 @@ When a threat is confirmed, Inner Warden picks the right tool.
 
 | Skill | What it does |
 |-------|-------------|
-| **Block IP** | Firewall deny via ufw, iptables, nftables, or pf (macOS) |
+| **Block IP (XDP)** | Wire-speed drop at the network driver — 10M+ packets/sec, zero CPU overhead |
+| **Block IP (firewall)** | Deny via ufw, iptables, nftables, or pf (macOS). Persists across reboots. |
 | **Suspend sudo** | Revokes sudo for a user via sudoers drop-in. Auto-expires after TTL. |
 | **Kill process** | Terminates all processes for a compromised user. TTL-bounded. |
 | **Block container** | Pauses a Docker container. Auto-unpauses after TTL. |
@@ -77,7 +78,7 @@ When a threat is confirmed, Inner Warden picks the right tool.
 | **Rate limit nginx** | Blocks abusive HTTP traffic at the nginx layer with TTL |
 | **Monitor IP** | Bounded tcpdump capture for forensic analysis |
 
-All skills are bounded, audited, and reversible. Nothing persists beyond its TTL unless you extend it.
+Blocking is **layered** — a single block decision triggers XDP (instant kernel drop) + firewall (persists reboot) + Cloudflare edge (stops traffic upstream) + AbuseIPDB report (community intelligence). All skills are bounded, audited, and reversible.
 
 ---
 
@@ -102,10 +103,13 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 | `c2_callback` | Beaconing, C2 port connections, data exfiltration patterns | T1071 |
 | `process_tree` | Suspicious parent-child: web server → shell, Java RCE | T1059 |
 | `container_escape` | nsenter, Docker socket access, host file reads from container | T1611 |
+| `privesc` | Real-time privilege escalation via eBPF kprobe on `commit_creds` | T1068 |
 
 `execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
 
 `c2_callback` uses coefficient-of-variation analysis to detect beaconing — regular-interval connections to the same IP that indicate a compromised process phoning home.
+
+`privesc` hooks the kernel's `commit_creds` function via kprobe. When a non-root process gains root through an unexpected path (not sudo/su/login), a Critical incident fires instantly — before any log is written.
 
 ---
 
@@ -119,7 +123,13 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 
 **Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall, **eBPF syscall tracing** (execve, connect, openat). Optional: Falco, Suricata, osquery, Wazuh, AWS CloudTrail.
 
-**eBPF** — kernel-level visibility on Linux 5.8+. Sees every process execution, outbound connection, and sensitive file access before logs are written. Captures cgroup ID for container awareness. 5KB bytecode, zero performance overhead.
+**eBPF** — six programs running inside the Linux kernel (5.8+):
+- 3 **tracepoints** (execve, connect, openat) — sees every process, connection, and file access
+- 1 **kprobe** (`commit_creds`) — detects privilege escalation in real time
+- 1 **LSM hook** (`bprm_check_security`) — blocks execution from /tmp and /dev/shm at the kernel level
+- 1 **XDP program** — wire-speed IP blocking at the network driver (10M+ pps drop rate)
+
+All in 10KB of bytecode. Container-aware via cgroup ID. Zero performance overhead.
 
 **Agent** — reads incidents, applies algorithm gate (skip low severity, private IPs, already-blocked), optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
@@ -416,7 +426,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test       # 699 tests
+make test       # 692 tests
 make build      # debug build (sensor + agent + ctl)
 make replay-qa  # end-to-end integration test
 ```
@@ -441,7 +451,7 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has eighteen detectors, eBPF kernel tracing, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has nineteen detectors, six eBPF kernel programs (tracepoints + kprobe + LSM + XDP), eleven response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).
@@ -451,7 +461,6 @@ Yes. See [module authoring guide](docs/module-authoring.md).
 ## Links
 
 - [Website](https://www.innerwarden.com)
-- [Roadmap](ROADMAP.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)

@@ -36,9 +36,9 @@ collectors/
 detectors/
   ssh_bruteforce.rs    search_abuse.rs      execution_guard.rs
   credential_stuffing.rs  web_scan.rs       user_agent_scanner.rs
-  port_scan.rs         sudo_abuse.rs        c2_callback.rs
+  port_scan.rs         sudo_abuse.rs        c2_callback.rs       container_escape.rs
   distributed_ssh.rs   suspicious_login.rs  process_tree.rs
-  docker_anomaly.rs    integrity_alert.rs   container_escape.rs
+  docker_anomaly.rs    integrity_alert.rs   privesc.rs
   osquery_anomaly.rs   suricata_alert.rs
 sinks/
   jsonl.rs             state.rs
@@ -52,7 +52,8 @@ ai/
   openai.rs   anthropic.rs   ollama.rs
 skills/builtin/
   block_ip_ufw.rs   block_ip_iptables.rs   block_ip_nftables.rs   block_ip_pf.rs
-  suspend_user_sudo.rs   monitor_ip.rs   kill_process.rs   block_container.rs
+  block_ip_xdp.rs   suspend_user_sudo.rs   monitor_ip.rs   kill_process.rs
+  block_container.rs
   honeypot/ (mod.rs, ssh_interact.rs, http_interact.rs)
 dashboard.rs   report.rs        data_retention.rs
 correlation.rs telemetry.rs     narrative.rs
@@ -91,7 +92,7 @@ See [docs/operations.md](docs/operations.md) for full command reference, deploym
 
 **Sensor** — collects host activity (auth_log, journald, docker, integrity, exec_audit, nginx, firewall logs, **eBPF syscalls**) via `mpsc::channel(1024)`, passes through stateful detectors (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse, c2_callback, process_tree, container_escape, etc.), writes `events-*.jsonl` + `incidents-*.jsonl`.
 
-**eBPF subsystem** — kernel-level visibility via tracepoints (execve, connect, openat). Compiled as separate `#![no_std]` crate targeting `bpfel-unknown-none`, loaded via Aya framework. Captures cgroup_id for container awareness. Ppid resolved in userspace via `/proc/<pid>/status`. Shared types in `crates/sensor-ebpf-types/`.
+**eBPF subsystem** — 6 kernel programs: 3 tracepoints (execve, connect, openat), 1 kprobe (commit_creds for privesc), 1 LSM hook (bprm_check_security for /tmp exec blocking), 1 XDP program (wire-speed IP blocking). Compiled as `#![no_std]` crate targeting `bpfel-unknown-none`, loaded via Aya. Container-aware via cgroup_id. Shared types in `crates/sensor-ebpf-types/`.
 
 **Agent** — reads incrementally via byte-offset cursors. Fast loop (2s): webhook + Telegram → algorithm gate → enrichment (AbuseIPDB, GeoIP) → AI provider → skill executor → audit trail → notifications. Slow loop (30s): narrative, telemetry, data retention.
 
@@ -144,5 +145,4 @@ For each feature or fix, in this order:
 | [docs/module-authoring.md](docs/module-authoring.md) | Guide for creating new modules |
 | [docs/integration-recipes.md](docs/integration-recipes.md) | Declarative integration recipe format |
 | [docs/integrated-setup.md](docs/integrated-setup.md) | Ubuntu 22.04 setup: Falco + Suricata + osquery + Telegram |
-| [ROADMAP.md](ROADMAP.md) | Active roadmap and planned phases |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
