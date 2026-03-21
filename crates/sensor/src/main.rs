@@ -20,7 +20,6 @@ use collectors::{
 };
 use detectors::c2_callback::C2CallbackDetector;
 use detectors::container_escape::ContainerEscapeDetector;
-use detectors::process_tree::ProcessTreeDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
@@ -28,6 +27,7 @@ use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::integrity_alert::IntegrityAlertDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
+use detectors::process_tree::ProcessTreeDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;

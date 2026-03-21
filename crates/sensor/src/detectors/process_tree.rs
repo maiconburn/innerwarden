@@ -31,35 +31,125 @@ struct ProcessEntry {
 /// (parent_pattern, child_pattern, severity, description)
 const SUSPICIOUS_LINEAGE: &[(&str, &str, Severity, &str)] = &[
     // Web servers spawning shells
-    ("nginx", "sh", Severity::Critical, "Web server spawned shell"),
-    ("nginx", "bash", Severity::Critical, "Web server spawned shell"),
-    ("apache", "sh", Severity::Critical, "Web server spawned shell"),
-    ("apache2", "sh", Severity::Critical, "Web server spawned shell"),
-    ("httpd", "sh", Severity::Critical, "Web server spawned shell"),
-    ("httpd", "bash", Severity::Critical, "Web server spawned shell"),
-    ("caddy", "sh", Severity::Critical, "Web server spawned shell"),
-    ("caddy", "bash", Severity::Critical, "Web server spawned shell"),
+    (
+        "nginx",
+        "sh",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "nginx",
+        "bash",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "apache",
+        "sh",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "apache2",
+        "sh",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "httpd",
+        "sh",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "httpd",
+        "bash",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "caddy",
+        "sh",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
+    (
+        "caddy",
+        "bash",
+        Severity::Critical,
+        "Web server spawned shell",
+    ),
     // Database processes spawning commands
     ("mysqld", "sh", Severity::High, "Database spawned shell"),
     ("mysqld", "bash", Severity::High, "Database spawned shell"),
     ("postgres", "sh", Severity::High, "Database spawned shell"),
     ("postgres", "bash", Severity::High, "Database spawned shell"),
     ("mongod", "sh", Severity::High, "Database spawned shell"),
-    ("redis-server", "sh", Severity::High, "Database spawned shell"),
+    (
+        "redis-server",
+        "sh",
+        Severity::High,
+        "Database spawned shell",
+    ),
     // Web servers spawning network tools
-    ("nginx", "curl", Severity::High, "Web server spawned network tool"),
-    ("nginx", "wget", Severity::High, "Web server spawned network tool"),
-    ("apache2", "curl", Severity::High, "Web server spawned network tool"),
-    ("httpd", "curl", Severity::High, "Web server spawned network tool"),
+    (
+        "nginx",
+        "curl",
+        Severity::High,
+        "Web server spawned network tool",
+    ),
+    (
+        "nginx",
+        "wget",
+        Severity::High,
+        "Web server spawned network tool",
+    ),
+    (
+        "apache2",
+        "curl",
+        Severity::High,
+        "Web server spawned network tool",
+    ),
+    (
+        "httpd",
+        "curl",
+        Severity::High,
+        "Web server spawned network tool",
+    ),
     // Java/Node.js spawning shells (RCE)
-    ("java", "sh", Severity::Critical, "Java process spawned shell — possible RCE"),
-    ("java", "bash", Severity::Critical, "Java process spawned shell — possible RCE"),
+    (
+        "java",
+        "sh",
+        Severity::Critical,
+        "Java process spawned shell — possible RCE",
+    ),
+    (
+        "java",
+        "bash",
+        Severity::Critical,
+        "Java process spawned shell — possible RCE",
+    ),
     ("node", "sh", Severity::High, "Node.js spawned shell"),
     ("node", "bash", Severity::High, "Node.js spawned shell"),
     // Container runtime spawning shells (escape attempt)
-    ("containerd", "sh", Severity::Critical, "Container runtime spawned shell"),
-    ("dockerd", "sh", Severity::Critical, "Docker daemon spawned shell"),
-    ("runc", "sh", Severity::Critical, "Container runtime spawned shell"),
+    (
+        "containerd",
+        "sh",
+        Severity::Critical,
+        "Container runtime spawned shell",
+    ),
+    (
+        "dockerd",
+        "sh",
+        Severity::Critical,
+        "Docker daemon spawned shell",
+    ),
+    (
+        "runc",
+        "sh",
+        Severity::Critical,
+        "Container runtime spawned shell",
+    ),
 ];
 
 impl ProcessTreeDetector {
@@ -119,10 +209,7 @@ impl ProcessTreeDetector {
         }
 
         let child_base = comm.split('/').next_back().unwrap_or(&comm);
-        let parent_base = parent_comm
-            .split('/')
-            .next_back()
-            .unwrap_or(&parent_comm);
+        let parent_base = parent_comm.split('/').next_back().unwrap_or(&parent_comm);
 
         // Check against suspicious lineage patterns
         for &(parent_pat, child_pat, ref severity, description) in SUSPICIOUS_LINEAGE {
@@ -152,9 +239,7 @@ impl ProcessTreeDetector {
                         "{description}: {parent_base} (pid={ppid}) → {child_base} (pid={pid}) [container]"
                     )
                 } else {
-                    format!(
-                        "{description}: {parent_base} (pid={ppid}) → {child_base} (pid={pid})"
-                    )
+                    format!("{description}: {parent_base} (pid={ppid}) → {child_base} (pid={pid})")
                 };
 
                 return Some(Incident {
@@ -177,9 +262,7 @@ impl ProcessTreeDetector {
                     }]),
                     recommended_checks: vec![
                         format!("Investigate: why did {parent_base} spawn {child_base}?"),
-                        format!(
-                            "Check process tree: ps -ef --forest | grep -E '{ppid}|{pid}'"
-                        ),
+                        format!("Check process tree: ps -ef --forest | grep -E '{ppid}|{pid}'"),
                         "Review web application logs for exploitation attempts".to_string(),
                         "Consider killing the child process immediately".to_string(),
                     ],
@@ -331,20 +414,8 @@ mod tests {
         let mut det = ProcessTreeDetector::new("test", 300);
         let now = Utc::now();
 
-        det.process(&exec_event(
-            "nginx",
-            100,
-            1,
-            Some("abc123def456"),
-            now,
-        ));
-        let inc = det.process(&exec_event(
-            "sh",
-            200,
-            100,
-            Some("abc123def456"),
-            now,
-        ));
+        det.process(&exec_event("nginx", 100, 1, Some("abc123def456"), now));
+        let inc = det.process(&exec_event("sh", 200, 100, Some("abc123def456"), now));
 
         assert!(inc.is_some());
         let inc = inc.unwrap();

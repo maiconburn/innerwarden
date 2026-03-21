@@ -19,29 +19,93 @@ pub struct ContainerEscapeDetector {
 
 /// Commands that indicate container escape attempts when run from inside a container.
 const ESCAPE_COMMANDS: &[(&str, Severity, &str)] = &[
-    ("nsenter", Severity::Critical, "Namespace escape via nsenter"),
+    (
+        "nsenter",
+        Severity::Critical,
+        "Namespace escape via nsenter",
+    ),
     ("chroot", Severity::Critical, "Chroot escape attempt"),
     ("mount", Severity::High, "Filesystem mount from container"),
-    ("umount", Severity::High, "Filesystem unmount from container"),
-    ("modprobe", Severity::Critical, "Kernel module load from container"),
-    ("insmod", Severity::Critical, "Kernel module load from container"),
+    (
+        "umount",
+        Severity::High,
+        "Filesystem unmount from container",
+    ),
+    (
+        "modprobe",
+        Severity::Critical,
+        "Kernel module load from container",
+    ),
+    (
+        "insmod",
+        Severity::Critical,
+        "Kernel module load from container",
+    ),
     ("ip", Severity::High, "Network configuration from container"),
-    ("iptables", Severity::Critical, "Firewall manipulation from container"),
-    ("nft", Severity::Critical, "Firewall manipulation from container"),
-    ("cgroup", Severity::High, "Cgroup manipulation from container"),
+    (
+        "iptables",
+        Severity::Critical,
+        "Firewall manipulation from container",
+    ),
+    (
+        "nft",
+        Severity::Critical,
+        "Firewall manipulation from container",
+    ),
+    (
+        "cgroup",
+        Severity::High,
+        "Cgroup manipulation from container",
+    ),
 ];
 
 /// Sensitive host paths that shouldn't be accessed from containers.
 const SENSITIVE_PATHS: &[(&str, Severity, &str)] = &[
-    ("/var/run/docker.sock", Severity::Critical, "Docker socket access from container"),
-    ("/run/docker.sock", Severity::Critical, "Docker socket access from container"),
-    ("/proc/sysrq-trigger", Severity::Critical, "SysRq trigger from container"),
-    ("/proc/kcore", Severity::Critical, "Kernel memory read from container"),
-    ("/dev/sda", Severity::Critical, "Block device access from container"),
-    ("/dev/vda", Severity::Critical, "Block device access from container"),
-    ("/etc/shadow", Severity::High, "Host shadow file read from container"),
-    ("/etc/sudoers", Severity::High, "Host sudoers read from container"),
-    ("/root/.ssh", Severity::High, "Host SSH keys accessed from container"),
+    (
+        "/var/run/docker.sock",
+        Severity::Critical,
+        "Docker socket access from container",
+    ),
+    (
+        "/run/docker.sock",
+        Severity::Critical,
+        "Docker socket access from container",
+    ),
+    (
+        "/proc/sysrq-trigger",
+        Severity::Critical,
+        "SysRq trigger from container",
+    ),
+    (
+        "/proc/kcore",
+        Severity::Critical,
+        "Kernel memory read from container",
+    ),
+    (
+        "/dev/sda",
+        Severity::Critical,
+        "Block device access from container",
+    ),
+    (
+        "/dev/vda",
+        Severity::Critical,
+        "Block device access from container",
+    ),
+    (
+        "/etc/shadow",
+        Severity::High,
+        "Host shadow file read from container",
+    ),
+    (
+        "/etc/sudoers",
+        Severity::High,
+        "Host sudoers read from container",
+    ),
+    (
+        "/root/.ssh",
+        Severity::High,
+        "Host SSH keys accessed from container",
+    ),
 ];
 
 impl ContainerEscapeDetector {
@@ -207,11 +271,7 @@ impl ContainerEscapeDetector {
 mod tests {
     use super::*;
 
-    fn container_exec_event(
-        comm: &str,
-        container_id: &str,
-        ts: DateTime<Utc>,
-    ) -> Event {
+    fn container_exec_event(comm: &str, container_id: &str, ts: DateTime<Utc>) -> Event {
         Event {
             ts,
             host: "test".to_string(),
@@ -299,12 +359,7 @@ mod tests {
         let mut det = ContainerEscapeDetector::new("test", 300);
         let now = Utc::now();
 
-        let inc = det.process(&container_file_event(
-            "cat",
-            "/etc/shadow",
-            "abc123",
-            now,
-        ));
+        let inc = det.process(&container_file_event("cat", "/etc/shadow", "abc123", now));
         assert!(inc.is_some());
         assert_eq!(inc.unwrap().severity, Severity::High);
     }

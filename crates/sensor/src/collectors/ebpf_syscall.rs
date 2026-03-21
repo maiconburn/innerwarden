@@ -48,8 +48,7 @@ pub fn is_ebpf_available() -> bool {
     }
 
     // eBPF bytecode exists
-    std::path::Path::new(EBPF_OBJ_PATH).exists()
-        || std::path::Path::new(EBPF_OBJ_PATH_DEV).exists()
+    std::path::Path::new(EBPF_OBJ_PATH).exists() || std::path::Path::new(EBPF_OBJ_PATH_DEV).exists()
 }
 
 /// Find the eBPF bytecode file.
@@ -587,7 +586,14 @@ mod tests {
     #[test]
     fn file_open_event_write_to_shadow() {
         let event = file_open_to_event(
-            100, 0, 1, 0, None, "vim", "/etc/shadow", 0x1, // O_WRONLY
+            100,
+            0,
+            1,
+            0,
+            None,
+            "vim",
+            "/etc/shadow",
+            0x1, // O_WRONLY
             "test-host",
         );
         assert_eq!(event.kind, "file.write_access");
@@ -598,7 +604,14 @@ mod tests {
     #[test]
     fn file_open_event_read_normal() {
         let event = file_open_to_event(
-            100, 1000, 1, 0, None, "cat", "/etc/passwd", 0x0, // O_RDONLY
+            100,
+            1000,
+            1,
+            0,
+            None,
+            "cat",
+            "/etc/passwd",
+            0x0, // O_RDONLY
             "test-host",
         );
         assert_eq!(event.kind, "file.read_access");
