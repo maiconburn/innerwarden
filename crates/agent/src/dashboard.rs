@@ -5779,26 +5779,26 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   <!-- ── Sensors view (default home — hacker HUD) ── -->
   <style>
-    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(0,255,204,0.1), inset 0 0 8px rgba(0,255,204,0.03); } 50% { box-shadow: 0 0 24px rgba(0,255,204,0.25), inset 0 0 12px rgba(0,255,204,0.06); } }
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Space+Grotesk:wght@400;600;700&display=swap');
+    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(120,229,255,0.08), inset 0 0 6px rgba(120,229,255,0.02); } 50% { box-shadow: 0 0 20px rgba(120,229,255,0.18), inset 0 0 10px rgba(120,229,255,0.04); } }
     @keyframes scan-line { 0% { top: -2px; } 100% { top: 100%; } }
-    @keyframes neon-flicker { 0%,100% { opacity: 1; } 92% { opacity: 1; } 93% { opacity: 0.7; } 94% { opacity: 1; } }
-    .sensor-hud { display:flex; flex-direction:column; gap:14px; padding:14px; position:relative; overflow:hidden; background:radial-gradient(ellipse at 50% 0%, rgba(0,255,204,0.03) 0%, transparent 60%); }
-    .sensor-hud::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent 10%,rgba(0,255,204,0.6) 50%,transparent 90%); animation:scan-line 3s linear infinite; pointer-events:none; z-index:1; filter:blur(1px); }
-    .hud-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px; }
-    .hud-card { background:rgba(5,15,25,0.9); border:1px solid rgba(0,255,204,0.2); border-radius:4px; padding:14px 12px; text-align:center; animation:pulse-glow 3s ease-in-out infinite; position:relative; overflow:hidden; backdrop-filter:blur(4px); }
-    .hud-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,rgba(0,255,204,0.8),transparent); }
-    .hud-card::after { content:''; position:absolute; bottom:0; left:20%; right:20%; height:1px; background:linear-gradient(90deg,transparent,rgba(0,255,204,0.3),transparent); }
-    .hud-val { font-size:1.8rem; font-weight:800; font-family:'Courier New',monospace; letter-spacing:3px; text-shadow:0 0 10px currentColor; animation:neon-flicker 4s ease-in-out infinite; }
-    .hud-label { font-size:0.6rem; color:#4a6070; text-transform:uppercase; letter-spacing:2px; margin-top:4px; font-family:'Courier New',monospace; }
-    .hud-source { background:rgba(5,15,25,0.85); border:1px solid rgba(0,255,204,0.08); border-radius:3px; padding:8px 10px; display:flex; align-items:center; gap:8px; transition:border-color 0.3s; }
-    .hud-source:hover { border-color:rgba(0,255,204,0.3); }
-    .hud-source-dot { width:6px; height:6px; border-radius:50%; box-shadow:0 0 8px currentColor; animation:pulse-glow 2s ease-in-out infinite; }
-    .hud-source-name { font-size:0.7rem; font-family:'Courier New',monospace; color:#8899aa; flex:1; text-transform:uppercase; letter-spacing:1px; }
-    .hud-source-count { font-size:0.85rem; font-weight:700; font-family:'Courier New',monospace; text-shadow:0 0 6px currentColor; }
-    .hud-panel { background:rgba(5,15,25,0.85); border:1px solid rgba(0,255,204,0.1); border-radius:4px; padding:16px; position:relative; }
-    .hud-panel::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent 5%,rgba(0,255,204,0.4) 50%,transparent 95%); }
-    .hud-panel-title { margin:0 0 12px 0; color:#00ffcc; font-size:0.75rem; font-family:'Courier New',monospace; text-transform:uppercase; letter-spacing:3px; text-shadow:0 0 8px rgba(0,255,204,0.4); }
-    .hud-panel-title::before { content:'// '; color:rgba(0,255,204,0.3); }
+    @keyframes gauge-pulse { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
+    .sensor-hud { display:flex; flex-direction:column; gap:14px; padding:16px; position:relative; overflow:hidden; background: radial-gradient(circle at top, rgba(33,86,140,0.12), transparent 40%), radial-gradient(circle at 80% 12%, rgba(120,229,255,0.06), transparent 30%), #040814; }
+    .sensor-hud::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent 10%,rgba(120,229,255,0.5) 50%,transparent 90%); animation:scan-line 4s linear infinite; pointer-events:none; z-index:1; filter:blur(0.5px); }
+    .hud-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; }
+    .hud-card { background:#091121; border:1px solid #1a2943; border-radius:10px; padding:16px 14px; text-align:center; animation:pulse-glow 4s ease-in-out infinite; position:relative; overflow:hidden; }
+    .hud-card::before { content:''; position:absolute; top:0; left:10%; right:10%; height:1px; background:linear-gradient(90deg,transparent,#78e5ff,transparent); opacity:0.6; }
+    .hud-val { font-size:2rem; font-weight:800; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:2px; text-shadow:0 0 12px currentColor; }
+    .hud-label { font-size:0.6rem; color:#8b9db8; text-transform:uppercase; letter-spacing:2px; margin-top:4px; font-family:'Space Grotesk',sans-serif; font-weight:600; }
+    .hud-source { background:#091121; border:1px solid #1a2943; border-radius:8px; padding:10px 12px; display:flex; align-items:center; gap:10px; transition:all 0.3s; }
+    .hud-source:hover { border-color:#78e5ff; background:rgba(120,229,255,0.03); }
+    .hud-source-dot { width:8px; height:8px; border-radius:50%; box-shadow:0 0 8px currentColor; animation:gauge-pulse 2s ease-in-out infinite; }
+    .hud-source-name { font-size:0.7rem; font-family:'JetBrains Mono',monospace; color:#8b9db8; flex:1; text-transform:uppercase; letter-spacing:1px; }
+    .hud-source-count { font-size:0.9rem; font-weight:700; font-family:'JetBrains Mono',monospace; text-shadow:0 0 6px currentColor; }
+    .hud-panel { background:#091121; border:1px solid #1a2943; border-radius:10px; padding:18px; position:relative; }
+    .hud-panel::before { content:''; position:absolute; top:0; left:5%; right:5%; height:1px; background:linear-gradient(90deg,transparent,rgba(120,229,255,0.3),transparent); }
+    .hud-panel-title { margin:0 0 14px 0; color:#7fe7ff; font-size:0.75rem; font-family:'Space Grotesk',sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:3px; }
+    .hud-panel-title::before { content:''; display:inline-block; width:8px; height:8px; background:#7fe7ff; border-radius:2px; margin-right:8px; box-shadow:0 0 6px #7fe7ff; vertical-align:middle; }
   </style>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
     <div class="hud-stats" id="sensorCards"></div>
@@ -6215,11 +6215,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
   }
 
   // ── Sensors view ─────────────────────────────────────────────────────
+  // Site palette: chart-1 #7fe7ff, chart-2 #4ade80, chart-3 #fbbf24, chart-4 #fb7185, chart-5 #60a5fa
   const SENSOR_COLORS = {
-    ebpf: '#00ffcc', auditd: '#ff2d55', auth_log: '#ffcc00', journald: '#00ff88',
-    docker: '#0088ff', nginx: '#ff6600', suricata: '#cc00ff', osquery: '#00ddff',
-    syslog: '#8888aa', wazuh: '#ff0066', integrity: '#88ff00', cloudtrail: '#0066ff',
-    exec_audit: '#ff4488',
+    ebpf: '#7fe7ff', auditd: '#fb7185', auth_log: '#fbbf24', journald: '#4ade80',
+    docker: '#60a5fa', nginx: '#f97316', suricata: '#a78bfa', osquery: '#22d3ee',
+    syslog: '#8b9db8', wazuh: '#f472b6', integrity: '#84cc16', cloudtrail: '#3b82f6',
+    exec_audit: '#fb7185',
   };
   function sensorColor(name) { return SENSOR_COLORS[name] || '#78e5ff'; }
 
@@ -6284,8 +6285,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     const buckets = Object.keys(timeline).sort();
     if (buckets.length === 0) {
-      ctx.fillStyle = '#666'; ctx.font = '14px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('No event data yet', w/2, h/2); return;
+      ctx.fillStyle = '#8b9db8'; ctx.font = '13px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
+      ctx.fillText('AWAITING SENSOR DATA...', w/2, h/2); return;
     }
 
     const sourceNames = sources.map(s => s.name);
@@ -6301,12 +6302,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const ch = h - pad.t - pad.b;
     const barW = Math.max(2, cw / buckets.length - 1);
 
-    // Grid lines with subtle glow
-    ctx.strokeStyle = 'rgba(0,255,204,0.06)'; ctx.lineWidth = 1;
+    // Grid lines (site border color #1a2943)
+    ctx.strokeStyle = '#1a2943'; ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
       const y = pad.t + ch - (ch * i / 4);
       ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-      ctx.fillStyle = '#4a5568'; ctx.font = '10px "Courier New",monospace'; ctx.textAlign = 'right';
+      ctx.fillStyle = '#8b9db8'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'right';
       ctx.fillText(Math.round(maxTotal * i / 4).toString(), pad.l - 4, y + 3);
     }
 
@@ -6329,8 +6330,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     ctx.shadowBlur = 0; ctx.globalAlpha = 1;
 
-    // X labels (every ~6th bucket)
-    ctx.fillStyle = '#666'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    // X labels
+    ctx.fillStyle = '#8b9db8'; ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
     const step = Math.max(1, Math.floor(buckets.length / 8));
     for (let i = 0; i < buckets.length; i += step) {
       const x = pad.l + (i / buckets.length) * cw + barW / 2;
@@ -6338,7 +6339,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
 
     // Legend
-    ctx.font = '9px monospace'; ctx.textAlign = 'left';
+    ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign = 'left';
     let lx = pad.l;
     for (const s of sourceNames.slice(0, 6)) {
       ctx.fillStyle = sensorColor(s); ctx.fillRect(lx, 2, 8, 8);
@@ -6363,7 +6364,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const pad = { l: 120, r: 10, t: 5 };
     const cw = w - pad.l - pad.r;
 
-    const colors = ['#ff2d55','#00ffcc','#ffcc00','#00ff88','#cc00ff','#ff6600','#0088ff','#00ddff'];
+    const colors = ['#7fe7ff','#4ade80','#fbbf24','#fb7185','#60a5fa','#a78bfa','#f97316','#22d3ee'];
 
     for (let i = 0; i < top.length; i++) {
       const d = top[i];
@@ -6383,10 +6384,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
       ctx.strokeRect(pad.l, y, bw, barH);
       ctx.globalAlpha = 1;
 
-      ctx.fillStyle = '#8899aa'; ctx.font = '10px "Courier New",monospace'; ctx.textAlign = 'right';
+      ctx.fillStyle = '#8b9db8'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'right';
       ctx.fillText(d.name, pad.l - 6, y + barH - 3);
 
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px "Courier New",monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#edf6ff'; ctx.font = 'bold 10px "JetBrains Mono",monospace'; ctx.textAlign = 'left';
       if (bw > 30) ctx.fillText(d.count.toString(), pad.l + 4, y + barH - 3);
       else { ctx.fillStyle = '#aaa'; ctx.fillText(d.count.toString(), pad.l + bw + 4, y + barH - 3); }
     }
