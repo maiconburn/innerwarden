@@ -87,6 +87,102 @@ certbot renew
 df -h",
     );
 
+    // /proc — attackers check these to detect honeypots/containers
+    fs.insert("/proc/version", "Linux version 5.15.0-91-generic (buildd@lcy02-amd64-045) (gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #101-Ubuntu SMP Tue Nov 14 13:30:08 UTC 2023");
+
+    fs.insert("/proc/cpuinfo", "\
+processor\t: 0
+vendor_id\t: GenuineIntel
+cpu family\t: 6
+model\t\t: 85
+model name\t: Intel(R) Xeon(R) Platinum 8175M CPU @ 2.50GHz
+stepping\t: 4
+microcode\t: 0x2007006
+cpu MHz\t\t: 2499.998
+cache size\t: 33792 KB
+physical id\t: 0
+siblings\t: 2
+core id\t\t: 0
+cpu cores\t: 2
+bogomips\t: 4999.99
+flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor
+\n\
+processor\t: 1
+vendor_id\t: GenuineIntel
+cpu family\t: 6
+model\t\t: 85
+model name\t: Intel(R) Xeon(R) Platinum 8175M CPU @ 2.50GHz
+cpu MHz\t\t: 2499.998
+cache size\t: 33792 KB
+cpu cores\t: 2
+bogomips\t: 4999.99");
+
+    fs.insert(
+        "/proc/meminfo",
+        "\
+MemTotal:        4031140 kB
+MemFree:          521340 kB
+MemAvailable:    2512340 kB
+Buffers:          184320 kB
+Cached:          1825600 kB
+SwapCached:            0 kB
+Active:          1645200 kB
+Inactive:        1180400 kB
+SwapTotal:       2097148 kB
+SwapFree:        2097148 kB",
+    );
+
+    fs.insert(
+        "/proc/self/status",
+        "\
+Name:\tbash
+Umask:\t0022
+State:\tS (sleeping)
+Tgid:\t3456
+Pid:\t3456
+PPid:\t936
+TracerPid:\t0
+Uid:\t0\t0\t0\t0
+Gid:\t0\t0\t0\t0
+VmPeak:\t   12340 kB
+VmSize:\t   10072 kB
+VmRSS:\t    3600 kB
+Threads:\t1",
+    );
+
+    fs.insert("/proc/self/cgroup", "0::/");
+
+    fs.insert("/proc/1/cmdline", "/sbin/init");
+
+    fs.insert(
+        "/proc/mounts",
+        "\
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+udev /dev devtmpfs rw,nosuid,relatime,size=2015568k,nr_inodes=503892,mode=755 0 0
+devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000 0 0
+tmpfs /run tmpfs rw,nosuid,nodev,noexec,relatime,size=403116k,mode=755 0 0
+/dev/sda1 / ext4 rw,relatime 0 0
+tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0",
+    );
+
+    fs.insert("/proc/uptime", "4078800.42 7891234.56");
+
+    fs.insert("/proc/loadavg", "0.12 0.08 0.03 1/142 3489");
+
+    // /sys — hardware info attackers check
+    fs.insert(
+        "/sys/class/dmi/id/product_name",
+        "Standard PC (i440FX + PIIX, 1996)",
+    );
+    fs.insert("/sys/class/dmi/id/sys_vendor", "QEMU");
+    // Note: real servers show Dell/HP/Supermicro. Showing QEMU is intentional —
+    // attackers who detect VM may think it's a cloud instance, not a honeypot.
+
+    fs.insert("/sys/class/net/eth0/address", "02:00:17:a4:b3:c2");
+    fs.insert("/sys/class/net/eth0/operstate", "up");
+    fs.insert("/sys/class/net/eth0/speed", "10000");
+
     fs.insert(
         "/etc/ssh/sshd_config",
         "\
@@ -184,6 +280,9 @@ pub fn try_handle(cmd: &str, user: &str, hostname: &str) -> Option<String> {
                 } else {
                     "cron.d  crontab  hosts  hostname  os-release  passwd  shadow  ssh".to_string()
                 }),
+                "/proc" => Some("1  buddyinfo  cmdline  cpuinfo  crypto  devices  diskstats  filesystems  interrupts  iomem  ioports  kallsyms  kcore  key-users  keys  kmsg  loadavg  locks  meminfo  misc  modules  mounts  net  pagetypeinfo  partitions  sched_debug  schedstat  self  slabinfo  softirqs  stat  swaps  sys  sysrq-trigger  timer_list  uptime  version  vmstat  zoneinfo".to_string()),
+                "/sys" => Some("block  bus  class  dev  devices  firmware  fs  kernel  module  power".to_string()),
+                "/sys/class" => Some("block  dmi  gpio  input  leds  mem  misc  net  power_supply  rtc  thermal  tty  vc".to_string()),
                 _ => Some(format!("ls: cannot access '{path}': No such file or directory")),
             }
         }
@@ -410,5 +509,47 @@ mod tests {
     fn id_returns_uid() {
         let out = try_handle("id", "root", "host").unwrap();
         assert!(out.contains("uid=0(root)"));
+    }
+
+    #[test]
+    fn cat_proc_cpuinfo() {
+        let out = try_handle("cat /proc/cpuinfo", "root", "host").unwrap();
+        assert!(out.contains("Intel"));
+        assert!(out.contains("cpu MHz"));
+    }
+
+    #[test]
+    fn cat_proc_meminfo() {
+        let out = try_handle("cat /proc/meminfo", "root", "host").unwrap();
+        assert!(out.contains("MemTotal"));
+        assert!(out.contains("SwapFree"));
+    }
+
+    #[test]
+    fn cat_proc_version() {
+        let out = try_handle("cat /proc/version", "root", "host").unwrap();
+        assert!(out.contains("Linux version 5.15"));
+    }
+
+    #[test]
+    fn ls_proc_returns_listing() {
+        let out = try_handle("ls /proc", "root", "host").unwrap();
+        assert!(out.contains("cpuinfo"));
+        assert!(out.contains("meminfo"));
+        assert!(out.contains("version"));
+    }
+
+    #[test]
+    fn ls_sys_returns_listing() {
+        let out = try_handle("ls /sys", "root", "host").unwrap();
+        assert!(out.contains("class"));
+        assert!(out.contains("devices"));
+    }
+
+    #[test]
+    fn cat_proc_self_cgroup_not_container() {
+        let out = try_handle("cat /proc/self/cgroup", "root", "host").unwrap();
+        // Should NOT contain docker/lxc indicators — looks like bare metal
+        assert_eq!(out, "0::/");
     }
 }
