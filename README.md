@@ -32,8 +32,8 @@ Installs in 10 seconds. Starts in observe-only mode. You decide when to go live.
 
 ## What it does
 
-1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs
-2. **Detects** — thirteen stateful detectors identify brute-force, credential stuffing, port scans, sudo abuse, and more
+1. **Watches** — collects signals from your host: SSH, Docker, nginx, sudo, shell audit, firewall logs, **eBPF kernel tracing** (every process, connection, and file access)
+2. **Detects** — eighteen stateful detectors identify brute-force, credential stuffing, port scans, C2 callbacks, container escapes, suspicious process trees, and more
 3. **Alerts you** — Telegram, Slack, browser push, webhook — real time, on your phone
 4. **Decides** — optionally asks AI for a confidence-scored recommendation (not required)
 5. **Acts** — blocks the IP, suspends sudo, deploys a honeypot, captures traffic. Or does nothing — your call.
@@ -98,8 +98,14 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
 | `integrity_alert` | Changes to /etc/passwd, /etc/shadow, sudoers, SSH keys | T1098 |
 | `osquery_anomaly` | New SUID binaries, unauthorized SSH keys, crontab changes | T1053 |
 | `distributed_ssh` | Coordinated botnet scan — many IPs, few attempts each | T1110 |
+| `suspicious_login` | Brute-force followed by successful login = compromise | T1110 |
+| `c2_callback` | Beaconing, C2 port connections, data exfiltration patterns | T1071 |
+| `process_tree` | Suspicious parent-child: web server → shell, Java RCE | T1059 |
+| `container_escape` | nsenter, Docker socket access, host file reads from container | T1611 |
 
 `execution_guard` parses commands structurally using tree-sitter-bash. It catches `curl | sh` pipelines, `/tmp` execution, reverse shell patterns, and staged download-chmod-execute sequences.
+
+`c2_callback` uses coefficient-of-variation analysis to detect beaconing — regular-interval connections to the same IP that indicate a compromised process phoning home.
 
 ---
 
@@ -111,7 +117,9 @@ All skills are bounded, audited, and reversible. Nothing persists beyond its TTL
  activity     patterns        recommend        honeypot / capture
 ```
 
-**Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall. Optional: Falco, Suricata, osquery, Wazuh, AWS CloudTrail.
+**Sensor** — deterministic signal collection. No AI, no HTTP. Sources: auth.log, journald, Docker events, file integrity, nginx, shell audit, macOS unified log, syslog firewall, **eBPF syscall tracing** (execve, connect, openat). Optional: Falco, Suricata, osquery, Wazuh, AWS CloudTrail.
+
+**eBPF** — kernel-level visibility on Linux 5.8+. Sees every process execution, outbound connection, and sensitive file access before logs are written. Captures cgroup ID for container awareness. 5KB bytecode, zero performance overhead.
 
 **Agent** — reads incidents, applies algorithm gate (skip low severity, private IPs, already-blocked), optionally sends to AI for confidence-scored triage, executes the chosen skill. Policy-gated: nothing runs unless you've explicitly enabled it.
 
@@ -126,7 +134,7 @@ Inner Warden detects and logs threats without any AI provider. Add AI when you w
 - **Confidence-scored recommendations** — not binary yes/no, but 0.0–1.0 scored decisions
 - **Policy-gated execution** — AI recommends, your policy decides if it runs
 - **Full transparency** — every AI decision recorded in append-only JSONL with reasoning
-- **Three providers** — OpenAI, Anthropic, or Ollama (fully local, no API key)
+- **Twelve providers** — OpenAI, Anthropic, Ollama (local), OpenRouter, Groq, Together, Mistral, DeepSeek, Fireworks, Cerebras, Google Gemini, xAI Grok
 
 AI is advisory unless you explicitly enable auto-execution. You set the confidence threshold.
 
@@ -408,7 +416,7 @@ Pre-built binaries: `x86_64` and `aarch64` for both platforms.
 ## Build and test
 
 ```bash
-make test       # 640 tests
+make test       # 699 tests
 make build      # debug build (sensor + agent + ctl)
 make replay-qa  # end-to-end integration test
 ```
@@ -433,7 +441,7 @@ No. Starts in observe-only mode. You enable response skills and disable dry-run 
 No. Detection, logging, dashboard, and reports all work without AI. AI adds confidence-scored triage for autonomous response — it is optional.
 
 **How is this different from Fail2ban?**
-Fail2ban blocks IPs based on regex patterns. Inner Warden has thirteen detectors, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
+Fail2ban blocks IPs based on regex patterns. Inner Warden has eighteen detectors, eBPF kernel tracing, eight response skills (including sudo suspension, process kill, container pause, honeypots, and traffic capture), twelve AI providers, Telegram bot, AbuseIPDB intelligence sharing, and a full investigation dashboard.
 
 **Can I add custom detectors or skills?**
 Yes. See [module authoring guide](docs/module-authoring.md).
