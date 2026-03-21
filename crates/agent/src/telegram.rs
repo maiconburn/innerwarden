@@ -532,6 +532,7 @@ impl TelegramClient {
         session_id: &str,
         duration_secs: u64,
         commands: &[String],
+        credentials: &[(String, Option<String>)], // (username, password)
         iocs: &crate::ioc::ExtractedIocs,
         ai_verdict: &str,
         auto_blocked: bool,
@@ -546,6 +547,32 @@ impl TelegramClient {
             ip = escape_html(ip),
             session_id = escape_html(session_id),
         ));
+
+        // Credentials tried
+        if !credentials.is_empty() {
+            let mut cred_block = "\n<b>Credentials tried:</b>\n".to_string();
+            for (user, pass) in credentials.iter().take(10) {
+                let pass_display = pass
+                    .as_deref()
+                    .map(|p| {
+                        if p.len() > 20 {
+                            format!("{}...", &p[..20])
+                        } else {
+                            p.to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "(key auth)".to_string());
+                cred_block.push_str(&format!(
+                    "  <code>{}</code> / <code>{}</code>\n",
+                    escape_html(user),
+                    escape_html(&pass_display)
+                ));
+            }
+            if credentials.len() > 10 {
+                cred_block.push_str(&format!("  ... +{} more\n", credentials.len() - 10));
+            }
+            lines.push(cred_block.trim_end().to_string());
+        }
 
         if !commands.is_empty() {
             let mut cmd_block = "\n<b>Their playbook:</b>\n".to_string();

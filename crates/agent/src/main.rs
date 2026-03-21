@@ -4378,6 +4378,38 @@ async fn read_shell_commands_from_evidence(path: &std::path::Path) -> Vec<String
     commands
 }
 
+async fn read_credentials_from_evidence(path: &std::path::Path) -> Vec<(String, Option<String>)> {
+    use tokio::io::AsyncBufReadExt;
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        return vec![];
+    };
+    let mut lines = tokio::io::BufReader::new(file).lines();
+    let mut creds = Vec::new();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+            if val.get("type").and_then(|t| t.as_str()) == Some("ssh_connection") {
+                if let Some(attempts) = val.get("auth_attempts").and_then(|a| a.as_array()) {
+                    for a in attempts {
+                        let user = a
+                            .get("username")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let pass = a
+                            .get("password")
+                            .and_then(|p| p.as_str())
+                            .map(|p| p.to_string());
+                        if !user.is_empty() {
+                            creds.push((user, pass));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    creds
+}
+
 /// Spawned in the background after a honeypot session starts.
 /// Reads evidence, extracts IOCs, gets AI verdict, auto-blocks, sends Telegram report.
 #[allow(clippy::too_many_arguments)]
@@ -4424,10 +4456,13 @@ async fn spawn_post_session_tasks(
         }
     }
 
+    // Extract credentials from evidence
+    let credentials = read_credentials_from_evidence(&evidence_path).await;
+
     // Extract IOCs from commands
     let iocs = ioc::extract_from_commands(&commands);
 
-    // Get AI verdict (brief summary in Portuguese)
+    // Get AI verdict
     let verdict = if let Some(ref ai) = ai_provider {
         let cmd_text = if commands.is_empty() {
             "No commands recorded.".to_string()
@@ -4557,6 +4592,7 @@ async fn spawn_post_session_tasks(
                 session_id,
                 duration,
                 &commands,
+                &credentials,
                 &iocs,
                 &verdict,
                 auto_blocked,
@@ -4782,6 +4818,13 @@ async fn handle_always_on_connection(
         false
     };
 
+    // Extract credentials from evidence
+    let credentials: Vec<(String, Option<String>)> = evidence
+        .auth_attempts
+        .iter()
+        .map(|a| (a.username.clone(), a.password.clone()))
+        .collect();
+
     // Send Telegram T.5 post-session report.
     if let Some(ref tg) = telegram_client {
         let duration = evidence.auth_attempts.len() as u64 * 5; // rough estimate
@@ -4791,6 +4834,7 @@ async fn handle_always_on_connection(
                 &session_id,
                 duration,
                 &commands,
+                &credentials,
                 &iocs,
                 &verdict,
                 auto_blocked,
