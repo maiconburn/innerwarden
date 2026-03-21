@@ -5727,6 +5727,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     }
     .report-export-btn:hover { background: rgba(120,229,255,0.1); color: var(--accent); border-color: rgba(120,229,255,0.28); }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
 </head>
 <body>
 <div class="app">
@@ -6273,124 +6274,126 @@ const INDEX_HTML: &str = r##"<!doctype html>
     } catch(e) { console.error('loadSensors', e); }
   }
 
+  // Chart.js global config — match site design system
+  let timelineChart = null;
+  let detectorChart = null;
+  if (typeof Chart !== 'undefined') {
+    Chart.defaults.color = '#8b9db8';
+    Chart.defaults.borderColor = '#1a2943';
+    Chart.defaults.font.family = "'JetBrains Mono', monospace";
+    Chart.defaults.font.size = 11;
+    Chart.defaults.animation.duration = 800;
+    Chart.defaults.animation.easing = 'easeOutQuart';
+  }
+
   function drawTimelineChart(timeline, sources) {
     const canvas = document.getElementById('sensorChart');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
-    const H = canvas.height = 200 * (window.devicePixelRatio || 1);
-    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
-    const w = canvas.offsetWidth, h = 200;
-    ctx.clearRect(0, 0, W, H);
+    if (!canvas || typeof Chart === 'undefined') return;
 
     const buckets = Object.keys(timeline).sort();
-    if (buckets.length === 0) {
-      ctx.fillStyle = '#8b9db8'; ctx.font = '13px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
-      ctx.fillText('AWAITING SENSOR DATA...', w/2, h/2); return;
-    }
-
     const sourceNames = sources.map(s => s.name);
-    // Stack data
-    const stacks = buckets.map(b => {
-      const row = timeline[b] || {};
-      return sourceNames.map(s => row[s] || 0);
-    });
-    const maxTotal = Math.max(...stacks.map(s => s.reduce((a,b) => a+b, 0)), 1);
 
-    const pad = { l: 40, r: 10, t: 10, b: 25 };
-    const cw = w - pad.l - pad.r;
-    const ch = h - pad.t - pad.b;
-    const barW = Math.max(2, cw / buckets.length - 1);
+    const datasets = sourceNames.map(name => ({
+      label: name,
+      data: buckets.map(b => (timeline[b] || {})[name] || 0),
+      backgroundColor: sensorColor(name) + 'cc',
+      borderColor: sensorColor(name),
+      borderWidth: 1,
+      borderRadius: 2,
+      hoverBackgroundColor: sensorColor(name),
+    }));
 
-    // Grid lines (site border color #1a2943)
-    ctx.strokeStyle = '#1a2943'; ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = pad.t + ch - (ch * i / 4);
-      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-      ctx.fillStyle = '#8b9db8'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'right';
-      ctx.fillText(Math.round(maxTotal * i / 4).toString(), pad.l - 4, y + 3);
-    }
-
-    // Bars with neon glow
-    for (let bi = 0; bi < buckets.length; bi++) {
-      const x = pad.l + (bi / buckets.length) * cw;
-      let yOff = 0;
-      for (let si = 0; si < sourceNames.length; si++) {
-        const val = stacks[bi][si];
-        if (val === 0) continue;
-        const barH = (val / maxTotal) * ch;
-        const color = sensorColor(sourceNames[si]);
-        // Neon glow effect
-        ctx.shadowColor = color; ctx.shadowBlur = 6;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.9;
-        ctx.fillRect(x, pad.t + ch - yOff - barH, barW, barH);
-        yOff += barH;
+    if (timelineChart) timelineChart.destroy();
+    timelineChart = new Chart(canvas, {
+      type: 'bar',
+      data: { labels: buckets, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            stacked: true,
+            grid: { color: '#1a2943', lineWidth: 0.5 },
+            ticks: { maxTicksLimit: 12, font: { size: 9 } },
+          },
+          y: {
+            stacked: true,
+            grid: { color: '#1a2943', lineWidth: 0.5 },
+            beginAtZero: true,
+            ticks: { font: { size: 10 } },
+          }
+        },
+        plugins: {
+          legend: {
+            position: 'top',
+            labels: { boxWidth: 10, padding: 12, font: { size: 10 }, usePointStyle: true, pointStyle: 'circle' }
+          },
+          tooltip: {
+            backgroundColor: '#091121ee',
+            borderColor: '#7fe7ff44',
+            borderWidth: 1,
+            titleFont: { family: "'Space Grotesk', sans-serif", weight: '600' },
+            bodyFont: { family: "'JetBrains Mono', monospace" },
+            padding: 10,
+            cornerRadius: 8,
+            mode: 'index',
+          }
+        },
+        interaction: { mode: 'index', intersect: false },
       }
-    }
-    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
-
-    // X labels
-    ctx.fillStyle = '#8b9db8'; ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign = 'center';
-    const step = Math.max(1, Math.floor(buckets.length / 8));
-    for (let i = 0; i < buckets.length; i += step) {
-      const x = pad.l + (i / buckets.length) * cw + barW / 2;
-      ctx.fillText(buckets[i], x, h - 4);
-    }
-
-    // Legend
-    ctx.font = '9px "JetBrains Mono",monospace'; ctx.textAlign = 'left';
-    let lx = pad.l;
-    for (const s of sourceNames.slice(0, 6)) {
-      ctx.fillStyle = sensorColor(s); ctx.fillRect(lx, 2, 8, 8);
-      ctx.fillStyle = '#aaa'; ctx.fillText(s, lx + 10, 10);
-      lx += ctx.measureText(s).width + 20;
-    }
+    });
   }
 
   function drawDetectorChart(detectors) {
     const canvas = document.getElementById('detectorChart');
-    if (!canvas || detectors.length === 0) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
-    const H = canvas.height = 180 * (window.devicePixelRatio || 1);
-    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
-    const w = canvas.offsetWidth, h = 180;
-    ctx.clearRect(0, 0, W, H);
+    if (!canvas || typeof Chart === 'undefined' || detectors.length === 0) return;
 
-    const top = detectors.slice(0, 8);
-    const max = Math.max(...top.map(d => d.count), 1);
-    const barH = Math.min(18, (h - 10) / top.length - 4);
-    const pad = { l: 120, r: 10, t: 5 };
-    const cw = w - pad.l - pad.r;
+    const top = detectors.slice(0, 10);
+    const colors = ['#7fe7ff','#4ade80','#fbbf24','#fb7185','#60a5fa','#a78bfa','#f97316','#22d3ee','#f472b6','#84cc16'];
 
-    const colors = ['#7fe7ff','#4ade80','#fbbf24','#fb7185','#60a5fa','#a78bfa','#f97316','#22d3ee'];
-
-    for (let i = 0; i < top.length; i++) {
-      const d = top[i];
-      const y = pad.t + i * (barH + 4);
-      const bw = (d.count / max) * cw;
-      const color = colors[i % colors.length];
-
-      // Neon bar with glow
-      ctx.shadowColor = color; ctx.shadowBlur = 8;
-      ctx.fillStyle = color;
-      ctx.globalAlpha = 0.85;
-      ctx.fillRect(pad.l, y, bw, barH);
-      ctx.shadowBlur = 0; ctx.globalAlpha = 1;
-
-      // Border glow
-      ctx.strokeStyle = color; ctx.globalAlpha = 0.3; ctx.lineWidth = 1;
-      ctx.strokeRect(pad.l, y, bw, barH);
-      ctx.globalAlpha = 1;
-
-      ctx.fillStyle = '#8b9db8'; ctx.font = '10px "JetBrains Mono",monospace'; ctx.textAlign = 'right';
-      ctx.fillText(d.name, pad.l - 6, y + barH - 3);
-
-      ctx.fillStyle = '#edf6ff'; ctx.font = 'bold 10px "JetBrains Mono",monospace'; ctx.textAlign = 'left';
-      if (bw > 30) ctx.fillText(d.count.toString(), pad.l + 4, y + barH - 3);
-      else { ctx.fillStyle = '#aaa'; ctx.fillText(d.count.toString(), pad.l + bw + 4, y + barH - 3); }
-    }
+    if (detectorChart) detectorChart.destroy();
+    detectorChart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: top.map(d => d.name),
+        datasets: [{
+          data: top.map(d => d.count),
+          backgroundColor: top.map((_, i) => colors[i % colors.length] + 'cc'),
+          borderColor: top.map((_, i) => colors[i % colors.length]),
+          borderWidth: 1,
+          borderRadius: 4,
+          hoverBackgroundColor: top.map((_, i) => colors[i % colors.length]),
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            grid: { color: '#1a2943', lineWidth: 0.5 },
+            beginAtZero: true,
+            ticks: { font: { size: 10 } },
+          },
+          y: {
+            grid: { display: false },
+            ticks: { font: { size: 10, family: "'JetBrains Mono', monospace" } },
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#091121ee',
+            borderColor: '#7fe7ff44',
+            borderWidth: 1,
+            bodyFont: { family: "'JetBrains Mono', monospace" },
+            padding: 10,
+            cornerRadius: 8,
+            callbacks: { label: (c) => c.raw + ' incidents' }
+          }
+        }
+      }
+    });
   }
 
   async function loadReport() {
