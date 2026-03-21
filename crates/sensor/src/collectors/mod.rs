@@ -1,6 +1,7 @@
 pub mod auth_log;
 pub mod cloudtrail;
 pub mod docker;
+pub mod ebpf_syscall;
 pub mod exec_audit;
 pub mod falco_log;
 pub mod integrity;

@@ -1,0 +1,14 @@
+[package]
+name = "innerwarden-ebpf-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared types between eBPF kernel programs and userspace sensor."
+
+[features]
+default = []
+# Enable userspace-only features (serde, etc.)
+userspace = ["serde"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }

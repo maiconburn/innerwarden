@@ -1497,6 +1497,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "innerwarden-ebpf-types"
+version = "0.1.13"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "innerwarden-sensor"
 version = "0.1.13"
 dependencies = [
