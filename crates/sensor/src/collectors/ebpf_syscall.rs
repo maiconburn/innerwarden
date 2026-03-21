@@ -233,7 +233,7 @@ pub async fn run(tx: mpsc::Sender<Event>, host: String) {
 
     loop {
         while let Some(item) = ring_buf.next() {
-            let data = item.as_ref();
+            let data: &[u8] = &item;
             if data.len() < 4 {
                 continue;
             }
