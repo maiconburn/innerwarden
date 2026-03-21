@@ -61,25 +61,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         exec_count += 1;
                         if exec_count <= 5 {
                             let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                            let uid = u32::from_ne_bytes(data[16..20].try_into().unwrap());
-                            // comm starts at offset 24, 64 bytes
-                            let comm_bytes = &data[24..88];
+                            // comm starts at offset 32 (after cgroup_id field)
+                            let comm_bytes = &data[32..96];
                             let comm_end = comm_bytes.iter().position(|&b| b == 0).unwrap_or(64);
                             let comm = std::str::from_utf8(&comm_bytes[..comm_end]).unwrap_or("?");
-                            println!("  EXEC  pid={pid:<6} uid={uid:<5} comm={comm}");
+                            println!("  EXEC  pid={pid:<6} comm={comm}");
                         }
                     }
                     2 => {
                         connect_count += 1;
                         if connect_count <= 5 {
                             let pid = u32::from_ne_bytes(data[4..8].try_into().unwrap());
-                            let comm_bytes = &data[16..80];
+                            // comm at offset 32 (after ppid + padding + cgroup_id)
+                            let comm_bytes = &data[32..96];
                             let comm_end = comm_bytes.iter().position(|&b| b == 0).unwrap_or(64);
                             let comm = std::str::from_utf8(&comm_bytes[..comm_end]).unwrap_or("?");
-                            // dst_addr at offset 80, dst_port at offset 84
-                            if data.len() >= 86 {
-                                let addr_bytes = &data[80..84];
-                                let port = u16::from_ne_bytes(data[84..86].try_into().unwrap());
+                            // dst_addr at offset 96, dst_port at offset 100
+                            if data.len() >= 102 {
+                                let addr_bytes = &data[96..100];
+                                let port = u16::from_ne_bytes(data[100..102].try_into().unwrap());
                                 let ip = format!(
                                     "{}.{}.{}.{}",
                                     addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]
