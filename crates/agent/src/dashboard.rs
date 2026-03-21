@@ -691,6 +691,7 @@ pub async fn serve(
         )
         .route("/api/agent/check-ip", get(api_agent_check_ip))
         .route("/api/agent/check-command", post(api_agent_check_command))
+        .route("/metrics", get(api_prometheus_metrics))
         .with_state(state.clone());
 
     // Dashboard routes — auth required
@@ -2835,6 +2836,94 @@ async fn api_agent_check_command(Json(body): Json<CheckCommandRequest>) -> Json<
         "recommendation": recommendation,
         "explanation": explanation,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus metrics endpoint
+// ---------------------------------------------------------------------------
+
+async fn api_prometheus_metrics(State(state): State<DashboardState>) -> axum::response::Response {
+    let date = resolve_date(None);
+
+    // Read latest telemetry snapshot (small file, already cached)
+    let telem = crate::telemetry::read_latest_snapshot(&state.data_dir, &date);
+
+    let mut out = String::with_capacity(2048);
+
+    // Help + type headers for Prometheus scraper
+    out.push_str("# HELP innerwarden_events_total Total events collected today by collector\n");
+    out.push_str("# TYPE innerwarden_events_total counter\n");
+    if let Some(ref t) = telem {
+        for (collector, count) in &t.events_by_collector {
+            out.push_str(&format!(
+                "innerwarden_events_total{{collector=\"{collector}\"}} {count}\n"
+            ));
+        }
+    }
+
+    out.push_str("# HELP innerwarden_incidents_total Total incidents detected today by detector\n");
+    out.push_str("# TYPE innerwarden_incidents_total counter\n");
+    if let Some(ref t) = telem {
+        for (detector, count) in &t.incidents_by_detector {
+            out.push_str(&format!(
+                "innerwarden_incidents_total{{detector=\"{detector}\"}} {count}\n"
+            ));
+        }
+    }
+
+    out.push_str("# HELP innerwarden_decisions_total Total AI/auto decisions today by action\n");
+    out.push_str("# TYPE innerwarden_decisions_total counter\n");
+    if let Some(ref t) = telem {
+        for (action, count) in &t.decisions_by_action {
+            out.push_str(&format!(
+                "innerwarden_decisions_total{{action=\"{action}\"}} {count}\n"
+            ));
+        }
+    }
+
+    out.push_str("# HELP innerwarden_ai_calls_total Total AI provider calls today\n");
+    out.push_str("# TYPE innerwarden_ai_calls_total counter\n");
+    if let Some(ref t) = telem {
+        out.push_str(&format!("innerwarden_ai_calls_total {}\n", t.ai_sent_count));
+    }
+
+    out.push_str("# HELP innerwarden_ai_latency_avg_ms Average AI decision latency in ms\n");
+    out.push_str("# TYPE innerwarden_ai_latency_avg_ms gauge\n");
+    if let Some(ref t) = telem {
+        out.push_str(&format!(
+            "innerwarden_ai_latency_avg_ms {:.1}\n",
+            t.avg_decision_latency_ms
+        ));
+    }
+
+    out.push_str("# HELP innerwarden_errors_total Errors by component\n");
+    out.push_str("# TYPE innerwarden_errors_total counter\n");
+    if let Some(ref t) = telem {
+        for (component, count) in &t.errors_by_component {
+            out.push_str(&format!(
+                "innerwarden_errors_total{{component=\"{component}\"}} {count}\n"
+            ));
+        }
+    }
+
+    out.push_str("# HELP innerwarden_executions_total Skill executions today (dry_run vs live)\n");
+    out.push_str("# TYPE innerwarden_executions_total counter\n");
+    if let Some(ref t) = telem {
+        out.push_str(&format!(
+            "innerwarden_executions_total{{mode=\"dry_run\"}} {}\n",
+            t.dry_run_execution_count
+        ));
+        out.push_str(&format!(
+            "innerwarden_executions_total{{mode=\"live\"}} {}\n",
+            t.real_execution_count
+        ));
+    }
+
+    axum::response::Response::builder()
+        .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(Body::from(out))
+        .unwrap()
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------

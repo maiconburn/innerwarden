@@ -1813,9 +1813,13 @@ async fn process_incidents(
         if !notify_suppressed {
             if let Some(min_rank) = webhook_min_rank {
                 if webhook::severity_rank(&incident.severity) >= min_rank {
-                    if let Err(e) =
-                        webhook::send_incident(&cfg.webhook.url, cfg.webhook.timeout_secs, incident)
-                            .await
+                    if let Err(e) = webhook::send_incident(
+                        &cfg.webhook.url,
+                        cfg.webhook.timeout_secs,
+                        incident,
+                        &cfg.webhook.format,
+                    )
+                    .await
                     {
                         state.telemetry.observe_error("webhook");
                         warn!(incident_id = %incident.incident_id, "webhook failed: {e:#}");

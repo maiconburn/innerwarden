@@ -92,6 +92,16 @@ pub struct WebhookConfig {
     /// Request timeout in seconds (default: 10)
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+
+    /// Payload format: "default", "pagerduty", "opsgenie" (default: "default")
+    /// PagerDuty: set url to https://events.pagerduty.com/v2/enqueue?routing_key=YOUR_KEY
+    /// Opsgenie: set url to https://api.opsgenie.com/v2/alerts with GenieKey header in url
+    #[serde(default = "default_webhook_format")]
+    pub format: String,
+}
+
+fn default_webhook_format() -> String {
+    "default".to_string()
 }
 
 impl Default for WebhookConfig {
@@ -101,6 +111,7 @@ impl Default for WebhookConfig {
             url: String::new(),
             min_severity: default_min_severity(),
             timeout_secs: default_timeout_secs(),
+            format: default_webhook_format(),
         }
     }
 }
