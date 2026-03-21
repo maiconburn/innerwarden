@@ -1994,7 +1994,6 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
     let recent = |age: Option<u64>| age.map(|s| s < 7200).unwrap_or(false);
 
     let auth_log = "/var/log/auth.log";
-    let falco_log = "/var/log/falco/falco.log";
     let suricata = "/var/log/suricata/eve.json";
     let wazuh = "/var/ossec/logs/alerts/alerts.json";
     let osquery = "/var/log/osquery/osqueryd.results.log";
@@ -2065,14 +2064,14 @@ async fn api_collectors(State(state): State<DashboardState>) -> Json<serde_json:
             "desc": "auditd EXECVE events — execution guard and shell command trail"
         },
         {
-            "id": "falco_log",
-            "name": "Falco",
-            "kind": "external",
-            "log_path": falco_log,
-            "detected": file_exists(falco_log),
-            "active": recent(file_age_secs(falco_log)),
-            "events_today": count_source("falco_log"),
-            "desc": "Falco eBPF/syscall runtime security alerts"
+            "id": "ebpf",
+            "name": "eBPF Kernel",
+            "kind": "native",
+            "log_path": "/usr/local/lib/innerwarden/innerwarden-ebpf",
+            "detected": file_exists("/usr/local/lib/innerwarden/innerwarden-ebpf"),
+            "active": true,
+            "events_today": count_source("ebpf"),
+            "desc": "6 kernel programs: execve + connect + openat + kprobe + LSM + XDP"
         },
         {
             "id": "suricata_eve",
@@ -5780,22 +5779,26 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   <!-- ── Sensors view (default home — hacker HUD) ── -->
   <style>
-    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(120,229,255,0.15); } 50% { box-shadow: 0 0 20px rgba(120,229,255,0.35); } }
-    @keyframes scan-line { 0% { top: 0; } 100% { top: 100%; } }
-    .sensor-hud { display:flex; flex-direction:column; gap:14px; padding:14px; position:relative; overflow:hidden; }
-    .sensor-hud::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,rgba(120,229,255,0.4),transparent); animation:scan-line 4s linear infinite; pointer-events:none; z-index:1; }
+    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(0,255,204,0.1), inset 0 0 8px rgba(0,255,204,0.03); } 50% { box-shadow: 0 0 24px rgba(0,255,204,0.25), inset 0 0 12px rgba(0,255,204,0.06); } }
+    @keyframes scan-line { 0% { top: -2px; } 100% { top: 100%; } }
+    @keyframes neon-flicker { 0%,100% { opacity: 1; } 92% { opacity: 1; } 93% { opacity: 0.7; } 94% { opacity: 1; } }
+    .sensor-hud { display:flex; flex-direction:column; gap:14px; padding:14px; position:relative; overflow:hidden; background:radial-gradient(ellipse at 50% 0%, rgba(0,255,204,0.03) 0%, transparent 60%); }
+    .sensor-hud::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent 10%,rgba(0,255,204,0.6) 50%,transparent 90%); animation:scan-line 3s linear infinite; pointer-events:none; z-index:1; filter:blur(1px); }
     .hud-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px; }
-    .hud-card { background:rgba(10,20,30,0.8); border:1px solid rgba(120,229,255,0.15); border-radius:6px; padding:12px; text-align:center; animation:pulse-glow 3s ease-in-out infinite; position:relative; overflow:hidden; }
-    .hud-card::after { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,var(--accent),transparent); }
-    .hud-val { font-size:1.6rem; font-weight:800; font-family:'Courier New',monospace; letter-spacing:2px; }
-    .hud-label { font-size:0.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
-    .hud-source { background:rgba(10,20,30,0.8); border:1px solid rgba(120,229,255,0.1); border-radius:4px; padding:8px 10px; display:flex; align-items:center; gap:8px; }
-    .hud-source-dot { width:8px; height:8px; border-radius:50%; animation:pulse-glow 2s ease-in-out infinite; }
-    .hud-source-name { font-size:0.75rem; font-family:'Courier New',monospace; color:var(--fg); flex:1; }
-    .hud-source-count { font-size:0.85rem; font-weight:700; font-family:'Courier New',monospace; }
-    .hud-panel { background:rgba(10,20,30,0.8); border:1px solid rgba(120,229,255,0.12); border-radius:6px; padding:14px; position:relative; }
-    .hud-panel-title { margin:0 0 10px 0; color:var(--accent); font-size:0.8rem; font-family:'Courier New',monospace; text-transform:uppercase; letter-spacing:2px; }
-    .hud-panel-title::before { content:'> '; color:rgba(120,229,255,0.5); }
+    .hud-card { background:rgba(5,15,25,0.9); border:1px solid rgba(0,255,204,0.2); border-radius:4px; padding:14px 12px; text-align:center; animation:pulse-glow 3s ease-in-out infinite; position:relative; overflow:hidden; backdrop-filter:blur(4px); }
+    .hud-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,rgba(0,255,204,0.8),transparent); }
+    .hud-card::after { content:''; position:absolute; bottom:0; left:20%; right:20%; height:1px; background:linear-gradient(90deg,transparent,rgba(0,255,204,0.3),transparent); }
+    .hud-val { font-size:1.8rem; font-weight:800; font-family:'Courier New',monospace; letter-spacing:3px; text-shadow:0 0 10px currentColor; animation:neon-flicker 4s ease-in-out infinite; }
+    .hud-label { font-size:0.6rem; color:#4a6070; text-transform:uppercase; letter-spacing:2px; margin-top:4px; font-family:'Courier New',monospace; }
+    .hud-source { background:rgba(5,15,25,0.85); border:1px solid rgba(0,255,204,0.08); border-radius:3px; padding:8px 10px; display:flex; align-items:center; gap:8px; transition:border-color 0.3s; }
+    .hud-source:hover { border-color:rgba(0,255,204,0.3); }
+    .hud-source-dot { width:6px; height:6px; border-radius:50%; box-shadow:0 0 8px currentColor; animation:pulse-glow 2s ease-in-out infinite; }
+    .hud-source-name { font-size:0.7rem; font-family:'Courier New',monospace; color:#8899aa; flex:1; text-transform:uppercase; letter-spacing:1px; }
+    .hud-source-count { font-size:0.85rem; font-weight:700; font-family:'Courier New',monospace; text-shadow:0 0 6px currentColor; }
+    .hud-panel { background:rgba(5,15,25,0.85); border:1px solid rgba(0,255,204,0.1); border-radius:4px; padding:16px; position:relative; }
+    .hud-panel::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent 5%,rgba(0,255,204,0.4) 50%,transparent 95%); }
+    .hud-panel-title { margin:0 0 12px 0; color:#00ffcc; font-size:0.75rem; font-family:'Courier New',monospace; text-transform:uppercase; letter-spacing:3px; text-shadow:0 0 8px rgba(0,255,204,0.4); }
+    .hud-panel-title::before { content:'// '; color:rgba(0,255,204,0.3); }
   </style>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
     <div class="hud-stats" id="sensorCards"></div>
@@ -6213,9 +6216,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
   // ── Sensors view ─────────────────────────────────────────────────────
   const SENSOR_COLORS = {
-    ebpf: '#78e5ff', auditd: '#ff6b6b', auth_log: '#ffd93d', journald: '#6bcb77',
-    docker: '#4d96ff', nginx: '#ff922b', suricata: '#cc5de8', osquery: '#20c997',
-    syslog: '#868e96', wazuh: '#f06595', integrity: '#a9e34b', cloudtrail: '#339af0',
+    ebpf: '#00ffcc', auditd: '#ff2d55', auth_log: '#ffcc00', journald: '#00ff88',
+    docker: '#0088ff', nginx: '#ff6600', suricata: '#cc00ff', osquery: '#00ddff',
+    syslog: '#8888aa', wazuh: '#ff0066', integrity: '#88ff00', cloudtrail: '#0066ff',
+    exec_audit: '#ff4488',
   };
   function sensorColor(name) { return SENSOR_COLORS[name] || '#78e5ff'; }
 
@@ -6297,16 +6301,16 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const ch = h - pad.t - pad.b;
     const barW = Math.max(2, cw / buckets.length - 1);
 
-    // Y axis
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1;
+    // Grid lines with subtle glow
+    ctx.strokeStyle = 'rgba(0,255,204,0.06)'; ctx.lineWidth = 1;
     for (let i = 0; i <= 4; i++) {
       const y = pad.t + ch - (ch * i / 4);
       ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-      ctx.fillStyle = '#666'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+      ctx.fillStyle = '#4a5568'; ctx.font = '10px "Courier New",monospace'; ctx.textAlign = 'right';
       ctx.fillText(Math.round(maxTotal * i / 4).toString(), pad.l - 4, y + 3);
     }
 
-    // Bars
+    // Bars with neon glow
     for (let bi = 0; bi < buckets.length; bi++) {
       const x = pad.l + (bi / buckets.length) * cw;
       let yOff = 0;
@@ -6314,13 +6318,16 @@ const INDEX_HTML: &str = r##"<!doctype html>
         const val = stacks[bi][si];
         if (val === 0) continue;
         const barH = (val / maxTotal) * ch;
-        ctx.fillStyle = sensorColor(sourceNames[si]);
-        ctx.globalAlpha = 0.85;
+        const color = sensorColor(sourceNames[si]);
+        // Neon glow effect
+        ctx.shadowColor = color; ctx.shadowBlur = 6;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.9;
         ctx.fillRect(x, pad.t + ch - yOff - barH, barW, barH);
         yOff += barH;
       }
     }
-    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
 
     // X labels (every ~6th bucket)
     ctx.fillStyle = '#666'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
@@ -6356,22 +6363,30 @@ const INDEX_HTML: &str = r##"<!doctype html>
     const pad = { l: 120, r: 10, t: 5 };
     const cw = w - pad.l - pad.r;
 
-    const colors = ['#ff6b6b','#78e5ff','#ffd93d','#6bcb77','#cc5de8','#ff922b','#4d96ff','#20c997'];
+    const colors = ['#ff2d55','#00ffcc','#ffcc00','#00ff88','#cc00ff','#ff6600','#0088ff','#00ddff'];
 
     for (let i = 0; i < top.length; i++) {
       const d = top[i];
       const y = pad.t + i * (barH + 4);
       const bw = (d.count / max) * cw;
+      const color = colors[i % colors.length];
 
-      ctx.fillStyle = colors[i % colors.length];
-      ctx.globalAlpha = 0.8;
+      // Neon bar with glow
+      ctx.shadowColor = color; ctx.shadowBlur = 8;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.85;
       ctx.fillRect(pad.l, y, bw, barH);
+      ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+
+      // Border glow
+      ctx.strokeStyle = color; ctx.globalAlpha = 0.3; ctx.lineWidth = 1;
+      ctx.strokeRect(pad.l, y, bw, barH);
       ctx.globalAlpha = 1;
 
-      ctx.fillStyle = '#ccc'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+      ctx.fillStyle = '#8899aa'; ctx.font = '10px "Courier New",monospace'; ctx.textAlign = 'right';
       ctx.fillText(d.name, pad.l - 6, y + barH - 3);
 
-      ctx.fillStyle = '#fff'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px "Courier New",monospace'; ctx.textAlign = 'left';
       if (bw > 30) ctx.fillText(d.count.toString(), pad.l + 4, y + barH - 3);
       else { ctx.fillStyle = '#aaa'; ctx.fillText(d.count.toString(), pad.l + bw + 4, y + barH - 3); }
     }
@@ -6700,8 +6715,8 @@ const INDEX_HTML: &str = r##"<!doctype html>
       card('🛡️', 'IP Blocker',    resp.enabled,       'Automatically blocks IPs via UFW/iptables when AI decides',     resp.enabled ? 'ON' : 'OFF',  'native',   'Zero cost. Uses your existing firewall.',                                                    'innerwarden enable block-ip') +
       card('🪤', 'Honeypot',      hpMode !== 'off',   'Decoy server that captures and logs attacker behavior',         hpBadge,                      'native',   'Built-in. listener mode activates on AI demand; always_on keeps it permanently open.',      '') +
       card('🌍', 'GeoIP',         integ.geoip,        'Adds country/ISP info to every threat — free, no key needed',  integ.geoip ? 'ON' : 'OFF',   'native',   'Free. Calls ip-api.com (45 req/min). Best first enrichment to enable.',                      'innerwarden integrate geoip') +
-      card('🔍', 'AbuseIPDB',     integ.abuseipdb,    'IP reputation check before AI call — skips known-bad IPs',     integ.abuseipdb ? 'ON' : 'OFF','external', 'Free plan: 1,000 req/day. Paid plans from $50/mo. Caution: do not combine auto_block_threshold with fail2ban auto-banning.', 'innerwarden integrate abuseipdb') +
-      card('🔒', 'Fail2ban',      integ.fail2ban,     'Syncs fail2ban bans into InnerWarden\'s audit trail',           integ.fail2ban ? 'ON' : 'OFF', 'external', 'Free & lightweight. If active, set abuseipdb auto_block_threshold=0 to avoid double-blocking.', 'innerwarden integrate fail2ban') +
+      card('🔍', 'AbuseIPDB',     integ.abuseipdb,    'IP reputation + delayed community reporting (5min grace)',      integ.abuseipdb ? 'ON' : 'OFF','external', 'Free plan: 1,000 req/day. Reports delayed 5 min to allow false-positive correction.', 'innerwarden integrate abuseipdb') +
+      card('⚡', 'XDP Firewall',  true,               'Wire-speed IP blocking at network driver — 10M+ pps drop rate', 'ON',  'native',  'Active when eBPF sensor runs. Layered: XDP + firewall + Cloudflare + AbuseIPDB in one action.', '') +
       card('🔔', 'Telegram',      integ.telegram,     'Real-time alerts + inline approval buttons on your phone',     integ.telegram ? 'ON' : 'OFF', 'external', 'Free. Best solo-operator channel — supports bidirectional approve/reject.',                  'innerwarden notify telegram') +
       card('💬', 'Slack',         integ.slack,        'Incident notifications to a Slack team channel',               integ.slack ? 'ON' : 'OFF',   'external', 'Free (requires workspace). Activating alongside Telegram doubles alert volume for same incident.', 'innerwarden notify slack') +
       card('☁️', 'Cloudflare',    integ.cloudflare,   'Pushes blocked IPs to Cloudflare edge after block-ip fires',   integ.cloudflare ? 'ON' : 'OFF','external', 'Free plan supports IP Access Rules. Effective for DDoS edge-layer defense.',               'innerwarden integrate cloudflare') +
@@ -6715,12 +6730,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
     // ── Section 2b: Integration advisor ────────────────────────────────────
     const conflicts = [];
-    if (integ.abuseipdb && integ.fail2ban && integ.abuseipdb_auto_block_threshold > 0) {
-      conflicts.push({
-        a: 'AbuseIPDB auto-block', b: 'Fail2ban',
-        msg: 'Both can auto-block IPs without AI. Set abuseipdb.auto_block_threshold = 0 and use AbuseIPDB only for enrichment context.'
-      });
-    }
+    // (No conflicts to check — fail2ban removed, AbuseIPDB reports delayed)
     if (integ.telegram && integ.slack) {
       conflicts.push({
         a: 'Telegram', b: 'Slack',
@@ -6777,7 +6787,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     if (collectors.length > 0) {
       const colIcons = {
         auth_log:'🔑', journald:'📋', docker:'🐳', nginx_access:'🌐', nginx_error:'⚠️',
-        exec_audit:'🔎', falco_log:'🦅', suricata_eve:'🐉', wazuh_alerts:'🔒', osquery_log:'🔍'
+        exec_audit:'🔎', ebpf:'⚡', suricata_eve:'🐉', wazuh_alerts:'🔒', osquery_log:'🔍'
       };
       const colStyle =
         '.col-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:4px}' +
