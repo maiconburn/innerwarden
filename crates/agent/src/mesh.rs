@@ -36,6 +36,7 @@ mod inner {
                 auto_broadcast: cfg.auto_broadcast,
                 max_signals_per_hour: cfg.max_signals_per_hour,
                 max_staged: 10_000,
+                initial_trust: 0.5,
             };
             let node = MeshNode::new(mesh_cfg, data_dir)?;
             Ok(Self { node })
