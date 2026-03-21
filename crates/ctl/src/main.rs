@@ -129,7 +129,16 @@ enum Command {
     ///   innerwarden setup
     Setup,
 
-    /// Check for a newer release and optionally upgrade all binaries
+    /// Check for a newer release and optionally upgrade all binaries.
+    ///
+    /// Add to cron for automatic update checks:
+    ///   0 8 * * * innerwarden upgrade --check --notify 2>/dev/null
+    ///
+    /// Examples:
+    ///   innerwarden upgrade              # check + install interactively
+    ///   innerwarden upgrade --check      # just check, don't install
+    ///   innerwarden upgrade --check --notify  # check + Telegram alert if new version
+    ///   innerwarden upgrade --yes        # install without confirmation
     Upgrade {
         /// Only check if an update is available; do not install
         #[arg(long)]
@@ -138,6 +147,10 @@ enum Command {
         /// Skip interactive confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        /// Send a Telegram notification if a new version is available (for cron use)
+        #[arg(long)]
+        notify: bool,
 
         /// Directory where binaries are installed
         #[arg(long, default_value = "/usr/local/bin")]
@@ -892,8 +905,9 @@ fn main() -> Result<()> {
         Command::Upgrade {
             check,
             yes,
+            notify,
             ref install_dir,
-        } => cmd_upgrade(&cli, check, yes, install_dir),
+        } => cmd_upgrade(&cli, check, yes, notify, install_dir),
         Command::List => cmd_list(&cli, &registry),
         Command::Status {
             ref target,
@@ -2503,7 +2517,13 @@ fn cmd_module_update_all(cli: &Cli, modules_dir: &Path, check_only: bool, yes: b
 // C.5 — Upgrade
 // ---------------------------------------------------------------------------
 
-fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Result<()> {
+fn cmd_upgrade(
+    cli: &Cli,
+    check_only: bool,
+    yes: bool,
+    notify: bool,
+    install_dir: &Path,
+) -> Result<()> {
     use upgrade::*;
 
     println!("Checking for updates...");
@@ -2531,9 +2551,77 @@ fn cmd_upgrade(cli: &Cli, check_only: bool, yes: bool, install_dir: &Path) -> Re
         release.html_url
     );
 
+    // --notify: send Telegram alert about available update (for cron use)
+    if notify {
+        let env_file = cli
+            .agent_config
+            .parent()
+            .map(|p| p.join("agent.env"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/etc/innerwarden/agent.env"));
+        let env_vars = load_env_file(&env_file);
+        let bot_token = env_vars
+            .get("TELEGRAM_BOT_TOKEN")
+            .cloned()
+            .or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok())
+            .unwrap_or_default();
+        let chat_id = env_vars
+            .get("TELEGRAM_CHAT_ID")
+            .cloned()
+            .or_else(|| std::env::var("TELEGRAM_CHAT_ID").ok())
+            .unwrap_or_default();
+        if !bot_token.is_empty() && !chat_id.is_empty() {
+            // Extract changelog from release body
+            let changelog = release
+                .body
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(500)
+                .collect::<String>();
+            let text = format!(
+                "🆕 <b>Inner Warden {latest} available</b>\n\n\
+                 Current: {current}\n\
+                 New: {latest}{date_suffix}\n\n\
+                 {changelog}\n\n\
+                 Upgrade: <code>innerwarden upgrade --yes</code>"
+            );
+            let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
+            let _ = ureq::post(&url).send_json(serde_json::json!({
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": true,
+            }));
+            println!("  Telegram notification sent.");
+        } else {
+            println!("  --notify: Telegram not configured, skipping notification.");
+        }
+    }
+
     if check_only {
         println!("\nRun 'innerwarden upgrade' to install.");
         return Ok(());
+    }
+
+    // Auto-backup configs before upgrade
+    let config_dir = cli
+        .agent_config
+        .parent()
+        .unwrap_or(Path::new("/etc/innerwarden"));
+    if config_dir.exists() {
+        let backup_name = format!(
+            "/tmp/innerwarden-backup-pre-upgrade-{}.tar.gz",
+            chrono::Local::now().format("%Y%m%d%H%M%S")
+        );
+        print!("  Backing up configs to {backup_name}... ");
+        match std::process::Command::new("tar")
+            .args(["czf", &backup_name, "-C", "/"])
+            .arg(config_dir.strip_prefix("/").unwrap_or(config_dir))
+            .output()
+        {
+            Ok(out) if out.status.success() => println!("done"),
+            _ => println!("skipped (tar failed, continuing anyway)"),
+        }
     }
 
     // Detect architecture
