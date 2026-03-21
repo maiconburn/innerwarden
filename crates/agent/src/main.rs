@@ -280,8 +280,16 @@ struct AgentState {
     /// flagged as a repeat offender in the decision reason.
     block_counts: HashMap<String, u32>,
     /// Whether LSM enforcement has been auto-enabled this session.
-    /// Once enabled, stays on until sensor restarts.
     lsm_enabled: bool,
+    /// Rate limiter: timestamps of recent block actions (rolling 1-minute window).
+    /// Prevents false-positive cascades from blocking too many IPs at once.
+    recent_blocks: std::collections::VecDeque<chrono::DateTime<chrono::Utc>>,
+    /// XDP blocklist entries with timestamps for TTL-based expiration.
+    /// Periodically cleaned: IPs older than XDP_BLOCK_TTL_SECS are removed.
+    xdp_block_times: HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// AbuseIPDB report queue — IPs are held for ABUSEIPDB_REPORT_DELAY_SECS
+    /// before reporting, giving time for false-positive correction.
+    abuseipdb_report_queue: Vec<(String, String, String, chrono::DateTime<chrono::Utc>)>,
     /// Incremental narrative accumulator — avoids re-reading events file.
     narrative_acc: NarrativeAccumulator,
     /// Byte offset for incremental incident reading (narrative accumulator).
@@ -302,6 +310,12 @@ const DECISION_COOLDOWN_SECS: i64 = 3600;
 /// same detector+entity within this window. Prevents alert spam when the same attacker
 /// triggers multiple incidents in rapid succession.
 const NOTIFICATION_COOLDOWN_SECS: i64 = 600;
+/// Max block actions per minute — prevents false-positive cascades.
+const MAX_BLOCKS_PER_MINUTE: usize = 20;
+/// XDP blocklist entries expire after this many seconds (default: 24 hours).
+const XDP_BLOCK_TTL_SECS: i64 = 86400;
+/// AbuseIPDB reports are delayed by this many seconds to allow false-positive correction.
+const ABUSEIPDB_REPORT_DELAY_SECS: i64 = 300;
 
 fn incident_detector(incident_id: &str) -> &str {
     incident_id.split(':').next().unwrap_or("unknown")
@@ -1288,6 +1302,9 @@ async fn main() -> Result<()> {
         pending_honeypot_choices: HashMap::new(),
         block_counts: HashMap::new(),
         lsm_enabled: false,
+        recent_blocks: std::collections::VecDeque::new(),
+        xdp_block_times: HashMap::new(),
+        abuseipdb_report_queue: Vec::new(),
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
     };
@@ -1441,6 +1458,48 @@ async fn main() -> Result<()> {
                     if state.block_counts.len() > 5000 {
                         state.block_counts.clear();
                     }
+
+                    // ── Safeguard: XDP TTL — expire old blocklist entries ──
+                    {
+                        let xdp_cutoff = chrono::Utc::now() - chrono::Duration::seconds(XDP_BLOCK_TTL_SECS);
+                        let expired_ips: Vec<String> = state.xdp_block_times
+                            .iter()
+                            .filter(|(_, ts)| **ts < xdp_cutoff)
+                            .map(|(ip, _)| ip.clone())
+                            .collect();
+                        for ip in &expired_ips {
+                            // Remove from XDP blocklist via bpftool
+                            if let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() {
+                                let b = addr.octets();
+                                let _ = tokio::process::Command::new("sudo")
+                                    .args(["bpftool", "map", "delete", "pinned",
+                                        "/sys/fs/bpf/innerwarden/blocklist",
+                                        "key", &b[0].to_string(), &b[1].to_string(),
+                                        &b[2].to_string(), &b[3].to_string()])
+                                    .output().await;
+                                info!(ip, "XDP TTL expired — removed from blocklist");
+                            }
+                            state.xdp_block_times.remove(ip);
+                        }
+                    }
+
+                    // ── Safeguard: flush AbuseIPDB delayed report queue ──
+                    {
+                        let report_cutoff = chrono::Utc::now() - chrono::Duration::seconds(ABUSEIPDB_REPORT_DELAY_SECS);
+                        let ready: Vec<_> = state.abuseipdb_report_queue
+                            .iter()
+                            .filter(|(_, _, _, ts)| *ts < report_cutoff)
+                            .cloned()
+                            .collect();
+                        if let Some(ref client) = state.abuseipdb {
+                            for (ip, comment, categories, _) in &ready {
+                                client.report(ip, categories, comment).await;
+                                info!(ip, "AbuseIPDB report sent (after 5min delay)");
+                            }
+                        }
+                        state.abuseipdb_report_queue.retain(|(_, _, _, ts)| *ts >= report_cutoff);
+                    }
+
                     let removed = data_retention::cleanup(&cli.data_dir, &cfg.data);
                     if removed > 0 {
                         info!(removed, "data_retention: cleaned up old files");
@@ -2740,6 +2799,24 @@ async fn execute_decision(
             //
             // Each layer is independent — failure in one doesn't stop the others.
 
+            // ── Safeguard: rate limit ──────────────────────────────────
+            // Prevent false-positive cascades — max N blocks per minute.
+            let now_utc = chrono::Utc::now();
+            let one_minute_ago = now_utc - chrono::Duration::seconds(60);
+            state.recent_blocks.retain(|ts| *ts > one_minute_ago);
+            if state.recent_blocks.len() >= MAX_BLOCKS_PER_MINUTE {
+                warn!(
+                    ip,
+                    blocks_last_minute = state.recent_blocks.len(),
+                    "rate limit: too many blocks in last minute, skipping"
+                );
+                return (
+                    format!("rate-limited: {ip} (>{MAX_BLOCKS_PER_MINUTE} blocks/min)"),
+                    false,
+                );
+            }
+            state.recent_blocks.push_back(now_utc);
+
             let ctx = skills::SkillContext {
                 incident: incident.clone(),
                 target_ip: Some(ip.clone()),
@@ -2761,6 +2838,8 @@ async fn execute_decision(
                 if xdp_result.success {
                     layers_applied.push("XDP");
                     any_success = true;
+                    // Track for TTL expiration
+                    state.xdp_block_times.insert(ip.clone(), chrono::Utc::now());
                 }
             }
 
@@ -2807,19 +2886,24 @@ async fn execute_decision(
                 }
             }
 
-            // Layer 4: AbuseIPDB community report
+            // Layer 4: AbuseIPDB community report (delayed — 5 min grace period)
+            // Reports are queued and sent after ABUSEIPDB_REPORT_DELAY_SECS to allow
+            // false-positive correction before permanently marking an IP as malicious.
             if any_success && cfg.abuseipdb.enabled && cfg.abuseipdb.report_blocks {
-                if let Some(ref client) = state.abuseipdb {
-                    let detector = incident.incident_id.split(':').next().unwrap_or("unknown");
-                    let categories = abuseipdb::detector_to_categories(detector);
-                    let comment = format!(
-                        "InnerWarden auto-block: {} (confidence {:.0}%)",
-                        decision.reason,
-                        decision.confidence * 100.0
-                    );
-                    client.report(ip, categories, &comment).await;
-                    layers_applied.push("AbuseIPDB");
-                }
+                let detector = incident.incident_id.split(':').next().unwrap_or("unknown");
+                let categories = abuseipdb::detector_to_categories(detector);
+                let comment = format!(
+                    "InnerWarden auto-block: {} (confidence {:.0}%)",
+                    decision.reason,
+                    decision.confidence * 100.0
+                );
+                state.abuseipdb_report_queue.push((
+                    ip.clone(),
+                    comment,
+                    categories.to_string(),
+                    chrono::Utc::now(),
+                ));
+                layers_applied.push("AbuseIPDB(queued)");
             }
 
             if any_success {
@@ -5325,9 +5409,21 @@ async fn enable_lsm_enforcement() -> Result<(), String> {
 
     let output = tokio::process::Command::new("sudo")
         .args([
-            "bpftool", "map", "update", "pinned", LSM_POLICY_PIN,
-            "key", "0", "0", "0", "0",
-            "value", "1", "0", "0", "0",
+            "bpftool",
+            "map",
+            "update",
+            "pinned",
+            LSM_POLICY_PIN,
+            "key",
+            "0",
+            "0",
+            "0",
+            "0",
+            "value",
+            "1",
+            "0",
+            "0",
+            "0",
             "any",
         ])
         .output()
@@ -5529,6 +5625,9 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5647,6 +5746,9 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5740,6 +5842,9 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5845,6 +5950,9 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -5927,6 +6035,9 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };
@@ -6021,6 +6132,9 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            recent_blocks: std::collections::VecDeque::new(),
+            xdp_block_times: HashMap::new(),
+            abuseipdb_report_queue: Vec::new(),
             narrative_acc: NarrativeAccumulator::default(),
             narrative_incidents_offset: 0,
         };

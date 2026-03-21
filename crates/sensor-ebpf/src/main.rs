@@ -50,6 +50,12 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0); // 256 KB ring 
 #[map]
 static BLOCKLIST: HashMap<u32, u32> = HashMap::with_max_entries(10_000, 0);
 
+/// XDP allowlist — IPs that must NEVER be dropped, regardless of blocklist.
+/// Operator IPs, payment gateways, CDN ranges, API partners.
+/// Checked BEFORE blocklist: allowlist wins.
+#[map]
+static ALLOWLIST: HashMap<u32, u32> = HashMap::with_max_entries(1_000, 0);
+
 // ---------------------------------------------------------------------------
 // XDP: innerwarden_xdp — wire-speed IP blocking
 // ---------------------------------------------------------------------------
@@ -97,7 +103,12 @@ fn try_xdp_firewall(ctx: &XdpContext) -> Result<u32, ()> {
         [*ptr.add(26), *ptr.add(27), *ptr.add(28), *ptr.add(29)]
     });
 
-    // Lookup in blocklist — O(1) hash map lookup
+    // Allowlist check FIRST — never drop protected IPs
+    if unsafe { ALLOWLIST.get(&src_ip) }.is_some() {
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    // Blocklist check — O(1) hash map lookup
     if unsafe { BLOCKLIST.get(&src_ip) }.is_some() {
         return Ok(xdp_action::XDP_DROP);
     }
@@ -468,6 +479,31 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
 
     if !is_dangerous {
         return Ok(0); // safe path — allow
+    }
+
+    // LSM allowlist: certain processes are always allowed to execute from temp paths.
+    // Package managers, build tools, and system updaters legitimately use /tmp.
+    if let Ok(comm) = bpf_get_current_comm() {
+        let c = &comm;
+        let is_allowed =
+            // Package managers
+            (c[0] == b'd' && c[1] == b'p' && c[2] == b'k' && c[3] == b'g')     // dpkg
+            || (c[0] == b'a' && c[1] == b'p' && c[2] == b't')                    // apt*
+            || (c[0] == b'd' && c[1] == b'n' && c[2] == b'f')                    // dnf
+            || (c[0] == b'y' && c[1] == b'u' && c[2] == b'm')                    // yum
+            || (c[0] == b'r' && c[1] == b'p' && c[2] == b'm')                    // rpm
+            || (c[0] == b's' && c[1] == b'n' && c[2] == b'a' && c[3] == b'p')    // snap
+            // Build tools
+            || (c[0] == b'c' && c[1] == b'c' && c[2] == 0)                       // cc
+            || (c[0] == b'g' && c[1] == b'c' && c[2] == b'c')                    // gcc
+            || (c[0] == b'l' && c[1] == b'd' && (c[2] == 0 || c[2] == b'.'))     // ld
+            || (c[0] == b'c' && c[1] == b'a' && c[2] == b'r' && c[3] == b'g')    // cargo
+            || (c[0] == b'r' && c[1] == b'u' && c[2] == b's' && c[3] == b't')    // rustc
+            // System
+            || (c[0] == b's' && c[1] == b'y' && c[2] == b's' && c[3] == b't');   // systemd*
+        if is_allowed {
+            return Ok(0);
+        }
     }
 
     // Block execution from dangerous path

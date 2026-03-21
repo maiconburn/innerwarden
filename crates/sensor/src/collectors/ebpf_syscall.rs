@@ -368,6 +368,7 @@ fn bytes_to_string(buf: &[u8]) -> String {
 /// The agent writes to this map via bpftool to add/remove blocked IPs.
 const XDP_PIN_DIR: &str = "/sys/fs/bpf/innerwarden";
 const XDP_BLOCKLIST_PIN: &str = "/sys/fs/bpf/innerwarden/blocklist";
+const XDP_ALLOWLIST_PIN: &str = "/sys/fs/bpf/innerwarden/allowlist";
 
 /// Detect the default network interface for XDP attachment.
 fn detect_default_interface() -> Option<String> {
@@ -484,12 +485,22 @@ fn attach_xdp(bpf: &mut aya::Ebpf) {
     }
     if let Some(map) = bpf.map_mut("BLOCKLIST") {
         if let Err(e) = map.pin(XDP_BLOCKLIST_PIN) {
-            // May already be pinned from a previous run
             if !std::path::Path::new(XDP_BLOCKLIST_PIN).exists() {
                 warn!(error = %e, "XDP: failed to pin blocklist map");
             }
         } else {
             info!("eBPF: XDP blocklist pinned at {XDP_BLOCKLIST_PIN}");
+        }
+    }
+
+    // Pin the ALLOWLIST map for operator-managed never-drop IPs
+    if let Some(map) = bpf.map_mut("ALLOWLIST") {
+        if let Err(e) = map.pin(XDP_ALLOWLIST_PIN) {
+            if !std::path::Path::new(XDP_ALLOWLIST_PIN).exists() {
+                warn!(error = %e, "XDP: failed to pin allowlist map");
+            }
+        } else {
+            info!("eBPF: XDP allowlist pinned at {XDP_ALLOWLIST_PIN}");
         }
     }
 }
