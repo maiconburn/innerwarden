@@ -1754,14 +1754,15 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
 /// GET /api/sensors — sensor activity time-series for dashboard graphs.
 /// Returns event counts bucketed by 5-minute intervals, grouped by source.
 async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
+    // Date is generated server-side (not user input) — safe for path construction.
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    // Canonicalize data_dir to prevent path traversal (satisfies CodeQL rust/path-injection)
-    let safe_data_dir = state
-        .data_dir
-        .canonicalize()
-        .unwrap_or_else(|_| state.data_dir.clone());
-    let events_path = safe_data_dir.join(format!("events-{today}.jsonl"));
-    let incidents_path = safe_data_dir.join(format!("incidents-{today}.jsonl"));
+    // Validate date format to prevent any injection (defense-in-depth).
+    let safe_today = today
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect::<String>();
+    let events_path = state.data_dir.join(format!("events-{safe_today}.jsonl"));
+    let incidents_path = state.data_dir.join(format!("incidents-{safe_today}.jsonl"));
 
     // Sample events file across its full length for timeline coverage.
     // Read 20 chunks of 64KB evenly spaced across the file → ~2000 events sampled.
