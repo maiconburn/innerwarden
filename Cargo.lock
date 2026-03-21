@@ -862,6 +862,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
  "pkcs8 0.10.2",
+ "serde",
  "signature 2.2.0",
 ]
 
@@ -1534,6 +1535,7 @@ dependencies = [
  "futures-core",
  "hkdf",
  "hmac",
+ "innerwarden-mesh",
  "innerwarden_core",
  "p256",
  "rand_core 0.6.4",
@@ -1579,6 +1581,25 @@ name = "innerwarden-ebpf-types"
 version = "0.3.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "innerwarden-mesh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "ed25519-dalek",
+ "rand_core 0.6.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

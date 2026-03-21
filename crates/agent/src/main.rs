@@ -17,6 +17,7 @@ mod data_retention;
 mod decisions;
 mod fail2ban;
 mod geoip;
+mod mesh;
 mod ioc;
 mod narrative;
 mod reader;
@@ -281,6 +282,8 @@ struct AgentState {
     block_counts: HashMap<String, u32>,
     /// Whether LSM enforcement has been auto-enabled this session.
     lsm_enabled: bool,
+    /// Mesh collaborative defense network (None when mesh.enabled = false).
+    mesh: Option<mesh::MeshIntegration>,
     /// Rate limiter: timestamps of recent block actions (rolling 1-minute window).
     /// Prevents false-positive cascades from blocking too many IPs at once.
     recent_blocks: std::collections::VecDeque<chrono::DateTime<chrono::Utc>>,
@@ -1302,12 +1305,33 @@ async fn main() -> Result<()> {
         pending_honeypot_choices: HashMap::new(),
         block_counts: HashMap::new(),
         lsm_enabled: false,
+        mesh: if cfg.mesh.enabled {
+            match mesh::MeshIntegration::new(&cfg.mesh, &cli.data_dir) {
+                Ok(m) => {
+                    info!(node_id = %m.node_id(), peers = m.peer_count(), "Mesh network enabled");
+                    Some(m)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Mesh network init failed");
+                    None
+                }
+            }
+        } else {
+            None
+        },
         recent_blocks: std::collections::VecDeque::new(),
         xdp_block_times: HashMap::new(),
         abuseipdb_report_queue: Vec::new(),
         narrative_acc: NarrativeAccumulator::default(),
         narrative_incidents_offset: 0,
     };
+
+    if let Some(ref mesh_node) = state.mesh {
+        match mesh_node.start_listener().await {
+            Ok((addr, _handle)) => info!(addr = %addr, "mesh listener started"),
+            Err(e) => warn!(error = %e, "mesh listener failed to start"),
+        }
+    }
 
     let state_path = cli.data_dir.join("agent-state.json");
     let mut cursor = reader::AgentCursor::load(&state_path)?;
@@ -5625,6 +5649,7 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
             xdp_block_times: HashMap::new(),
             abuseipdb_report_queue: Vec::new(),
@@ -5746,6 +5771,7 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
             xdp_block_times: HashMap::new(),
             abuseipdb_report_queue: Vec::new(),
@@ -5842,6 +5868,7 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
             xdp_block_times: HashMap::new(),
             abuseipdb_report_queue: Vec::new(),
@@ -5950,6 +5977,7 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
             xdp_block_times: HashMap::new(),
             abuseipdb_report_queue: Vec::new(),
@@ -6035,6 +6063,7 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
             xdp_block_times: HashMap::new(),
             abuseipdb_report_queue: Vec::new(),
@@ -6132,6 +6161,7 @@ mod tests {
             pending_honeypot_choices: HashMap::new(),
             block_counts: HashMap::new(),
             lsm_enabled: false,
+            mesh: None,
             recent_blocks: std::collections::VecDeque::new(),
             xdp_block_times: HashMap::new(),
             abuseipdb_report_queue: Vec::new(),
