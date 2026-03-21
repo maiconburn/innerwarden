@@ -14,7 +14,6 @@ see [`docs/integration-recipes.md`](../docs/integration-recipes.md).
 
 | Tool | Recipe | Mechanism | Incident passthrough |
 |------|--------|-----------|----------------------|
-| [Falco](https://falco.org) — eBPF/syscall runtime security | [`falco/recipe.toml`](falco/recipe.toml) | `file_tail` | yes (High+) |
 | [Wazuh](https://wazuh.com) — HIDS, FIM, compliance | [`wazuh/recipe.toml`](wazuh/recipe.toml) | `file_tail` | yes (level ≥ 10) |
 | [osquery](https://osquery.io) — host observability | [`osquery/recipe.toml`](osquery/recipe.toml) | `file_tail` | no |
 

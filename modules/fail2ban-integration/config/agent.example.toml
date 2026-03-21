@@ -1,5 +1,0 @@
-[fail2ban]
-enabled   = true
-poll_secs = 60
-# jails = ["sshd", "nginx-req-limit"]  # empty = all active jails
-jails     = []

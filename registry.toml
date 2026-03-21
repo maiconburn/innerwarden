@@ -96,16 +96,6 @@ builtin     = true
 enables     = ["shell-audit"]
 
 [[modules]]
-id          = "falco-integration"
-name        = "Falco Integration"
-version     = "0.1.0"
-description = "Tails Falco eBPF/syscall alerts and routes High+ severity incidents through InnerWarden's AI triage"
-tags        = ["falco", "ebpf", "syscall", "runtime-security"]
-tier        = "open"
-builtin     = true
-enables     = []
-
-[[modules]]
 id          = "suricata-integration"
 name        = "Suricata Integration"
 version     = "0.1.0"
@@ -164,16 +154,6 @@ tags        = ["crowdsec", "threat-intelligence", "blocklist", "community"]
 tier        = "open"
 builtin     = true
 enables     = []   # configured via [crowdsec] in agent.toml
-
-[[modules]]
-id          = "fail2ban-integration"
-name        = "Fail2ban Integration"
-version     = "0.1.0"
-description = "Polls fail2ban for active bans and enforces them via InnerWarden's block skills — unifies all ban decisions into a single audit trail"
-tags        = ["fail2ban", "threat-intelligence", "blocklist", "bans"]
-tier        = "open"
-builtin     = true
-enables     = []
 
 [[modules]]
 id          = "geoip-enrichment"
