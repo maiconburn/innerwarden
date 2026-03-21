@@ -90,10 +90,18 @@ impl Default for MeshNetworkConfig {
     }
 }
 
-fn default_mesh_bind() -> String { "0.0.0.0:8790".to_string() }
-fn default_mesh_poll_secs() -> u64 { 30 }
-fn default_true_val() -> bool { true }
-fn default_mesh_max_signals() -> usize { 50 }
+fn default_mesh_bind() -> String {
+    "0.0.0.0:8790".to_string()
+}
+fn default_mesh_poll_secs() -> u64 {
+    30
+}
+fn default_true_val() -> bool {
+    true
+}
+fn default_mesh_max_signals() -> usize {
+    50
+}
 
 // ---------------------------------------------------------------------------
 // Narrative

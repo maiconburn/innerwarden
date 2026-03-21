@@ -123,8 +123,8 @@ mod inner {
         ) {
         }
 
-        pub fn tick(&mut self) -> StubTickResult {
-            StubTickResult
+        pub fn tick(&mut self) -> MeshTickResultStub {
+            MeshTickResultStub::default()
         }
 
         pub fn is_mesh_blocked(&self, _ip: &str) -> bool {
@@ -154,14 +154,10 @@ mod inner {
         }
     }
 
-    pub struct StubTickResult;
-    impl StubTickResult {
-        pub fn block_ips(&self) -> &[(String, u64)] {
-            &[]
-        }
-        pub fn unblock_ips(&self) -> &[String] {
-            &[]
-        }
+    #[derive(Default)]
+    pub struct MeshTickResultStub {
+        pub block_ips: Vec<(String, u64)>,
+        pub unblock_ips: Vec<String>,
     }
 }
 

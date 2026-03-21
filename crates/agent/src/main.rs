@@ -17,8 +17,8 @@ mod data_retention;
 mod decisions;
 mod fail2ban;
 mod geoip;
-mod mesh;
 mod ioc;
+mod mesh;
 mod narrative;
 mod reader;
 mod report;
@@ -1442,6 +1442,8 @@ async fn main() -> Result<()> {
         let mut fail2ban_ticker = tokio::time::interval(tokio::time::Duration::from_secs(
             cfg.fail2ban.poll_secs.max(10),
         ));
+        let mut mesh_ticker =
+            tokio::time::interval(tokio::time::Duration::from_secs(cfg.mesh.poll_secs.max(10)));
 
         // SIGTERM / SIGINT
         #[cfg(unix)]
@@ -1559,6 +1561,40 @@ async fn main() -> Result<()> {
                     }
                     false
                 }
+                _ = mesh_ticker.tick() => {
+                    if let Some(ref mut m) = state.mesh {
+                        let result = m.tick();
+                        // Notify Telegram about new mesh blocks
+                        for (ip, ttl) in &result.block_ips {
+                            info!(ip, ttl, "mesh: new block from peer network");
+                            state.blocklist.insert(ip.clone());
+                            // Telegram notification
+                            if let Some(ref tg) = state.telegram_client {
+                                let msg = format!(
+                                    "🌐 <b>MESH NETWORK</b>\n\n\
+                                     Peer node detected threat from <code>{ip}</code>\n\
+                                     Action: blocked for {}h (auto-revert)\n\n\
+                                     ⚡ <i>Experimental — collaborative defense network</i>\n\
+                                     <i>Nodes sharing threat intelligence in real time.</i>\n\
+                                     <i>Coming soon: mesh dashboard, trust scores, collective blocklist.</i>",
+                                    ttl / 3600
+                                );
+                                let tg = tg.clone();
+                                tokio::spawn(async move {
+                                    let _ = tg.send_raw_html(&msg).await;
+                                });
+                            }
+                        }
+                        if !result.unblock_ips.is_empty() {
+                            info!(
+                                expired = result.unblock_ips.len(),
+                                "mesh: TTL expired blocks removed"
+                            );
+                        }
+                        m.persist().ok();
+                    }
+                    false
+                }
                 _ = sigterm.recv() => {
                     info!("SIGTERM received — shutting down");
                     true
@@ -1623,6 +1659,32 @@ async fn main() -> Result<()> {
                             &host,
                             state.telegram_client.as_ref(),
                         ).await;
+                    }
+                    false
+                }
+                _ = mesh_ticker.tick() => {
+                    if let Some(ref mut m) = state.mesh {
+                        let result = m.tick();
+                        for (ip, ttl) in &result.block_ips {
+                            info!(ip, ttl, "mesh: new block from peer network");
+                            state.blocklist.insert(ip.clone());
+                            if let Some(ref tg) = state.telegram_client {
+                                let msg = format!(
+                                    "🌐 <b>MESH NETWORK</b>\n\n\
+                                     Peer node detected threat from <code>{ip}</code>\n\
+                                     Action: blocked for {}h (auto-revert)\n\n\
+                                     ⚡ <i>Experimental — collaborative defense network</i>\n\
+                                     <i>Nodes sharing threat intelligence in real time.</i>\n\
+                                     <i>Coming soon: mesh dashboard, trust scores, collective blocklist.</i>",
+                                    ttl / 3600
+                                );
+                                let tg = tg.clone();
+                                tokio::spawn(async move {
+                                    let _ = tg.send_raw_html(&msg).await;
+                                });
+                            }
+                        }
+                        m.persist().ok();
                     }
                     false
                 }

@@ -272,6 +272,18 @@ impl TelegramClient {
         self.post_json("sendMessage", &body).await
     }
 
+    /// Send a raw HTML message (no formatting helpers).
+    /// Used for mesh network notifications and other custom messages.
+    pub async fn send_raw_html(&self, html: &str) -> anyhow::Result<()> {
+        let body = serde_json::json!({
+            "chat_id": self.chat_id,
+            "text": html,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true,
+        });
+        self.post_json("sendMessage", &body).await
+    }
+
     /// Send the onboarding/welcome message when the operator opens the bot.
     /// Shows current mode, today's stats, and quick-action buttons.
     pub async fn send_onboarding(
