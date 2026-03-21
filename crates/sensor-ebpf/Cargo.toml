@@ -1,0 +1,28 @@
+[package]
+name = "innerwarden-ebpf"
+version = "0.1.13"
+edition = "2021"
+license = "MIT"
+description = "eBPF programs for Inner Warden kernel-level security monitoring."
+
+[workspace]
+
+[[bin]]
+name = "innerwarden-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+innerwarden-ebpf-types = { path = "../sensor-ebpf-types" }
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+
+[profile.dev]
+opt-level = 3       # eBPF programs need optimization even in dev
+debug = false
+overflow-checks = false
+lto = true
+panic = "abort"
+
+[profile.release]
+lto = true
+panic = "abort"

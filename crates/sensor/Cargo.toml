@@ -26,6 +26,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
 dns-lookup = "2"
+# eBPF support (Linux only, optional — graceful fallback when not available)
+aya = { version = "0.13", optional = true }
+aya-log = { version = "0.2", optional = true }
+
+[features]
+default = []
+ebpf = ["aya", "aya-log"]
 
 [dev-dependencies]
 tempfile = "3"

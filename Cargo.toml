@@ -4,7 +4,10 @@ members = [
   "crates/sensor",
   "crates/agent",
   "crates/ctl",
+  "crates/sensor-ebpf-types",
 ]
+exclude = ["crates/sensor-ebpf"]
+# crates/sensor-ebpf compiles to bpfel-unknown-none target (separate build)
 resolver = "2"
 
 [workspace.package]

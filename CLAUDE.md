@@ -32,11 +32,14 @@ collectors/
   journald.rs          nginx_error.rs       suricata_eve.rs
   exec_audit.rs        syslog_firewall.rs   wazuh_alerts.rs
   docker.rs            macos_log.rs         osquery_log.rs
-  integrity.rs         cloudtrail.rs
+  integrity.rs         cloudtrail.rs        ebpf_syscall.rs
 detectors/
   ssh_bruteforce.rs    search_abuse.rs      execution_guard.rs
   credential_stuffing.rs  web_scan.rs       user_agent_scanner.rs
-  port_scan.rs         sudo_abuse.rs
+  port_scan.rs         sudo_abuse.rs        c2_callback.rs
+  distributed_ssh.rs   suspicious_login.rs  process_tree.rs
+  docker_anomaly.rs    integrity_alert.rs   container_escape.rs
+  osquery_anomaly.rs   suricata_alert.rs
 sinks/
   jsonl.rs             state.rs
 ```
@@ -86,7 +89,9 @@ See [docs/operations.md](docs/operations.md) for full command reference, deploym
 
 ## Architecture Summary
 
-**Sensor** — collects host activity (auth_log, journald, docker, integrity, exec_audit, nginx, firewall logs) via `mpsc::channel(1024)`, passes through stateful detectors (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse, etc.), writes `events-*.jsonl` + `incidents-*.jsonl`.
+**Sensor** — collects host activity (auth_log, journald, docker, integrity, exec_audit, nginx, firewall logs, **eBPF syscalls**) via `mpsc::channel(1024)`, passes through stateful detectors (ssh_bruteforce, credential_stuffing, port_scan, sudo_abuse, c2_callback, process_tree, container_escape, etc.), writes `events-*.jsonl` + `incidents-*.jsonl`.
+
+**eBPF subsystem** — kernel-level visibility via tracepoints (execve, connect, openat). Compiled as separate `#![no_std]` crate targeting `bpfel-unknown-none`, loaded via Aya framework. Captures cgroup_id for container awareness. Ppid resolved in userspace via `/proc/<pid>/status`. Shared types in `crates/sensor-ebpf-types/`.
 
 **Agent** — reads incrementally via byte-offset cursors. Fast loop (2s): webhook + Telegram → algorithm gate → enrichment (AbuseIPDB, GeoIP) → AI provider → skill executor → audit trail → notifications. Slow loop (30s): narrative, telemetry, data retention.
 

@@ -1,3 +1,5 @@
+pub mod c2_callback;
+pub mod container_escape;
 pub mod credential_stuffing;
 pub mod distributed_ssh;
 pub mod suspicious_login;
@@ -25,6 +27,7 @@ pub mod execution_guard;
 pub mod integrity_alert;
 pub mod osquery_anomaly;
 pub mod port_scan;
+pub mod process_tree;
 pub mod search_abuse;
 pub mod ssh_bruteforce;
 pub mod sudo_abuse;

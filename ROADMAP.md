@@ -27,18 +27,19 @@ Everything shipped in v0.1.x:
 
 ---
 
-## Phase 2 — Deep Visibility (eBPF)
+## Phase 2 — Deep Visibility (eBPF) (DONE)
 
 **Goal:** See everything at the kernel level — before logs are written.
 
-- [ ] eBPF sensor using Aya (Rust eBPF framework)
+- [x] eBPF sensor using Aya (Rust eBPF framework)
   - `sys_enter_execve` — every process execution in real time
   - `sys_enter_connect` — every outbound network connection
-  - `sys_enter_open` — file access patterns
-- [ ] Process tree tracking — who spawned what, full parent chain
-- [ ] File access monitoring — real-time, not polling
-- [ ] Network connection tracking — detect C2 callbacks without pcap
-- [ ] Container-aware context — eBPF knows which container a syscall belongs to
+  - `sys_enter_openat` — sensitive file access patterns
+- [x] Process tree tracking — ppid chain, suspicious parent-child detection (web server → shell, database → shell, Java RCE)
+- [x] File access monitoring — real-time via openat tracepoint, sensitive path filtering in kernel space
+- [x] Network connection tracking — C2 callback detection (beaconing, C2 ports, data exfiltration)
+- [x] Container-aware context — cgroup_id from kernel, container ID resolution, container escape detection
+- [x] 3 new detectors: c2_callback, process_tree, container_escape
 
 ---
 
@@ -79,7 +80,7 @@ Everything shipped in v0.1.x:
 | Phase | Status | Target |
 |-------|--------|--------|
 | Phase 1 — Foundation | Done | v0.1.x |
-| Phase 2 — eBPF | Next | v0.2.x |
+| Phase 2 — eBPF | Done | v0.2.x |
 | Phase 3 — Mesh Network | Planned | v0.3.x |
 | Phase 4 — Malware Analysis | Planned | v0.4.x |
 | Phase 5 — Enterprise | Future | v1.0 |

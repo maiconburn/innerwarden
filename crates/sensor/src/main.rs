@@ -18,6 +18,8 @@ use collectors::{
     suricata_eve::SuricataEveCollector, syslog_firewall::SyslogFirewallCollector,
     wazuh_alerts::WazuhAlertsCollector,
 };
+use detectors::c2_callback::C2CallbackDetector;
+use detectors::container_escape::ContainerEscapeDetector;
 use detectors::credential_stuffing::CredentialStuffingDetector;
 use detectors::distributed_ssh::DistributedSshDetector;
 use detectors::docker_anomaly::DockerAnomalyDetector;
@@ -25,6 +27,7 @@ use detectors::execution_guard::{ExecutionGuardDetector, ExecutionMode};
 use detectors::integrity_alert::IntegrityAlertDetector;
 use detectors::osquery_anomaly::OsqueryAnomalyDetector;
 use detectors::port_scan::PortScanDetector;
+use detectors::process_tree::ProcessTreeDetector;
 use detectors::search_abuse::SearchAbuseDetector;
 use detectors::ssh_bruteforce::SshBruteforceDetector;
 use detectors::sudo_abuse::SudoAbuseDetector;
@@ -63,6 +66,9 @@ struct DetectorSet {
     osquery_anomaly: Option<OsqueryAnomalyDetector>,
     distributed_ssh: Option<DistributedSshDetector>,
     suspicious_login: Option<SuspiciousLoginDetector>,
+    c2_callback: Option<C2CallbackDetector>,
+    process_tree: Option<ProcessTreeDetector>,
+    container_escape: Option<ContainerEscapeDetector>,
 }
 
 #[derive(Default)]
@@ -252,6 +258,18 @@ async fn main() -> Result<()> {
         suspicious_login: cfg.detectors.ssh_bruteforce.enabled.then(|| {
             info!("suspicious_login detector enabled");
             SuspiciousLoginDetector::new(&cfg.agent.host_id, 300)
+        }),
+        c2_callback: Some({
+            info!("c2_callback detector enabled (eBPF network monitoring)");
+            C2CallbackDetector::new(&cfg.agent.host_id, 600)
+        }),
+        process_tree: Some({
+            info!("process_tree detector enabled (eBPF parent-child tracking)");
+            ProcessTreeDetector::new(&cfg.agent.host_id, 600)
+        }),
+        container_escape: Some({
+            info!("container_escape detector enabled");
+            ContainerEscapeDetector::new(&cfg.agent.host_id, 600)
         }),
     };
 
@@ -546,6 +564,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Spawn eBPF collector (optional — requires Linux 5.8+, CAP_BPF)
+    {
+        let tx_ebpf = tx.clone();
+        let host_id = cfg.agent.host_id.clone();
+        tokio::spawn(async move {
+            collectors::ebpf_syscall::run(tx_ebpf, host_id).await;
+        });
+    }
+
     // Drop the original tx — each collector holds its own clone.
     // When all collector tasks finish, all senders drop and rx.recv() returns None.
     drop(tx);
@@ -811,6 +838,24 @@ fn process_event(
     }
 
     if let Some(ref mut det) = detectors.suspicious_login {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.c2_callback {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.process_tree {
+        if let Some(incident) = det.process(&ev) {
+            write_incident(writer, stats, incident);
+        }
+    }
+
+    if let Some(ref mut det) = detectors.container_escape {
         if let Some(incident) = det.process(&ev) {
             write_incident(writer, stats, incident);
         }
