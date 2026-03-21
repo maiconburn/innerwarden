@@ -1756,7 +1756,10 @@ async fn api_honeypot_sessions(State(state): State<DashboardState>) -> Json<serd
 async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     // Canonicalize data_dir to prevent path traversal (satisfies CodeQL rust/path-injection)
-    let safe_data_dir = state.data_dir.canonicalize().unwrap_or_else(|_| state.data_dir.clone());
+    let safe_data_dir = state
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| state.data_dir.clone());
     let events_path = safe_data_dir.join(format!("events-{today}.jsonl"));
     let incidents_path = safe_data_dir.join(format!("incidents-{today}.jsonl"));
 
