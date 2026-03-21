@@ -5781,25 +5781,66 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <!-- ── Sensors view (default home — hacker HUD) ── -->
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Space+Grotesk:wght@400;600;700&display=swap');
-    @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 8px rgba(120,229,255,0.08), inset 0 0 6px rgba(120,229,255,0.02); } 50% { box-shadow: 0 0 20px rgba(120,229,255,0.18), inset 0 0 10px rgba(120,229,255,0.04); } }
-    @keyframes scan-line { 0% { top: -2px; } 100% { top: 100%; } }
-    @keyframes gauge-pulse { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
-    .sensor-hud { display:flex; flex-direction:column; gap:14px; padding:16px; position:relative; overflow:hidden; background: radial-gradient(circle at top, rgba(33,86,140,0.12), transparent 40%), radial-gradient(circle at 80% 12%, rgba(120,229,255,0.06), transparent 30%), #040814; }
-    .sensor-hud::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent 10%,rgba(120,229,255,0.5) 50%,transparent 90%); animation:scan-line 4s linear infinite; pointer-events:none; z-index:1; filter:blur(0.5px); }
-    .hud-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; }
-    .hud-card { background:#091121; border:1px solid #1a2943; border-radius:10px; padding:16px 14px; text-align:center; animation:pulse-glow 4s ease-in-out infinite; position:relative; overflow:hidden; }
-    .hud-card::before { content:''; position:absolute; top:0; left:10%; right:10%; height:1px; background:linear-gradient(90deg,transparent,#78e5ff,transparent); opacity:0.6; }
-    .hud-val { font-size:2rem; font-weight:800; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:2px; text-shadow:0 0 12px currentColor; }
-    .hud-label { font-size:0.6rem; color:#8b9db8; text-transform:uppercase; letter-spacing:2px; margin-top:4px; font-family:'Space Grotesk',sans-serif; font-weight:600; }
-    .hud-source { background:#091121; border:1px solid #1a2943; border-radius:8px; padding:10px 12px; display:flex; align-items:center; gap:10px; transition:all 0.3s; }
-    .hud-source:hover { border-color:#78e5ff; background:rgba(120,229,255,0.03); }
-    .hud-source-dot { width:8px; height:8px; border-radius:50%; box-shadow:0 0 8px currentColor; animation:gauge-pulse 2s ease-in-out infinite; }
-    .hud-source-name { font-size:0.7rem; font-family:'JetBrains Mono',monospace; color:#8b9db8; flex:1; text-transform:uppercase; letter-spacing:1px; }
-    .hud-source-count { font-size:0.9rem; font-weight:700; font-family:'JetBrains Mono',monospace; text-shadow:0 0 6px currentColor; }
-    .hud-panel { background:#091121; border:1px solid #1a2943; border-radius:10px; padding:18px; position:relative; }
-    .hud-panel::before { content:''; position:absolute; top:0; left:5%; right:5%; height:1px; background:linear-gradient(90deg,transparent,rgba(120,229,255,0.3),transparent); }
-    .hud-panel-title { margin:0 0 14px 0; color:#7fe7ff; font-size:0.75rem; font-family:'Space Grotesk',sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:3px; }
-    .hud-panel-title::before { content:''; display:inline-block; width:8px; height:8px; background:#7fe7ff; border-radius:2px; margin-right:8px; box-shadow:0 0 6px #7fe7ff; vertical-align:middle; }
+    /* Site design system tokens */
+    @keyframes dot-breathe { 0%,100% { box-shadow:0 0 0 5px rgba(255,255,255,0.02),0 0 18px currentColor; } 50% { box-shadow:0 0 0 7px rgba(255,255,255,0.03),0 0 28px currentColor; } }
+    @keyframes chip-glow { 0%,100% { box-shadow:0 0 28px rgba(120,229,255,0.12); border-color:rgba(120,229,255,0.16); } 50% { box-shadow:0 0 36px rgba(120,229,255,0.2); border-color:rgba(120,229,255,0.24); } }
+    @keyframes text-flow { 0% { background-position:0% 50%; } 50% { background-position:100% 50%; } 100% { background-position:0% 50%; } }
+    @keyframes grid-drift { 0% { transform:translateY(0); } 100% { transform:translateY(70px); } }
+    .sensor-hud {
+      display:flex; flex-direction:column; gap:16px; padding:20px; position:relative; overflow:hidden;
+      background: radial-gradient(circle at top, rgba(33,86,140,0.22), transparent 28%), radial-gradient(circle at 80% 12%, rgba(120,229,255,0.12), transparent 24%), linear-gradient(180deg, #07101d 0%, #040814 48%, #050915 100%);
+    }
+    .sensor-hud::before { content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+      background: linear-gradient(rgba(120,229,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(120,229,255,0.04) 1px, transparent 1px);
+      background-size:70px 70px; mask-image:radial-gradient(circle at center, black 45%, transparent 95%); opacity:0.5; animation:grid-drift 26s linear infinite; }
+    .sensor-hud > * { position:relative; z-index:1; }
+    .hud-stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:14px; }
+    .hud-card {
+      position:relative; overflow:hidden; text-align:center; padding:18px 14px;
+      border:1px solid rgba(255,255,255,0.08); border-radius:1.35rem;
+      background: linear-gradient(180deg, rgba(11,18,35,0.92), rgba(5,9,21,0.82)), linear-gradient(135deg, rgba(120,229,255,0.08), transparent 40%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 50px rgba(2,8,24,0.38), 0 0 0 1px rgba(120,229,255,0.02);
+      backdrop-filter:blur(16px); transition:border-color 0.5s cubic-bezier(0.22,1,0.36,1), box-shadow 0.5s cubic-bezier(0.22,1,0.36,1);
+    }
+    .hud-card:hover { border-color:rgba(120,229,255,0.14); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 22px 60px rgba(2,8,24,0.42), 0 0 40px rgba(120,229,255,0.04); }
+    .hud-card::before { content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+      background: linear-gradient(135deg, rgba(120,229,255,0.22), transparent 28%, transparent 72%, rgba(74,222,128,0.12)), linear-gradient(180deg, rgba(255,255,255,0.06), transparent 20%);
+      mask-image:linear-gradient(black, transparent 70%); opacity:0.9; }
+    .hud-card > * { position:relative; z-index:1; }
+    .hud-val { font-size:2rem; font-weight:800; font-family:'JetBrains Mono',monospace; letter-spacing:2px;
+      background:linear-gradient(120deg, #f8fbff 0%, #8feaff 34%, #8ffff1 68%, #f8fbff 100%);
+      background-size:180% 180%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:text-flow 8s ease infinite; }
+    .hud-val.danger { background:linear-gradient(120deg, #fff1f2 0%, #f43f5e 50%, #ff6b8a 100%); background-size:180% 180%; -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .hud-val.safe { background:linear-gradient(120deg, #ecfdf5 0%, #4ade80 50%, #86efac 100%); background-size:180% 180%; -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .hud-label { font-size:0.6rem; color:#8b9db8; text-transform:uppercase; letter-spacing:0.3em; margin-top:6px; font-family:'Space Grotesk',sans-serif; font-weight:600; }
+    .hud-source {
+      border:1px solid rgba(255,255,255,0.08); border-radius:1rem; padding:10px 14px;
+      background: linear-gradient(180deg, rgba(11,18,35,0.88), rgba(5,9,21,0.78));
+      display:flex; align-items:center; gap:10px;
+      transition: border-color 0.35s ease, box-shadow 0.35s ease, transform 0.35s cubic-bezier(0.22,1,0.36,1);
+      backdrop-filter:blur(8px);
+    }
+    .hud-source:hover { border-color:rgba(120,229,255,0.18); box-shadow:0 4px 20px rgba(2,8,24,0.3); transform:translateY(-1px); }
+    .hud-source-dot { width:8px; height:8px; border-radius:50%; animation:dot-breathe 3s ease-in-out infinite; }
+    .hud-source-name { font-size:0.68rem; font-family:'JetBrains Mono',monospace; color:#8b9db8; flex:1; text-transform:uppercase; letter-spacing:0.22em; }
+    .hud-source-count { font-size:0.9rem; font-weight:700; font-family:'JetBrains Mono',monospace; color:#edf6ff; }
+    .hud-panel {
+      position:relative; overflow:hidden; padding:20px; border-radius:1.35rem;
+      border:1px solid rgba(255,255,255,0.08);
+      background: linear-gradient(180deg, rgba(11,18,35,0.92), rgba(5,9,21,0.82)), linear-gradient(135deg, rgba(120,229,255,0.06), transparent 40%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 50px rgba(2,8,24,0.38);
+      backdrop-filter:blur(16px);
+    }
+    .hud-panel::before { content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+      background: linear-gradient(135deg, rgba(120,229,255,0.15), transparent 28%, transparent 72%, rgba(74,222,128,0.08));
+      mask-image:linear-gradient(black, transparent 70%); opacity:0.7; }
+    .hud-panel > * { position:relative; z-index:1; }
+    .hud-panel-title {
+      margin:0 0 14px 0; font-size:0.72rem; font-family:'Space Grotesk',sans-serif; font-weight:600;
+      letter-spacing:0.3em; text-transform:uppercase; color:rgba(120,229,255,0.78); display:inline-block;
+    }
+    .hud-panel-title::after { content:''; display:block; width:2.2em; height:1px; margin-top:0.6em;
+      background:linear-gradient(90deg, rgba(120,229,255,0.7), rgba(120,229,255,0.1)); }
   </style>
   <div class="report-view sensor-hud" id="viewSensors" style="display:flex;">
     <div class="hud-stats" id="sensorCards"></div>
@@ -6233,10 +6274,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
 
       // HUD stat cards
       let html = '';
-      html += '<div class="hud-card"><div class="hud-val" style="color:var(--accent);">' + (data.total_events||0).toLocaleString() + '</div><div class="hud-label">Events Today</div></div>';
-      html += '<div class="hud-card"><div class="hud-val" style="color:' + (data.total_incidents > 0 ? 'var(--danger)' : 'var(--ok)') + ';">' + (data.total_incidents||0) + '</div><div class="hud-label">Incidents</div></div>';
-      html += '<div class="hud-card"><div class="hud-val" style="color:#6bcb77;">' + (data.sources||[]).length + '</div><div class="hud-label">Sources Active</div></div>';
-      html += '<div class="hud-card"><div class="hud-val" style="color:#ffd93d;">' + (data.detectors||[]).length + '</div><div class="hud-label">Detectors Firing</div></div>';
+      html += '<div class="hud-card"><div class="hud-val">' + (data.total_events||0).toLocaleString() + '</div><div class="hud-label">Events Today</div></div>';
+      html += '<div class="hud-card"><div class="hud-val ' + (data.total_incidents > 0 ? 'danger' : 'safe') + '">' + (data.total_incidents||0) + '</div><div class="hud-label">Incidents</div></div>';
+      html += '<div class="hud-card"><div class="hud-val safe">' + (data.sources||[]).length + '</div><div class="hud-label">Sources Active</div></div>';
+      html += '<div class="hud-card"><div class="hud-val">' + (data.detectors||[]).length + '</div><div class="hud-label">Detectors Firing</div></div>';
       cards.innerHTML = html;
 
       // Per-source rows
