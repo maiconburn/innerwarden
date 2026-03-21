@@ -184,14 +184,13 @@ enum Command {
         command: Option<ConfigureCommand>,
     },
 
-    /// Configure external integrations (GeoIP, AbuseIPDB, fail2ban, watchdog).
+    /// Configure external integrations (GeoIP, AbuseIPDB, Cloudflare, watchdog).
     ///
     /// Run without arguments to see an interactive menu.
     ///
     /// Examples:
     ///   innerwarden integrate geoip
     ///   innerwarden integrate abuseipdb --api-key <key>
-    ///   innerwarden integrate fail2ban
     Integrate {
         #[command(subcommand)]
         command: Option<IntegrateCommand>,
@@ -772,15 +771,6 @@ enum IntegrateCommand {
         auto_block_threshold: Option<u8>,
     },
 
-    /// Enable fail2ban integration (syncs active bans into InnerWarden).
-    ///
-    /// When fail2ban bans an IP, InnerWarden will automatically enforce it
-    /// via the configured block skill (ufw/iptables/nftables).
-    ///
-    /// Examples:
-    ///   innerwarden integrate fail2ban
-    Fail2ban,
-
     /// Push blocked IPs to Cloudflare edge via IP Access Rules API.
     ///
     /// After every successful block-ip action, the IP is also added to your
@@ -1076,7 +1066,6 @@ fn main() -> Result<()> {
                 ref zone_id,
                 ref api_token,
             }) => cmd_configure_cloudflare(&cli, zone_id.as_deref(), api_token.as_deref()),
-            Some(IntegrateCommand::Fail2ban) => cmd_configure_fail2ban(&cli),
             Some(IntegrateCommand::Watchdog { interval }) => {
                 cmd_configure_watchdog(&cli, *interval)
             }
