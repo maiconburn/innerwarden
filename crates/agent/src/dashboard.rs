@@ -1758,51 +1758,68 @@ async fn api_sensors(State(state): State<DashboardState>) -> Json<serde_json::Va
     let events_path = state.data_dir.join(format!("events-{today}.jsonl"));
     let incidents_path = state.data_dir.join(format!("incidents-{today}.jsonl"));
 
-    // Read last 256KB of events for time-series (same tail-read pattern as overview)
+    // Sample events file across its full length for timeline coverage.
+    // Read 20 chunks of 64KB evenly spaced across the file → ~2000 events sampled.
     let mut source_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut kind_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut timeline: std::collections::BTreeMap<String, std::collections::HashMap<String, usize>> =
         std::collections::BTreeMap::new();
     let mut total_events = 0usize;
 
-    if let Some(content) = tokio::task::spawn_blocking({
+    if let Some(samples) = tokio::task::spawn_blocking({
         let path = events_path.clone();
-        move || -> Option<String> {
+        move || -> Option<Vec<String>> {
             let file = std::fs::File::open(&path).ok()?;
             let len = file.metadata().ok()?.len();
-            let skip = len.saturating_sub(256 * 1024);
-            let mut reader = std::io::BufReader::new(file);
-            std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(skip)).ok()?;
-            let mut buf = String::new();
-            std::io::Read::read_to_string(&mut reader, &mut buf).ok()?;
-            Some(buf)
+            if len == 0 { return Some(vec![]); }
+
+            let chunk_size: u64 = 64 * 1024;
+            let num_samples: u64 = 20;
+            let step = if len > chunk_size * num_samples { len / num_samples } else { 0 };
+            let mut chunks = Vec::new();
+
+            for i in 0..num_samples {
+                let offset = if step > 0 { i * step } else { 0 };
+                let mut reader = std::io::BufReader::new(std::fs::File::open(&path).ok()?);
+                std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(offset)).ok()?;
+                let mut limited = vec![0u8; chunk_size as usize];
+                let n = std::io::Read::read(&mut reader, &mut limited).ok()?;
+                chunks.push(String::from_utf8_lossy(&limited[..n]).to_string());
+                if step == 0 { break; } // file smaller than total sample size
+            }
+            Some(chunks)
         }
     })
     .await
     .unwrap_or(None)
     {
-        for line in content.lines() {
-            if line.is_empty() || !line.starts_with('{') {
-                continue;
-            }
-            if let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) {
-                total_events += 1;
-                let source = ev["source"].as_str().unwrap_or("unknown").to_string();
-                let kind = ev["kind"].as_str().unwrap_or("unknown").to_string();
-                *source_counts.entry(source.clone()).or_insert(0) += 1;
-                *kind_counts.entry(kind).or_insert(0) += 1;
+        // Also count total lines from file size estimate (avg ~530 bytes/line)
+        if let Ok(meta) = std::fs::metadata(&events_path) {
+            total_events = (meta.len() / 530) as usize;
+        }
 
-                // Bucket by 5-minute intervals: "HH:MM" where MM is rounded to 0/5/10/.../55
-                if let Some(ts) = ev["ts"].as_str() {
-                    if ts.len() >= 16 {
-                        let hour = &ts[11..13];
-                        let min: usize = ts[14..16].parse().unwrap_or(0);
-                        let bucket = format!("{hour}:{:02}", (min / 5) * 5);
-                        *timeline
-                            .entry(bucket)
-                            .or_default()
-                            .entry(source)
-                            .or_insert(0) += 1;
+        for chunk in &samples {
+            for line in chunk.lines() {
+                if line.is_empty() || !line.starts_with('{') {
+                    continue;
+                }
+                if let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) {
+                    let source = ev["source"].as_str().unwrap_or("unknown").to_string();
+                    let kind = ev["kind"].as_str().unwrap_or("unknown").to_string();
+                    *source_counts.entry(source.clone()).or_insert(0) += 1;
+                    *kind_counts.entry(kind).or_insert(0) += 1;
+
+                    if let Some(ts) = ev["ts"].as_str() {
+                        if ts.len() >= 16 {
+                            let hour = &ts[11..13];
+                            let min: usize = ts[14..16].parse().unwrap_or(0);
+                            let bucket = format!("{hour}:{:02}", (min / 5) * 5);
+                            *timeline
+                                .entry(bucket)
+                                .or_default()
+                                .entry(source)
+                                .or_insert(0) += 1;
+                        }
                     }
                 }
             }
