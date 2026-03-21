@@ -440,7 +440,7 @@ fn try_lsm_exec(ctx: &LsmContext) -> Result<i32, i64> {
     // Read filename from linux_binprm (first arg)
     // struct linux_binprm { ..., const char *filename, ... }
     // filename is at a known offset — we read the pointer then the string
-    let bprm_ptr: *const u8 = unsafe { ctx.arg(0).ok_or(1i64)? };
+    let bprm_ptr: *const u8 = unsafe { ctx.arg::<*const u8>(0).ok_or(1i64)? };
 
     // linux_binprm->filename offset varies by kernel version
     // On 6.x: filename is typically at offset 72 (after interp, vma, etc.)
