@@ -306,15 +306,12 @@ impl TelegramClient {
         };
 
         let text = format!(
-            "👾 Yo. I'm <b>InnerWarden</b> — your server's hacker guardian.\n\
-             Got eyes on <b>{host}</b>. Perimeter's mine.\n\
+            "🛡 <b>InnerWarden</b> — protecting <b>{host}</b>\n\
              \n\
              {today_line}\n\
              \n\
              Mode: <b>{mode_label}</b>\n\
-             <i>{mode_desc}</i>\n\
-             \n\
-             What do you need, operator?",
+             <i>{mode_desc}</i>",
             host = escape_html(host),
         );
 
@@ -326,11 +323,16 @@ impl TelegramClient {
                 "inline_keyboard": [
                     [
                         { "text": "📊 Status",    "callback_data": "menu:status"    },
-                        { "text": "🚨 Threats",   "callback_data": "menu:threats"   }
+                        { "text": "🚨 Threats",   "callback_data": "menu:threats"   },
+                        { "text": "⚖️ Decisions", "callback_data": "menu:decisions" }
                     ],
                     [
-                        { "text": "⚖️ Decisions", "callback_data": "menu:decisions" },
-                        { "text": "❓ Help",       "callback_data": "menu:help"      }
+                        { "text": "🔇 Quiet",   "callback_data": "sensitivity:quiet"   },
+                        { "text": "🔔 Normal",  "callback_data": "sensitivity:normal"  },
+                        { "text": "🔊 Verbose", "callback_data": "sensitivity:verbose" }
+                    ],
+                    [
+                        { "text": "❓ All commands",  "callback_data": "menu:help"      }
                     ]
                 ]
             }
@@ -1404,6 +1406,16 @@ fn parse_callback(data: &str, operator: &str) -> Option<ApprovalResult> {
         };
         return Some(ApprovalResult {
             incident_id: incident_id.to_string(),
+            approved: true,
+            always: false,
+            operator_name: operator.to_string(),
+            chosen_action: String::new(),
+        });
+    }
+    // Sensitivity buttons: "sensitivity:quiet", "sensitivity:normal", "sensitivity:verbose"
+    if let Some(level) = data.strip_prefix("sensitivity:") {
+        return Some(ApprovalResult {
+            incident_id: format!("__sensitivity__:{level}"),
             approved: true,
             always: false,
             operator_name: operator.to_string(),

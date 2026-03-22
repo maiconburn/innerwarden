@@ -3559,6 +3559,29 @@ async fn process_telegram_approval(
         return;
     }
 
+    // Sensitivity buttons from onboarding menu
+    if let Some(level) = result.incident_id.strip_prefix("__sensitivity__:") {
+        info!(operator = %result.operator_name, level, "Telegram sensitivity change");
+        if let Some(ref tg) = state.telegram_client {
+            let (emoji, desc) = match level {
+                "quiet" => ("🔇", "Only Critical alerts (server compromised, privesc)"),
+                "verbose" => ("🔊", "Medium, High, and Critical alerts"),
+                _ => ("🔔", "High and Critical alerts (recommended)"),
+            };
+            let msg = format!(
+                "{emoji} <b>Notification sensitivity: {level}</b>\n\n\
+                 <i>{desc}</i>\n\n\
+                 To apply permanently, run on server:\n\
+                 <code>innerwarden configure sensitivity {level}</code>"
+            );
+            let tg = tg.clone();
+            tokio::spawn(async move {
+                let _ = tg.send_raw_html(&msg).await;
+            });
+        }
+        return;
+    }
+
     if result.incident_id == "__help__" {
         info!(operator = %result.operator_name, "Telegram /help command received");
         if cfg.telegram.bot.enabled {
