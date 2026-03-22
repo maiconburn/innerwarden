@@ -3058,11 +3058,13 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
     println!("{}", "─".repeat(56));
 
     println!();
-    println!("Now configuring the essentials in 4 steps:");
+    println!("Now configuring the essentials in 6 steps:");
     println!("  1. AI provider    — brains for threat analysis");
     println!("  2. Telegram       — real-time alerts on your phone");
     println!("  3. Responder      — decide how to react to threats");
-    println!("  4. Modules        — enable essential protections\n");
+    println!("  4. Modules        — enable essential protections");
+    println!("  5. Sensitivity    — how often you get notified");
+    println!("  6. Mesh network   — collaborative defense with other nodes\n");
     println!("You can skip any step and run it later with 'innerwarden configure'.\n");
     println!("{}", "─".repeat(56));
 
@@ -3253,6 +3255,62 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
 
     println!("{}", "─".repeat(56));
 
+    // ── Step 5: Notification sensitivity ──────────────────────────────────
+    println!();
+    println!("Step 5/6 — Notification sensitivity\n");
+    println!("How often do you want to be notified?\n");
+    println!("  1. Quiet   — only Critical (server compromised, privesc)");
+    println!("  2. Normal  — High + Critical (recommended)");
+    println!("  3. Verbose — everything Medium+ (scans, mesh signals)\n");
+    let sens_choice = prompt("Choose [1/2/3]").unwrap_or_default();
+    match sens_choice.trim() {
+        "1" => {
+            let _ =
+                config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "critical");
+            let _ =
+                config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "critical");
+            println!("  ✅ Sensitivity: quiet");
+        }
+        "3" => {
+            let _ =
+                config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "medium");
+            let _ =
+                config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "medium");
+            println!("  ✅ Sensitivity: verbose");
+        }
+        _ => {
+            let _ = config_editor::write_str(&cli.agent_config, "telegram", "min_severity", "high");
+            let _ = config_editor::write_str(&cli.agent_config, "webhook", "min_severity", "high");
+            println!("  ✅ Sensitivity: normal (recommended)");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
+    // ── Step 6: Mesh network ───────────────────────────────────────────
+    println!();
+    let mesh_ok = is_enabled("mesh");
+    if mesh_ok {
+        println!("Step 6/6 — Mesh network   ✅ already enabled\n");
+    } else {
+        println!("Step 6/6 — Mesh network\n");
+        println!("Connect your Inner Warden nodes together.");
+        println!("When one detects a threat, all others block it automatically.");
+        println!("Ed25519 signed, game-theory trust, staged with TTL.\n");
+        print!("Enable mesh network? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().read_line(&mut ans)?;
+        println!();
+        if ans.trim().to_lowercase() == "y" {
+            let _ = cmd_mesh_enable(cli);
+        } else {
+            println!("  Skipped. Enable later:  innerwarden mesh enable");
+        }
+    }
+
+    println!("{}", "─".repeat(56));
+
     // ── Summary ───────────────────────────────────────────────────────────
     // Re-read state after all changes
     let env_vars2 = load_env_file(&env_file);
@@ -3302,14 +3360,25 @@ fn cmd_setup(cli: &Cli) -> Result<()> {
         }
     );
 
+    let mesh_done = is_enabled2("mesh");
+    println!("  Sensitivity   ✅ configured");
+    println!(
+        "  Mesh network  {}",
+        if mesh_done {
+            "✅ enabled"
+        } else {
+            "○  not enabled"
+        }
+    );
+
     println!();
     println!("Useful commands:");
-    println!("  innerwarden status         — overview of services and today's activity");
-    println!("  innerwarden incidents      — list recent threats");
-    println!("  innerwarden report         — daily security narrative");
-    println!("  innerwarden configure      — set up more integrations");
-    println!("  innerwarden doctor         — diagnose any issues");
-    println!("  innerwarden test-alert     — verify notifications are working");
+    println!("  innerwarden status                    — overview + last threat");
+    println!("  innerwarden incidents                 — recent threats");
+    println!("  innerwarden configure sensitivity     — quiet / normal / verbose");
+    println!("  innerwarden mesh enable               — join the defense network");
+    println!("  innerwarden mesh add-peer <url>       — connect a node");
+    println!("  innerwarden doctor                    — diagnose issues");
 
     Ok(())
 }
