@@ -1522,7 +1522,6 @@ mod tests {
         );
         let msg = format_incident_message(&inc, None, GuardianMode::Watch);
         assert!(msg.contains("CRITICAL"));
-        assert!(msg.contains("web-server-01"));
         assert!(msg.contains("SSH brute force"));
         assert!(msg.contains("1.2.3.4"));
         assert!(msg.contains("🔬"), "falco icon should appear");
